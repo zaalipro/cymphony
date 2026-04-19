@@ -91,7 +91,7 @@ defmodule SymphonyElixir.Cymphony.Onboarding do
     with {:ok, name} <- ask_project_name(existing_names),
          {:ok, github_repo} <- ask_required("GitHub repo URL (e.g. git@github.com:user/repo.git): "),
          {:ok, project_slug} <- ask_required("Linear project slug (e.g. myteam-ab12cd34ef56): "),
-         {:ok, api_key} <- ask_required("Linear API key: "),
+         {:ok, api_key} <- ask_linear_api_key(),
          {:ok, workspace_root} <- ask_optional("Workspace root [~/cymphony-workspaces/#{name}]: ", "~/cymphony-workspaces/#{name}"),
          {:ok, polling_interval} <- ask_optional("Polling interval in seconds [5]: ", "5") do
       polling_ms =
@@ -166,6 +166,41 @@ defmodule SymphonyElixir.Cymphony.Onboarding do
           ask_required(prompt)
         else
           {:ok, value}
+        end
+    end
+  end
+
+  defp ask_linear_api_key do
+    env_key = System.get_env("LINEAR_API_KEY")
+
+    prompt =
+      if env_key do
+        masked = String.slice(env_key, -4, 4) |> String.pad_leading(String.length(env_key), "*")
+        "Linear API key [#{masked} from env]: "
+      else
+        "Linear API key: "
+      end
+
+    case IO.gets(prompt) do
+      :eof ->
+        {:error, "Unexpected end of input"}
+
+      {:error, reason} ->
+        {:error, "Input error: #{inspect(reason)}"}
+
+      input ->
+        value = String.trim(input)
+
+        cond do
+          value != "" ->
+            {:ok, value}
+
+          env_key != nil ->
+            {:ok, env_key}
+
+          true ->
+            IO.puts("  This field is required. Set LINEAR_API_KEY or enter a key.")
+            ask_linear_api_key()
         end
     end
   end
