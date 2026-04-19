@@ -7,7 +7,7 @@ defmodule SymphonyElixir.Orchestrator do
   require Logger
   import Bitwise, only: [<<<: 2]
 
-  alias SymphonyElixir.{AgentRunner, Config, StatusDashboard, Tracker, Workspace}
+  alias SymphonyElixir.{AgentRunner, Config, ProjectSupervisor, StatusDashboard, Tracker, WorkflowStore, Workspace}
   alias SymphonyElixir.Linear.Issue
 
   @continuation_retry_delay_ms 1_000
@@ -53,8 +53,8 @@ defmodule SymphonyElixir.Orchestrator do
   @impl true
   def init(opts) do
     now_ms = System.monotonic_time(:millisecond)
-    config = Config.settings!()
     project_name = Keyword.get(opts, :project_name)
+    config = load_project_config_from_store(project_name)
 
     state = %State{
       config: config,
@@ -451,7 +451,7 @@ defmodule SymphonyElixir.Orchestrator do
   end
 
   defp reconcile_stalled_running_issues(%State{config: nil} = state) do
-    timeout_ms = Config.settings!().claude.stall_timeout_ms
+    timeout_ms = load_config().claude.stall_timeout_ms
     do_reconcile_stalled(state, timeout_ms)
   end
 
@@ -582,7 +582,8 @@ defmodule SymphonyElixir.Orchestrator do
   defp should_dispatch_issue?(_issue, _state, _active_states, _terminal_states), do: false
 
   defp state_slots_available?(%Issue{state: issue_state}, running, %State{config: nil}) when is_map(running) do
-    limit = Config.max_concurrent_agents_for_state(issue_state)
+    config = load_config()
+    limit = Map.get(config.agent.max_concurrent_agents_by_state, normalize_issue_state(issue_state), config.agent.max_concurrent_agents)
     used = running_issue_count_for_state(running, issue_state)
     limit > used
   end
@@ -675,7 +676,7 @@ defmodule SymphonyElixir.Orchestrator do
   end
 
   defp terminal_state_set do
-    Config.settings!().tracker.terminal_states
+    load_config().tracker.terminal_states
     |> Enum.map(&normalize_issue_state/1)
     |> Enum.filter(&(&1 != ""))
     |> MapSet.new()
@@ -693,7 +694,7 @@ defmodule SymphonyElixir.Orchestrator do
   end
 
   defp active_state_set do
-    Config.settings!().tracker.active_states
+    load_config().tracker.active_states
     |> Enum.map(&normalize_issue_state/1)
     |> Enum.filter(&(&1 != ""))
     |> MapSet.new()
@@ -936,7 +937,7 @@ defmodule SymphonyElixir.Orchestrator do
   defp cleanup_issue_workspace(_identifier, _worker_host), do: :ok
 
   defp run_terminal_workspace_cleanup(%State{config: nil}) do
-    terminal_states = Config.settings!().tracker.terminal_states
+    terminal_states = load_config().tracker.terminal_states
     do_terminal_workspace_cleanup(terminal_states)
   end
 
@@ -1037,7 +1038,7 @@ defmodule SymphonyElixir.Orchestrator do
   end
 
   defp select_worker_host(%State{config: nil} = state, preferred_worker_host) do
-    select_worker_host_with_hosts(state, preferred_worker_host, Config.settings!().worker.ssh_hosts)
+    select_worker_host_with_hosts(state, preferred_worker_host, load_config().worker.ssh_hosts)
   end
 
   defp select_worker_host(%State{} = state, preferred_worker_host) do
@@ -1097,7 +1098,7 @@ defmodule SymphonyElixir.Orchestrator do
   end
 
   defp worker_host_slots_available?(%State{config: nil} = state, worker_host) when is_binary(worker_host) do
-    case Config.settings!().worker.max_concurrent_agents_per_host do
+    case load_config().worker.max_concurrent_agents_per_host do
       limit when is_integer(limit) and limit > 0 ->
         running_worker_host_count(state.running, worker_host) < limit
 
@@ -1144,7 +1145,7 @@ defmodule SymphonyElixir.Orchestrator do
 
   defp available_slots(%State{config: nil} = state) do
     max(
-      (state.max_concurrent_agents || Config.settings!().agent.max_concurrent_agents) -
+      (state.max_concurrent_agents || load_config().agent.max_concurrent_agents) -
         map_size(state.running),
       0
     )
@@ -1165,10 +1166,10 @@ defmodule SymphonyElixir.Orchestrator do
 
   @spec request_refresh(GenServer.server()) :: map() | :unavailable
   def request_refresh(server) do
-    if Process.whereis(server) do
+    try do
       GenServer.call(server, :request_refresh)
-    else
-      :unavailable
+    catch
+      :exit, _ -> :unavailable
     end
   end
 
@@ -1177,15 +1178,11 @@ defmodule SymphonyElixir.Orchestrator do
 
   @spec snapshot(GenServer.server(), timeout()) :: map() | :timeout | :unavailable
   def snapshot(server, timeout) do
-    if Process.whereis(server) do
-      try do
-        GenServer.call(server, :snapshot, timeout)
-      catch
-        :exit, {:timeout, _} -> :timeout
-        :exit, _ -> :unavailable
-      end
-    else
-      :unavailable
+    try do
+      GenServer.call(server, :snapshot, timeout)
+    catch
+      :exit, {:timeout, _} -> :timeout
+      :exit, _ -> :unavailable
     end
   end
 
@@ -1386,8 +1383,56 @@ defmodule SymphonyElixir.Orchestrator do
 
   defp record_session_completion_totals(state, _running_entry), do: state
 
+  # Loads config from the project-specific WorkflowStore via the registry.
+  # Falls back to global Config.settings!() for legacy single-project mode
+  # or when the project store is not yet registered.
+  defp load_project_config_from_store(nil), do: Config.settings!()
+
+  defp load_project_config_from_store(project_name) when is_binary(project_name) do
+    case ProjectSupervisor.lookup(project_name, :workflow_store) do
+      nil ->
+        Config.settings!()
+
+      store_pid ->
+        case WorkflowStore.current(store_pid) do
+          {:ok, %{config: raw_config}} when is_map(raw_config) ->
+            case Config.Schema.parse(raw_config) do
+              {:ok, settings} -> settings
+              {:error, _} -> Config.settings!()
+            end
+
+          _ ->
+            Config.settings!()
+        end
+    end
+  end
+
+  # Loads config from the project's WorkflowStore, using project_name from state.
+  defp load_project_config(%State{project_name: project_name}) do
+    case ProjectSupervisor.lookup(project_name, :workflow_store) do
+      nil ->
+        Config.settings()
+
+      store_pid ->
+        case WorkflowStore.current(store_pid) do
+          {:ok, %{config: raw_config}} when is_map(raw_config) ->
+            Config.Schema.parse(raw_config)
+
+          _ ->
+            Config.settings()
+        end
+    end
+  end
+
+  # Fallback: loads config from the global store.
+  # Used by zero-arity helpers (terminal_state_set/0, active_state_set/0)
+  # which are called from test helpers that don't carry state.
+  defp load_config do
+    Config.settings!()
+  end
+
   defp refresh_runtime_config(%State{config: nil} = state) do
-    case Config.settings() do
+    case load_project_config(state) do
       {:ok, config} ->
         %{
           state
@@ -1403,7 +1448,7 @@ defmodule SymphonyElixir.Orchestrator do
 
   defp refresh_runtime_config(%State{} = state) do
     config =
-      case Config.settings() do
+      case load_project_config(state) do
         {:ok, new_config} -> new_config
         {:error, _} -> state.config
       end

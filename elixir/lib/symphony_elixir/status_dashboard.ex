@@ -341,7 +341,7 @@ defmodule SymphonyElixir.StatusDashboard do
         claude_total_tokens = Map.get(claude_totals, :total_tokens, 0)
         claude_seconds_running = Map.get(claude_totals, :seconds_running, 0)
         agent_count = length(running)
-        max_agents = Config.settings!().agent.max_concurrent_agents
+        max_agents = aggregate_max_agents()
         running_event_width = running_event_width(terminal_columns_override)
         running_rows = format_running_rows(running, running_event_width)
         running_to_backoff_spacer = if(running == [], do: [], else: ["│"])
@@ -411,12 +411,16 @@ defmodule SymphonyElixir.StatusDashboard do
       [] ->
         # Legacy single-project mode
         project_part =
-          case Config.settings!().tracker.project_slug do
-            project_slug when is_binary(project_slug) and project_slug != "" ->
-              colorize(linear_project_url(project_slug), @ansi_cyan)
+          try do
+            case Config.settings!().tracker.project_slug do
+              project_slug when is_binary(project_slug) and project_slug != "" ->
+                colorize(linear_project_url(project_slug), @ansi_cyan)
 
-            _ ->
-              colorize("n/a", @ansi_gray)
+              _ ->
+                colorize("n/a", @ansi_gray)
+            end
+          rescue
+            _ -> colorize("n/a", @ansi_gray)
           end
 
         [colorize("│ Project: ", @ansi_bold) <> project_part]
@@ -655,6 +659,45 @@ defmodule SymphonyElixir.StatusDashboard do
       rate_limits: Map.get(first_snap, :rate_limits),
       polling: Map.get(first_snap, :polling)
     }
+  end
+
+  defp aggregate_max_agents do
+    project_names = SymphonyElixir.ProjectSupervisor.list_project_names()
+
+    case project_names do
+      [] ->
+        # Legacy single-project mode: use global config
+        Config.settings!().agent.max_concurrent_agents
+
+      names ->
+        # Multi-project: sum max_concurrent_agents from each project's config
+        names
+        |> Enum.reduce(0, fn project_name, acc ->
+          case SymphonyElixir.ProjectSupervisor.lookup(project_name, :workflow_store) do
+            nil ->
+              acc
+
+            store_pid ->
+              case SymphonyElixir.WorkflowStore.current(store_pid) do
+                {:ok, %{config: raw_config}} when is_map(raw_config) ->
+                  case Config.Schema.parse(raw_config) do
+                    {:ok, settings} ->
+                      acc + settings.agent.max_concurrent_agents
+
+                    {:error, _} ->
+                      acc
+                  end
+
+                _ ->
+                  acc
+              end
+          end
+        end)
+    end
+  rescue
+    _ -> 10
+  catch
+    :exit, _ -> 10
   end
 
   defp format_running_rows(running, running_event_width) do
