@@ -1,41 +1,40 @@
 ---
 name: linear
 description: |
-  Use Symphony's `linear_graphql` client tool for raw Linear GraphQL
-  operations such as comment editing and upload flows.
+  Use curl and the Linear GraphQL API for raw operations such as comment
+  editing, issue lookups, state transitions, and upload flows.
 ---
 
 # Linear GraphQL
 
-Use this skill for raw Linear GraphQL work during Symphony app-server sessions.
+Use this skill for raw Linear GraphQL work during Cymphony sessions.
 
 ## Primary tool
 
-Use the `linear_graphql` client tool exposed by Symphony's app-server session.
-It reuses Symphony's configured Linear auth for the session.
+Use `curl` against `https://api.linear.app/graphql` with the `LINEAR_API_KEY`
+environment variable for authentication.
 
 Tool input:
 
-```json
-{
-  "query": "query or mutation document",
-  "variables": {
-    "optional": "graphql variables object"
-  }
-}
+```bash
+curl -s -X POST https://api.linear.app/graphql \
+  -H "Content-Type: application/json" \
+  -H "Authorization: $LINEAR_API_KEY" \
+  -d '{"query": "query or mutation document", "variables": {"optional": "graphql variables object"}}'
 ```
 
 Tool behavior:
 
-- Send one GraphQL operation per tool call.
-- Treat a top-level `errors` array as a failed GraphQL operation even if the
-  tool call itself completed.
+- Send one GraphQL operation per call.
+- Treat a top-level `errors` array as a failed GraphQL operation.
 - Keep queries/mutations narrowly scoped; ask only for the fields you need.
+- Do **not** use `Bearer` prefix — Linear API keys go directly in the
+  `Authorization` header without a prefix.
 
 ## Discovering unfamiliar operations
 
 When you need an unfamiliar mutation, input type, or object field, use targeted
-introspection through `linear_graphql`.
+introspection.
 
 List mutation names:
 
@@ -207,8 +206,6 @@ query IssueTeamStates($id: String!) {
 
 ### Edit an existing comment
 
-Use `commentUpdate` through `linear_graphql`:
-
 ```graphql
 mutation UpdateComment($id: String!, $body: String!) {
   commentUpdate(id: $id, input: { body: $body }) {
@@ -222,8 +219,6 @@ mutation UpdateComment($id: String!, $body: String!) {
 ```
 
 ### Create a comment
-
-Use `commentCreate` through `linear_graphql`:
 
 ```graphql
 mutation CreateComment($issueId: String!, $body: String!) {
@@ -338,14 +333,14 @@ query IssueFieldArgs {
 
 Do this in three steps:
 
-1. Call `linear_graphql` with `fileUpload` to get `uploadUrl`, `assetUrl`, and
-   any required upload headers.
+1. Call `fileUpload` via curl to get `uploadUrl`, `assetUrl`, and any required
+   upload headers.
 2. Upload the local file bytes to `uploadUrl` with `curl -X PUT` and the exact
    headers returned by `fileUpload`.
-3. Call `linear_graphql` again with `commentCreate` (or `commentUpdate`) and
-   include the resulting `assetUrl` in the comment body.
+3. Call `commentCreate` (or `commentUpdate`) and include the resulting
+   `assetUrl` in the comment body.
 
-Useful mutations:
+Useful mutation:
 
 ```graphql
 mutation FileUpload(
@@ -375,14 +370,12 @@ mutation FileUpload(
 
 ## Usage rules
 
-- Use `linear_graphql` for comment edits, uploads, and ad-hoc Linear API
-  queries.
+- Use curl for comment edits, uploads, and ad-hoc Linear API queries.
 - Prefer the narrowest issue lookup that matches what you already know:
   key -> identifier search -> internal id.
 - For state transitions, fetch team states first and use the exact `stateId`
   instead of hardcoding names inside mutations.
 - Prefer `attachmentLinkGitHubPR` over a generic URL attachment when linking a
   GitHub PR to a Linear issue.
-- Do not introduce new raw-token shell helpers for GraphQL access.
-- If you need shell work for uploads, only use it for signed upload URLs
-  returned by `fileUpload`; those URLs already carry the needed authorization.
+- For signed upload URLs returned by `fileUpload`, those URLs already carry the
+  needed authorization.

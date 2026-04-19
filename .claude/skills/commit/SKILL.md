@@ -1,7 +1,7 @@
 ---
 name: commit
 description:
-  Create a well-formed git commit from current changes using session history for
+  Create a well-formed git commit from current changes using session context for
   rationale and summary; use when asked to commit, prepare a commit message, or
   finalize staged work.
 ---
@@ -17,13 +17,13 @@ description:
 
 ## Inputs
 
-- Codex session history for intent and rationale.
+- Session context for intent and rationale.
 - `git status`, `git diff`, and `git diff --staged` for actual changes.
 - Repo-specific commit conventions if documented.
 
 ## Steps
 
-1. Read session history to identify scope, intent, and rationale.
+1. Read session context to identify scope, intent, and rationale.
 2. Inspect the working tree and staged changes (`git status`, `git diff`,
    `git diff --staged`).
 3. Stage intended changes, including new files (`git add -A`) after confirming
@@ -40,8 +40,9 @@ description:
    - Summary of key changes (what changed).
    - Rationale and trade-offs (why it changed).
    - Tests or validation run (or explicit note if not run).
-9. Append a `Co-authored-by` trailer for Codex using `Codex <codex@openai.com>`
-   unless the user explicitly requests a different identity.
+9. Append a `Co-Authored-By` trailer for Claude using
+   `Claude <noreply@anthropic.com>` unless the user explicitly requests a
+   different identity.
 10. Wrap body lines at 72 characters.
 11. Create the commit message with a here-doc or temp file and use
     `git commit -F <file>` so newlines are literal (avoid `-m` with `\n`).
@@ -71,5 +72,5 @@ Rationale:
 Tests:
 - <command or "not run (reason)">
 
-Co-authored-by: Codex <codex@openai.com>
+Co-Authored-By: Claude <noreply@anthropic.com>
 ```

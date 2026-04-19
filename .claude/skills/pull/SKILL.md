@@ -2,8 +2,8 @@
 name: pull
 description:
   Pull latest origin/main into the current local branch and resolve merge
-  conflicts (aka update-branch). Use when Codex needs to sync a feature branch
-  with origin, perform a merge-based update (not rebase), and guide conflict
+  conflicts (aka update-branch). Use when syncing a feature branch with
+  origin, performing a merge-based update (not rebase), and guiding conflict
   resolution best practices.
 ---
 
@@ -59,7 +59,7 @@ description:
       unless the conflict clearly indicates a deliberate change.
   - Open files and understand intent on both sides before choosing a resolution.
 - Prefer minimal, intention-preserving edits:
-  - Keep behavior consistent with the branch’s purpose.
+  - Keep behavior consistent with the branch's purpose.
   - Avoid accidental deletions or silent behavior changes.
 - Resolve one file at a time and rerun tests after each logical batch.
 - Use `ours/theirs` only when you are certain one side should win entirely.
