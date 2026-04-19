@@ -5,8 +5,12 @@ defmodule SymphonyElixir.CLI do
 
   alias SymphonyElixir.LogFile
 
+  alias SymphonyElixir.Cymphony.Config, as: CymphonyConfig
+  alias SymphonyElixir.Cymphony.Onboarding
+  alias SymphonyElixir.Cymphony.WorkflowGenerator
+
   @acknowledgement_switch :i_understand_that_this_will_be_running_without_the_usual_guardrails
-  @switches [{@acknowledgement_switch, :boolean}, logs_root: :string, port: :integer]
+  @switches [{@acknowledgement_switch, :boolean}, logs_root: :string, port: :integer, setup: :boolean]
 
   @type ensure_started_result :: {:ok, [atom()]} | {:error, term()}
   @type deps :: %{
@@ -31,6 +35,50 @@ defmodule SymphonyElixir.CLI do
 
   @spec evaluate([String.t()], deps()) :: :ok | {:error, String.t()}
   def evaluate(args, deps \\ runtime_deps()) do
+    if cymphony_mode?(args) do
+      cymphony_evaluate(args, deps)
+    else
+      legacy_evaluate(args, deps)
+    end
+  end
+
+  defp cymphony_mode?(args) do
+    {opts, positional, _invalid} = OptionParser.parse(args, strict: @switches)
+
+    positional == [] and
+      not Keyword.has_key?(opts, @acknowledgement_switch) and
+      not File.regular?(Path.expand("WORKFLOW.md"))
+  end
+
+  defp cymphony_evaluate(args, deps) do
+    {opts, _, _} = OptionParser.parse(args, strict: @switches)
+
+    config =
+      if Keyword.get(opts, :setup, false) or not CymphonyConfig.exists?() do
+        Onboarding.run()
+      else
+        CymphonyConfig.load()
+      end
+
+    case config do
+      {:ok, cfg} ->
+        case WorkflowGenerator.write_temp(cfg) do
+          {:ok, workflow_path} ->
+            with :ok <- maybe_set_logs_root(opts, deps),
+                 :ok <- maybe_set_server_port(opts, deps) do
+              run(workflow_path, deps)
+            end
+
+          {:error, reason} ->
+            {:error, "Failed to generate workflow: #{inspect(reason)}"}
+        end
+
+      {:error, reason} ->
+        {:error, "Configuration error: #{inspect(reason)}"}
+    end
+  end
+
+  defp legacy_evaluate(args, deps) do
     case OptionParser.parse(args, strict: @switches) do
       {opts, [], []} ->
         with :ok <- require_guardrails_acknowledgement(opts),
@@ -72,7 +120,8 @@ defmodule SymphonyElixir.CLI do
 
   @spec usage_message() :: String.t()
   defp usage_message do
-    "Usage: symphony [--logs-root <path>] [--port <port>] [path-to-WORKFLOW.md]"
+    "Usage: cymphony [--setup] [--logs-root <path>] [--port <port>]\n" <>
+      "       cymphony [--logs-root <path>] [--port <port>] [path-to-WORKFLOW.md] --i-understand-that-this-will-be-running-without-the-usual-guardrails"
   end
 
   @spec runtime_deps() :: deps()
