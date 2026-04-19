@@ -10,7 +10,13 @@ defmodule SymphonyElixir.CLI do
   alias SymphonyElixir.Cymphony.WorkflowGenerator
 
   @acknowledgement_switch :i_understand_that_this_will_be_running_without_the_usual_guardrails
-  @switches [{@acknowledgement_switch, :boolean}, logs_root: :string, port: :integer, setup: :boolean]
+  @switches [
+    {@acknowledgement_switch, :boolean},
+    help: :boolean,
+    logs_root: :string,
+    port: :integer,
+    setup: :boolean
+  ]
 
   @type ensure_started_result :: {:ok, [atom()]} | {:error, term()}
   @type deps :: %{
@@ -35,11 +41,56 @@ defmodule SymphonyElixir.CLI do
 
   @spec evaluate([String.t()], deps()) :: :ok | {:error, String.t()}
   def evaluate(args, deps \\ runtime_deps()) do
-    if cymphony_mode?(args) do
-      cymphony_evaluate(args, deps)
+    args = expand_shorthands(args)
+
+    if help_requested?(args) do
+      {:error, help_text()}
     else
-      legacy_evaluate(args, deps)
+      if cymphony_mode?(args) do
+        cymphony_evaluate(args, deps)
+      else
+        legacy_evaluate(args, deps)
+      end
     end
+  end
+
+  defp expand_shorthands([]), do: []
+
+  defp expand_shorthands(["h" | rest]), do: ["--help" | expand_shorthands(rest)]
+  defp expand_shorthands(["s" | rest]), do: ["--setup" | expand_shorthands(rest)]
+  defp expand_shorthands(["l", value | rest]), do: ["--logs-root", value | expand_shorthands(rest)]
+  defp expand_shorthands(["l" | _]), do: ["--help"]
+  defp expand_shorthands(["p", value | rest]), do: ["--port", value | expand_shorthands(rest)]
+  defp expand_shorthands(["p" | _]), do: ["--help"]
+  defp expand_shorthands([arg | rest]), do: [arg | expand_shorthands(rest)]
+
+  defp help_requested?(args) do
+    {opts, _, _} = OptionParser.parse(args, strict: @switches)
+    Keyword.get(opts, :help, false)
+  end
+
+  defp help_text do
+    """
+
+    Usage:
+      cymphony                       Run with saved config
+      cymphony s                     Run setup / onboarding wizard
+      cymphony l <path>              Override log directory
+      cymphony p <port>              Override HTTP server port
+      cymphony h                     Show this help
+
+    Shorthands can be combined:
+      cymphony s l /tmp/logs p 8080
+
+    Flags:
+      --setup                  Force onboarding wizard
+      --logs-root <path>       Override log directory
+      --port <port>            Override HTTP server port
+      --help, -h               Show this help
+
+    Legacy mode (advanced):
+      cymphony [WORKFLOW.md] --i-understand-that-this-will-be-running-without-the-usual-guardrails
+    """
   end
 
   defp cymphony_mode?(args) do
