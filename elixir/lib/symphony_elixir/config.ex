@@ -109,6 +109,11 @@ defmodule SymphonyElixir.Config do
     end
   end
 
+  @spec validate!(Schema.t()) :: :ok | {:error, term()}
+  def validate!(%Schema{} = settings) do
+    validate_semantics(settings)
+  end
+
   @spec claude_runtime_settings(Path.t() | nil, keyword()) ::
           {:ok, claude_runtime_settings()} | {:error, term()}
   def claude_runtime_settings(workspace \\ nil, opts \\ []) do

@@ -229,8 +229,8 @@ defmodule SymphonyElixir.Orchestrator do
   defp maybe_dispatch(%State{} = state) do
     state = reconcile_running_issues(state)
 
-    with :ok <- Config.validate!(),
-         {:ok, issues} <- Tracker.fetch_candidate_issues(),
+    with :ok <- Config.validate!(state.config),
+         {:ok, issues} <- Tracker.fetch_candidate_issues(state.config),
          true <- available_slots(state) > 0 do
       choose_issues(issues, state)
     else
@@ -284,7 +284,7 @@ defmodule SymphonyElixir.Orchestrator do
     if running_ids == [] do
       state
     else
-      case Tracker.fetch_issue_states_by_ids(running_ids) do
+      case Tracker.fetch_issue_states_by_ids(running_ids, state.config) do
         {:ok, issues} ->
           issues
           |> reconcile_running_issue_states(
@@ -713,7 +713,7 @@ defmodule SymphonyElixir.Orchestrator do
   end
 
   defp dispatch_issue(%State{} = state, issue, attempt \\ nil, preferred_worker_host \\ nil) do
-    case revalidate_issue_for_dispatch(issue, &Tracker.fetch_issue_states_by_ids/1, terminal_state_set(state)) do
+    case revalidate_issue_for_dispatch(issue, &Tracker.fetch_issue_states_by_ids(&1, state.config), terminal_state_set(state)) do
       {:ok, %Issue{} = refreshed_issue} ->
         transition_to_in_progress(refreshed_issue)
         do_dispatch_issue(state, refreshed_issue, attempt, preferred_worker_host)
@@ -884,7 +884,7 @@ defmodule SymphonyElixir.Orchestrator do
   end
 
   defp handle_retry_issue(%State{} = state, issue_id, attempt, metadata) do
-    case Tracker.fetch_candidate_issues() do
+    case Tracker.fetch_candidate_issues(state.config) do
       {:ok, issues} ->
         issues
         |> find_issue_by_id(issue_id)
@@ -938,16 +938,16 @@ defmodule SymphonyElixir.Orchestrator do
 
   defp run_terminal_workspace_cleanup(%State{config: nil}) do
     terminal_states = load_config().tracker.terminal_states
-    do_terminal_workspace_cleanup(terminal_states)
+    do_terminal_workspace_cleanup(terminal_states, load_config())
   end
 
   defp run_terminal_workspace_cleanup(%State{} = state) do
     terminal_states = state.config.tracker.terminal_states
-    do_terminal_workspace_cleanup(terminal_states)
+    do_terminal_workspace_cleanup(terminal_states, state.config)
   end
 
-  defp do_terminal_workspace_cleanup(terminal_states) do
-    case Tracker.fetch_issues_by_states(terminal_states) do
+  defp do_terminal_workspace_cleanup(terminal_states, config) do
+    case Tracker.fetch_issues_by_states(terminal_states, config) do
       {:ok, issues} ->
         issues
         |> Enum.each(fn
