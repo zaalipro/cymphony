@@ -11,6 +11,71 @@ This directory contains the current Elixir/OTP implementation of Symphony, based
 
 ![Symphony Elixir screenshot](../.github/media/elixir-screenshot.png)
 
+## Install via Homebrew (macOS)
+
+```bash
+brew tap zaalipro/cymphony
+brew install cymphony
+```
+
+First run triggers an interactive setup that saves config to `~/.cymphony/config.json`:
+
+```
+╭──────────────────────────────────────────────────────────╮
+│  Welcome to Cymphony!                                    │
+│                                                          │
+│  Let's set up your configuration.                        │
+│  This will be saved to ~/.cymphony/config.json           │
+╰──────────────────────────────────────────────────────────╯
+
+GitHub repo URL (e.g. git@github.com:user/repo.git): git@github.com:your-org/repo.git
+Linear project slug (e.g. myteam-ab12cd34ef56): myteam-ab12cd34ef56
+Linear API key: lin_api_...
+Workspace root [~/cymphony-workspaces]:
+Polling interval in seconds [5]:
+```
+
+After setup, just run:
+
+```bash
+cymphony
+```
+
+### CLI reference
+
+```
+cymphony                       Run with saved config
+cymphony s                     Re-run setup / onboarding wizard
+cymphony l <path>              Override log directory
+cymphony p <port>              Override HTTP server port
+cymphony h                     Show help
+```
+
+Shorthands can be combined:
+
+```bash
+cymphony s l /tmp/logs p 8080
+```
+
+Flags (long form):
+
+- `--setup` — force onboarding wizard
+- `--logs-root <path>` — override log directory
+- `--port <port>` — override HTTP server port
+- `--help`, `-h` — show help
+
+### Reconfigure
+
+```bash
+cymphony s
+```
+
+### Upgrade
+
+```bash
+brew upgrade zaalipro/cymphony/cymphony
+```
+
 ## How it works
 
 1. Polls Linear for candidate work
@@ -52,7 +117,7 @@ mise install
 mise exec -- elixir --version
 ```
 
-## Run
+## Run (from source)
 
 ```bash
 git clone https://github.com/openai/symphony
@@ -61,7 +126,7 @@ mise trust
 mise install
 mise exec -- mix setup
 mise exec -- mix build
-mise exec -- ./bin/symphony ./WORKFLOW.md
+mise exec -- ./bin/symphony ./WORKFLOW.md --i-understand-that-this-will-be-running-without-the-usual-guardrails
 ```
 
 ## Configuration

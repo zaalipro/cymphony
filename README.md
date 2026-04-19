@@ -25,10 +25,28 @@ Tell your favorite coding agent to build Symphony in a programming language of y
 > Implement Symphony according to the following spec:
 > https://github.com/openai/symphony/blob/main/SPEC.md
 
-### Option 2. Use our experimental reference implementation
+### Option 2. Install the CLI (macOS)
+
+```bash
+brew tap zaalipro/cymphony
+brew install cymphony
+cymphony
+```
+
+First run triggers an interactive setup (GitHub repo URL, Linear project slug, API key).
+
+```bash
+cymphony                       # Run with saved config
+cymphony s                     # Re-run setup
+cymphony l <path>              # Override log directory
+cymphony p <port>              # Enable web dashboard (e.g. p 4040)
+cymphony h                     # Show help
+```
+
+### Option 3. Use our experimental reference implementation
 
 Check out [elixir/README.md](elixir/README.md) for instructions on how to set up your environment
-and run the Elixir-based Symphony implementation. You can also ask your favorite coding agent to
+and run the Elixir-based Symphony implementation from source. You can also ask your favorite coding agent to
 help with the setup:
 
 > Set up Symphony for my repository based on
