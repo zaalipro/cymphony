@@ -16,7 +16,7 @@ defmodule SymphonyElixir.Cymphony.Onboarding do
     """)
 
     with {:ok, github_repo} <- ask_required("GitHub repo URL (e.g. git@github.com:user/repo.git): "),
-         {:ok, project_slug} <- ask_required("Linear project slug (e.g. ttsql-91909d226e06): "),
+         {:ok, project_slug} <- ask_required("Linear project slug (e.g. myteam-ab12cd34ef56): "),
          {:ok, api_key} <- ask_required("Linear API key: "),
          {:ok, workspace_root} <- ask_optional("Workspace root [~/cymphony-workspaces]: ", "~/cymphony-workspaces"),
          {:ok, polling_interval} <- ask_optional("Polling interval in seconds [5]: ", "5") do
