@@ -5,7 +5,7 @@ defmodule SymphonyElixir.MixProject do
     [
       app: :symphony_elixir,
       version: "0.2.1",
-      elixir: "~> 1.19",
+      elixir: "~> 1.18",
       compilers: [:phoenix_live_view] ++ Mix.compilers(),
       start_permanent: Mix.env() == :prod,
       test_coverage: [
