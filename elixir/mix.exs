@@ -5,7 +5,7 @@ defmodule SymphonyElixir.MixProject do
     [
       app: :symphony_elixir,
       version: "0.2.2",
-      elixir: "~> 1.19",
+      elixir: "~> 1.18",
       compilers: [:phoenix_live_view] ++ Mix.compilers(),
       start_permanent: Mix.env() == :prod,
       test_coverage: [
@@ -14,6 +14,7 @@ defmodule SymphonyElixir.MixProject do
         ],
         ignore_modules: [
           SymphonyElixir.Config,
+          SymphonyElixir.Linear.Adapter,
           SymphonyElixir.Linear.Client,
           SymphonyElixir.SpecsCheck,
           SymphonyElixir.Orchestrator,
@@ -31,6 +32,7 @@ defmodule SymphonyElixir.MixProject do
           SymphonyElixir.LogFile,
           SymphonyElixir.ProjectSupervisor,
           SymphonyElixir.Workspace,
+          SymphonyElixir.WorkflowStore,
           SymphonyElixirWeb.DashboardLive,
           SymphonyElixirWeb.Endpoint,
           SymphonyElixirWeb.ErrorHTML,
