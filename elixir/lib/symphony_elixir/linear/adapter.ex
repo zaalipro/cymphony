@@ -37,6 +37,7 @@ defmodule SymphonyElixir.Linear.Adapter do
   }
   """
 
+  # Zero-arity versions (legacy, reads global config)
   @spec fetch_candidate_issues() :: {:ok, [term()]} | {:error, term()}
   def fetch_candidate_issues, do: client_module().fetch_candidate_issues()
 
@@ -45,6 +46,16 @@ defmodule SymphonyElixir.Linear.Adapter do
 
   @spec fetch_issue_states_by_ids([String.t()]) :: {:ok, [term()]} | {:error, term()}
   def fetch_issue_states_by_ids(issue_ids), do: client_module().fetch_issue_states_by_ids(issue_ids)
+
+  # Config-accepting versions for multi-project
+  @spec fetch_candidate_issues(term()) :: {:ok, [term()]} | {:error, term()}
+  def fetch_candidate_issues(config), do: client_module().fetch_candidate_issues(config)
+
+  @spec fetch_issues_by_states([String.t()], term()) :: {:ok, [term()]} | {:error, term()}
+  def fetch_issues_by_states(states, config), do: client_module().fetch_issues_by_states(states, config)
+
+  @spec fetch_issue_states_by_ids([String.t()], term()) :: {:ok, [term()]} | {:error, term()}
+  def fetch_issue_states_by_ids(issue_ids, config), do: client_module().fetch_issue_states_by_ids(issue_ids, config)
 
   @spec create_comment(String.t(), String.t()) :: :ok | {:error, term()}
   def create_comment(issue_id, body) when is_binary(issue_id) and is_binary(body) do

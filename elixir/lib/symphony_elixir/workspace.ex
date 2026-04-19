@@ -66,7 +66,7 @@ defmodule SymphonyElixir.Workspace do
       |> Enum.reject(&(&1 == ""))
       |> Enum.join("\n")
 
-    case run_remote_command(worker_host, script, Config.settings!().hooks.timeout_ms) do
+    case run_remote_command(worker_host, script, hooks_config().timeout_ms) do
       {:ok, {output, 0}} ->
         parse_remote_workspace_output(output)
 
@@ -115,7 +115,7 @@ defmodule SymphonyElixir.Workspace do
       ]
       |> Enum.join("\n")
 
-    case run_remote_command(worker_host, script, Config.settings!().hooks.timeout_ms) do
+    case run_remote_command(worker_host, script, hooks_config().timeout_ms) do
       {:ok, {_output, 0}} ->
         {:ok, []}
 
@@ -145,7 +145,7 @@ defmodule SymphonyElixir.Workspace do
   def remove_issue_workspaces(identifier, nil) when is_binary(identifier) do
     safe_id = safe_identifier(identifier)
 
-    case Config.settings!().worker.ssh_hosts do
+    case worker_config().ssh_hosts do
       [] ->
         case workspace_path_for_issue(safe_id, nil) do
           {:ok, workspace} -> remove(workspace, nil)
@@ -167,7 +167,7 @@ defmodule SymphonyElixir.Workspace do
           :ok | {:error, term()}
   def run_before_run_hook(workspace, issue_or_identifier, worker_host \\ nil) when is_binary(workspace) do
     issue_context = issue_context(issue_or_identifier)
-    hooks = Config.settings!().hooks
+    hooks = hooks_config()
 
     case hooks.before_run do
       nil ->
@@ -181,7 +181,7 @@ defmodule SymphonyElixir.Workspace do
   @spec run_after_run_hook(Path.t(), map() | String.t() | nil, worker_host()) :: :ok
   def run_after_run_hook(workspace, issue_or_identifier, worker_host \\ nil) when is_binary(workspace) do
     issue_context = issue_context(issue_or_identifier)
-    hooks = Config.settings!().hooks
+    hooks = hooks_config()
 
     case hooks.after_run do
       nil ->
@@ -194,13 +194,17 @@ defmodule SymphonyElixir.Workspace do
   end
 
   defp workspace_path_for_issue(safe_id, nil) when is_binary(safe_id) do
-    Config.settings!().workspace.root
+    workspace_root()
     |> Path.join(safe_id)
     |> PathSafety.canonicalize()
   end
 
   defp workspace_path_for_issue(safe_id, worker_host) when is_binary(safe_id) and is_binary(worker_host) do
-    {:ok, Path.join(Config.settings!().workspace.root, safe_id)}
+    {:ok, Path.join(workspace_root(), safe_id)}
+  end
+
+  defp workspace_root do
+    Config.settings!().workspace.root
   end
 
   defp safe_identifier(identifier) do
@@ -208,7 +212,7 @@ defmodule SymphonyElixir.Workspace do
   end
 
   defp maybe_run_after_create_hook(workspace, issue_context, created?, worker_host) do
-    hooks = Config.settings!().hooks
+    hooks = hooks_config()
 
     case created? do
       true ->
@@ -226,7 +230,7 @@ defmodule SymphonyElixir.Workspace do
   end
 
   defp maybe_run_before_remove_hook(workspace, nil) do
-    hooks = Config.settings!().hooks
+    hooks = hooks_config()
 
     case File.dir?(workspace) do
       true ->
@@ -251,7 +255,7 @@ defmodule SymphonyElixir.Workspace do
   end
 
   defp maybe_run_before_remove_hook(workspace, worker_host) when is_binary(worker_host) do
-    hooks = Config.settings!().hooks
+    hooks = hooks_config()
 
     case hooks.before_remove do
       nil ->
@@ -268,7 +272,7 @@ defmodule SymphonyElixir.Workspace do
           ]
           |> Enum.join("\n")
 
-        run_remote_command(worker_host, script, Config.settings!().hooks.timeout_ms)
+        run_remote_command(worker_host, script, hooks_config().timeout_ms)
         |> case do
           {:ok, {output, status}} ->
             handle_hook_command_result(
@@ -292,7 +296,7 @@ defmodule SymphonyElixir.Workspace do
   defp ignore_hook_failure({:error, _reason}), do: :ok
 
   defp run_hook(command, workspace, issue_context, hook_name, nil) do
-    timeout_ms = Config.settings!().hooks.timeout_ms
+    timeout_ms = hooks_config().timeout_ms
 
     Logger.info("Running workspace hook hook=#{hook_name} #{issue_log_context(issue_context)} workspace=#{workspace} worker_host=local")
 
@@ -315,7 +319,7 @@ defmodule SymphonyElixir.Workspace do
   end
 
   defp run_hook(command, workspace, issue_context, hook_name, worker_host) when is_binary(worker_host) do
-    timeout_ms = Config.settings!().hooks.timeout_ms
+    timeout_ms = hooks_config().timeout_ms
 
     Logger.info("Running workspace hook hook=#{hook_name} #{issue_log_context(issue_context)} workspace=#{workspace} worker_host=#{worker_host}")
 
@@ -357,7 +361,7 @@ defmodule SymphonyElixir.Workspace do
 
   defp validate_workspace_path(workspace, nil) when is_binary(workspace) do
     expanded_workspace = Path.expand(workspace)
-    expanded_root = Path.expand(Config.settings!().workspace.root)
+    expanded_root = Path.expand(workspace_root())
     expanded_root_prefix = expanded_root <> "/"
 
     with {:ok, canonical_workspace} <- PathSafety.canonicalize(expanded_workspace),
@@ -479,5 +483,13 @@ defmodule SymphonyElixir.Workspace do
 
   defp issue_log_context(%{issue_id: issue_id, issue_identifier: issue_identifier}) do
     "issue_id=#{issue_id || "n/a"} issue_identifier=#{issue_identifier || "issue"}"
+  end
+
+  defp hooks_config do
+    Config.settings!().hooks
+  end
+
+  defp worker_config do
+    Config.settings!().worker
   end
 end

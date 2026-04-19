@@ -393,23 +393,41 @@ defmodule SymphonyElixir.StatusDashboard do
   end
 
   defp format_project_link_lines do
-    project_part =
-      case Config.settings!().tracker.project_slug do
-        project_slug when is_binary(project_slug) and project_slug != "" ->
-          colorize(linear_project_url(project_slug), @ansi_cyan)
-
-        _ ->
-          colorize("n/a", @ansi_gray)
-      end
-
-    project_line = colorize("│ Project: ", @ansi_bold) <> project_part
+    project_lines = format_multi_project_lines()
 
     case dashboard_url() do
       url when is_binary(url) ->
-        [project_line, colorize("│ Dashboard: ", @ansi_bold) <> colorize(url, @ansi_cyan)]
+        project_lines ++ [colorize("│ Dashboard: ", @ansi_bold) <> colorize(url, @ansi_cyan)]
 
       _ ->
-        [project_line]
+        project_lines
+    end
+  end
+
+  defp format_multi_project_lines do
+    project_names = SymphonyElixir.ProjectSupervisor.list_project_names()
+
+    case project_names do
+      [] ->
+        # Legacy single-project mode
+        project_part =
+          case Config.settings!().tracker.project_slug do
+            project_slug when is_binary(project_slug) and project_slug != "" ->
+              colorize(linear_project_url(project_slug), @ansi_cyan)
+
+            _ ->
+              colorize("n/a", @ansi_gray)
+          end
+
+        [colorize("│ Project: ", @ansi_bold) <> project_part]
+
+      [single] ->
+        [colorize("│ Project: ", @ansi_bold) <> colorize(single, @ansi_cyan)]
+
+      many ->
+        label = colorize("│ Projects: ", @ansi_bold)
+        names = many |> Enum.join(", ") |> colorize(@ansi_cyan)
+        [label <> names]
     end
   end
 
@@ -548,29 +566,95 @@ defmodule SymphonyElixir.StatusDashboard do
     do: dashboard_url(host, configured_port, bound_port)
 
   defp snapshot_payload do
-    if Process.whereis(Orchestrator) do
-      case Orchestrator.snapshot() do
-        %{
-          running: running,
-          retrying: retrying,
-          claude_totals: claude_totals
-        } = snapshot
-        when is_list(running) and is_list(retrying) ->
-          {:ok,
-           %{
-             running: running,
-             retrying: retrying,
-             claude_totals: claude_totals,
-             rate_limits: Map.get(snapshot, :rate_limits),
-             polling: Map.get(snapshot, :polling)
-           }}
+    project_snapshots = aggregate_project_snapshots()
 
-        _ ->
+    case project_snapshots do
+      [] ->
+        # Fallback to legacy single-orchestrator mode
+        if Process.whereis(Orchestrator) do
+          case Orchestrator.snapshot() do
+            %{
+              running: running,
+              retrying: retrying,
+              claude_totals: claude_totals
+            } = snapshot
+            when is_list(running) and is_list(retrying) ->
+              {:ok,
+               %{
+                 running: running,
+                 retrying: retrying,
+                 claude_totals: claude_totals,
+                 rate_limits: Map.get(snapshot, :rate_limits),
+                 polling: Map.get(snapshot, :polling)
+               }}
+
+            _ ->
+              :error
+          end
+        else
           :error
-      end
-    else
-      :error
+        end
+
+      snapshots ->
+        {:ok, merge_project_snapshots(snapshots)}
     end
+  end
+
+  defp aggregate_project_snapshots do
+    alias SymphonyElixir.ProjectSupervisor
+
+    ProjectSupervisor.list_orchestrators()
+    |> Enum.flat_map(fn {project_name, pid} ->
+      try do
+        case Orchestrator.snapshot(pid, 5_000) do
+          %{} = snapshot ->
+            [%{project_name: project_name, snapshot: snapshot}]
+
+          _ ->
+            []
+        end
+      catch
+        :exit, _ -> []
+      end
+    end)
+  end
+
+  defp merge_project_snapshots(snapshots) do
+    all_running =
+      snapshots
+      |> Enum.flat_map(fn %{project_name: project_name, snapshot: snap} ->
+        Enum.map(snap.running, &Map.put(&1, :project_name, project_name))
+      end)
+
+    all_retrying =
+      snapshots
+      |> Enum.flat_map(fn %{project_name: project_name, snapshot: snap} ->
+        Enum.map(snap.retrying, &Map.put(&1, :project_name, project_name))
+      end)
+
+    merged_totals =
+      snapshots
+      |> Enum.reduce(%{input_tokens: 0, output_tokens: 0, total_tokens: 0, seconds_running: 0}, fn %{snapshot: snap}, acc ->
+        totals = Map.get(snap, :claude_totals, %{input_tokens: 0, output_tokens: 0, total_tokens: 0, seconds_running: 0})
+
+        %{
+          input_tokens: acc.input_tokens + Map.get(totals, :input_tokens, 0),
+          output_tokens: acc.output_tokens + Map.get(totals, :output_tokens, 0),
+          total_tokens: acc.total_tokens + Map.get(totals, :total_tokens, 0),
+          seconds_running: acc.seconds_running + Map.get(totals, :seconds_running, 0)
+        }
+      end)
+
+    # Use first snapshot's rate_limits and polling as representative
+    first_snap = hd(snapshots).snapshot
+
+    %{
+      running: all_running,
+      retrying: all_retrying,
+      claude_totals: merged_totals,
+      rate_limits: Map.get(first_snap, :rate_limits),
+      polling: Map.get(first_snap, :polling)
+    }
   end
 
   defp format_running_rows(running, running_event_width) do

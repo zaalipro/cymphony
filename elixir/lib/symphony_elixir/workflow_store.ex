@@ -13,12 +13,13 @@ defmodule SymphonyElixir.WorkflowStore do
   defmodule State do
     @moduledoc false
 
-    defstruct [:path, :stamp, :workflow]
+    defstruct [:path, :stamp, :workflow, :fixed_path?]
   end
 
   @spec start_link(keyword()) :: GenServer.on_start()
   def start_link(opts \\ []) do
-    GenServer.start_link(__MODULE__, opts, name: __MODULE__)
+    name = Keyword.get(opts, :name, __MODULE__)
+    GenServer.start_link(__MODULE__, opts, name: name)
   end
 
   @spec current() :: {:ok, Workflow.loaded_workflow()} | {:error, term()}
@@ -30,6 +31,11 @@ defmodule SymphonyElixir.WorkflowStore do
       _ ->
         Workflow.load()
     end
+  end
+
+  @spec current(GenServer.server()) :: {:ok, Workflow.loaded_workflow()} | {:error, term()}
+  def current(server) do
+    GenServer.call(server, :current)
   end
 
   @spec force_reload() :: :ok | {:error, term()}
@@ -46,9 +52,17 @@ defmodule SymphonyElixir.WorkflowStore do
     end
   end
 
+  @spec force_reload(GenServer.server()) :: :ok | {:error, term()}
+  def force_reload(server) do
+    GenServer.call(server, :force_reload)
+  end
+
   @impl true
-  def init(_opts) do
-    case load_state(Workflow.workflow_file_path()) do
+  def init(opts) do
+    fixed_path = Keyword.get(opts, :workflow_path)
+    path = fixed_path || Workflow.workflow_file_path()
+
+    case load_state(path, fixed_path != nil) do
       {:ok, state} ->
         schedule_poll()
         {:ok, state}
@@ -93,24 +107,31 @@ defmodule SymphonyElixir.WorkflowStore do
     Process.send_after(self(), :poll, @poll_interval_ms)
   end
 
-  defp reload_state(%State{} = state) do
-    path = Workflow.workflow_file_path()
+  defp reload_state(%State{fixed_path?: true} = state) do
+    # Per-project store: stick with the path assigned at startup.
+    reload_current_path(state.path, state)
+  end
 
-    if path != state.path do
-      reload_path(path, state)
+  defp reload_state(%State{fixed_path?: false} = state) do
+    # Global store: follow the current global workflow_file_path so that
+    # tests (and runtime path changes) take effect immediately.
+    global_path = Workflow.workflow_file_path()
+
+    if global_path != state.path do
+      reload_path(global_path, state)
     else
-      reload_current_path(path, state)
+      reload_current_path(state.path, state)
     end
   end
 
-  defp reload_path(path, state) do
-    case load_state(path) do
+  defp reload_path(path, %State{fixed_path?: fixed?, workflow: old_workflow} = old_state) do
+    case load_state(path, fixed?) do
       {:ok, new_state} ->
         {:ok, new_state}
 
       {:error, reason} ->
         log_reload_error(path, reason)
-        {:error, reason, state}
+        {:error, reason, %State{old_state | path: path, fixed_path?: fixed?, workflow: old_workflow}}
     end
   end
 
@@ -128,10 +149,10 @@ defmodule SymphonyElixir.WorkflowStore do
     end
   end
 
-  defp load_state(path) do
+  defp load_state(path, fixed_path?) do
     with {:ok, workflow} <- Workflow.load(path),
          {:ok, stamp} <- current_stamp(path) do
-      {:ok, %State{path: path, stamp: stamp, workflow: workflow}}
+      {:ok, %State{path: path, stamp: stamp, workflow: workflow, fixed_path?: fixed_path?}}
     else
       {:error, reason} ->
         {:error, reason}

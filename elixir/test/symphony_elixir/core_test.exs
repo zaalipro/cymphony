@@ -1381,5 +1381,4 @@ defmodule SymphonyElixir.CoreTest do
       File.rm_rf(test_root)
     end
   end
-
 end

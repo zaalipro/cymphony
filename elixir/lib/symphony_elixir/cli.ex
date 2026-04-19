@@ -15,6 +15,7 @@ defmodule SymphonyElixir.CLI do
     help: :boolean,
     logs_root: :string,
     port: :integer,
+    project: :string,
     setup: :boolean
   ]
 
@@ -43,14 +44,22 @@ defmodule SymphonyElixir.CLI do
   def evaluate(args, deps \\ runtime_deps()) do
     args = expand_shorthands(args)
 
-    if help_requested?(args) do
-      {:error, help_text()}
-    else
-      if cymphony_mode?(args) do
-        cymphony_evaluate(args, deps)
-      else
-        legacy_evaluate(args, deps)
-      end
+    cond do
+      help_requested?(args) ->
+        {:error, help_text()}
+
+      list_requested?(args) ->
+        list_projects()
+
+      add_project_requested?(args) ->
+        add_project()
+
+      true ->
+        if cymphony_mode?(args) do
+          cymphony_evaluate(args, deps)
+        else
+          legacy_evaluate(args, deps)
+        end
     end
   end
 
@@ -69,12 +78,23 @@ defmodule SymphonyElixir.CLI do
     Keyword.get(opts, :help, false)
   end
 
+  defp list_requested?(args) do
+    args == ["list"] or args == ["ls"]
+  end
+
+  defp add_project_requested?(args) do
+    args == ["add-project"]
+  end
+
   defp help_text do
     """
 
     Usage:
-      cymphony                       Run with saved config
+      cymphony                       Run with saved config (all projects)
+      cymphony --project frontend    Run only the "frontend" project
       cymphony s                     Run setup / onboarding wizard
+      cymphony add-project           Add a project to existing config
+      cymphony list                  List configured projects
       cymphony l <path>              Override log directory
       cymphony p <port>              Override HTTP server port
       cymphony h                     Show this help
@@ -84,6 +104,7 @@ defmodule SymphonyElixir.CLI do
 
     Flags:
       --setup                  Force onboarding wizard
+      --project <name>         Run a specific project
       --logs-root <path>       Override log directory
       --port <port>            Override HTTP server port
       --help, -h               Show this help
@@ -101,8 +122,41 @@ defmodule SymphonyElixir.CLI do
       not File.regular?(Path.expand("WORKFLOW.md"))
   end
 
+  defp list_projects do
+    case Onboarding.list_projects() do
+      {:ok, projects} ->
+        case projects do
+          [] ->
+            IO.puts("No projects configured. Run `cymphony s` to set up.")
+            :ok
+
+          projects ->
+            IO.puts("Configured projects:\n")
+
+            Enum.each(projects, fn project ->
+              name = Map.get(project, "name", "unnamed")
+              slug = Map.get(project, "linear_project_slug", "n/a")
+              IO.puts("  #{name} (slug: #{slug})")
+            end)
+
+            :ok
+        end
+
+      {:error, reason} ->
+        {:error, "Configuration error: #{inspect(reason)}"}
+    end
+  end
+
+  defp add_project do
+    case Onboarding.add_project() do
+      {:ok, _config} -> :ok
+      {:error, reason} -> {:error, inspect(reason)}
+    end
+  end
+
   defp cymphony_evaluate(args, deps) do
     {opts, _, _} = OptionParser.parse(args, strict: @switches)
+    project_filter = Keyword.get(opts, :project)
 
     config =
       if Keyword.get(opts, :setup, false) or not CymphonyConfig.exists?() do
@@ -113,19 +167,95 @@ defmodule SymphonyElixir.CLI do
 
     case config do
       {:ok, cfg} ->
-        case WorkflowGenerator.write_temp(cfg) do
-          {:ok, workflow_path} ->
-            with :ok <- maybe_set_logs_root(opts, deps),
-                 :ok <- maybe_set_server_port(opts, deps) do
-              run(workflow_path, deps)
-            end
+        projects = CymphonyConfig.projects(cfg)
+        filtered_projects = filter_projects(projects, project_filter)
 
-          {:error, reason} ->
-            {:error, "Failed to generate workflow: #{inspect(reason)}"}
+        case filtered_projects do
+          [] ->
+            {:error,
+             if project_filter do
+               "Project '#{project_filter}' not found in config"
+             else
+               "No projects configured. Run `cymphony s` to set up."
+             end}
+
+          projects ->
+            case generate_workflow_files(projects) do
+              {:ok, project_workflow_pairs} ->
+                with :ok <- maybe_set_logs_root(opts, deps),
+                     :ok <- maybe_set_server_port(opts, deps) do
+                  run_multi_project(project_workflow_pairs, deps)
+                end
+
+              {:error, reason} ->
+                {:error, "Failed to generate workflow: #{inspect(reason)}"}
+            end
         end
 
       {:error, reason} ->
         {:error, "Configuration error: #{inspect(reason)}"}
+    end
+  end
+
+  defp filter_projects(projects, nil), do: projects
+
+  defp filter_projects(projects, project_name) when is_binary(project_name) do
+    Enum.filter(projects, fn project ->
+      Map.get(project, "name") == project_name
+    end)
+  end
+
+  defp generate_workflow_files(projects) do
+    results =
+      Enum.map(projects, fn project ->
+        case WorkflowGenerator.write_temp(project) do
+          {:ok, path} -> {:ok, {project, path}}
+          {:error, reason} -> {:error, reason}
+        end
+      end)
+
+    case Enum.find(results, &match?({:error, _}, &1)) do
+      {:error, reason} -> {:error, reason}
+      nil -> {:ok, Enum.map(results, fn {:ok, pair} -> pair end)}
+    end
+  end
+
+  defp run_multi_project(project_workflow_pairs, deps) do
+    # Set the first project's workflow as the global default for backward compat
+    {_first_project, first_workflow_path} = hd(project_workflow_pairs)
+    :ok = deps.set_workflow_file_path.(first_workflow_path)
+
+    case deps.ensure_all_started.() do
+      {:ok, _started_apps} ->
+        # Start each project under the DynamicSupervisor
+        Enum.each(project_workflow_pairs, fn {project, workflow_path} ->
+          project_name = Map.get(project, "name", "default")
+          start_project(project_name, workflow_path)
+        end)
+
+        :ok
+
+      {:error, reason} ->
+        {:error, "Failed to start Symphony: #{inspect(reason)}"}
+    end
+  end
+
+  defp start_project(project_name, workflow_path) do
+    spec = {
+      SymphonyElixir.ProjectSupervisor,
+      project_name: project_name, workflow_path: workflow_path
+    }
+
+    case DynamicSupervisor.start_child(SymphonyElixir.ProjectDynamicSupervisor, spec) do
+      {:ok, _pid} ->
+        :ok
+
+      {:error, {:already_started, _pid}} ->
+        :ok
+
+      {:error, reason} ->
+        IO.puts(:stderr, "Failed to start project '#{project_name}': #{inspect(reason)}")
+        :ok
     end
   end
 

@@ -271,6 +271,7 @@ defmodule SymphonyElixir.AppServerTest do
 
       # Second turn should resume
       session = %{session | session_id: first_session_id}
+
       assert {:ok, %{session_id: ^first_session_id}} =
                AppServer.run_turn(session, "second turn", issue)
 

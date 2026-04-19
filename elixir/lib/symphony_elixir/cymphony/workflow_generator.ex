@@ -15,11 +15,21 @@ defmodule SymphonyElixir.Cymphony.WorkflowGenerator do
   @spec write_temp(map()) :: {:ok, String.t()} | {:error, term()}
   def write_temp(config) do
     content = generate(config)
-    path = Path.join(System.tmp_dir!(), "cymphony_workflow_#{:erlang.unique_integer([:positive])}.md")
+    project_slug = safe_project_slug(Map.get(config, "name"))
+    suffix = :erlang.unique_integer([:positive])
+    path = Path.join(System.tmp_dir!(), "cymphony_workflow_#{project_slug}_#{suffix}.md")
 
     case File.write(path, content) do
       :ok -> {:ok, path}
       {:error, reason} -> {:error, "Failed to write temp workflow: #{inspect(reason)}"}
     end
+  end
+
+  defp safe_project_slug(nil), do: "default"
+
+  defp safe_project_slug(name) when is_binary(name) do
+    name
+    |> String.replace(~r/[^a-zA-Z0-9._-]/, "_")
+    |> String.slice(0, 32)
   end
 end

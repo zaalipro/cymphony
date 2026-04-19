@@ -3,32 +3,75 @@ defmodule SymphonyElixirWeb.Presenter do
   Shared projections for the observability API and dashboard.
   """
 
-  alias SymphonyElixir.{Config, Orchestrator, StatusDashboard}
+  alias SymphonyElixir.{Config, Orchestrator, ProjectSupervisor, StatusDashboard}
 
   @spec state_payload(GenServer.name(), timeout()) :: map()
   def state_payload(orchestrator, snapshot_timeout_ms) do
     generated_at = DateTime.utc_now() |> DateTime.truncate(:second) |> DateTime.to_iso8601()
 
-    case Orchestrator.snapshot(orchestrator, snapshot_timeout_ms) do
-      %{} = snapshot ->
+    project_snapshots = aggregate_project_snapshots(snapshot_timeout_ms)
+
+    case project_snapshots do
+      [] ->
+        # Legacy single-orchestrator fallback
+        case Orchestrator.snapshot(orchestrator, snapshot_timeout_ms) do
+          %{} = snapshot ->
+            %{
+              generated_at: generated_at,
+              counts: %{
+                running: length(snapshot.running),
+                retrying: length(snapshot.retrying)
+              },
+              running: Enum.map(snapshot.running, &running_entry_payload/1),
+              retrying: Enum.map(snapshot.retrying, &retry_entry_payload/1),
+              claude_totals: snapshot.claude_totals,
+              rate_limits: snapshot.rate_limits
+            }
+
+          :timeout ->
+            %{generated_at: generated_at, error: %{code: "snapshot_timeout", message: "Snapshot timed out"}}
+
+          :unavailable ->
+            %{generated_at: generated_at, error: %{code: "snapshot_unavailable", message: "Snapshot unavailable"}}
+        end
+
+      snapshots ->
+        merged = merge_project_snapshots(snapshots)
+
         %{
           generated_at: generated_at,
           counts: %{
+            running: length(merged.running),
+            retrying: length(merged.retrying)
+          },
+          running: Enum.map(merged.running, &running_entry_payload/1),
+          retrying: Enum.map(merged.retrying, &retry_entry_payload/1),
+          claude_totals: merged.claude_totals,
+          rate_limits: merged.rate_limits,
+          projects:
+            Enum.map(snapshots, fn %{project_name: name, snapshot: snap} ->
+              %{name: name, running: length(snap.running), retrying: length(snap.retrying)}
+            end)
+        }
+    end
+  end
+
+  @spec projects_payload() :: [map()]
+  def projects_payload do
+    ProjectSupervisor.list_orchestrators()
+    |> Enum.map(fn {project_name, pid} ->
+      case Orchestrator.snapshot(pid, 5_000) do
+        %{} = snapshot ->
+          %{
+            name: project_name,
             running: length(snapshot.running),
             retrying: length(snapshot.retrying)
-          },
-          running: Enum.map(snapshot.running, &running_entry_payload/1),
-          retrying: Enum.map(snapshot.retrying, &retry_entry_payload/1),
-          claude_totals: snapshot.claude_totals,
-          rate_limits: snapshot.rate_limits
-        }
+          }
 
-      :timeout ->
-        %{generated_at: generated_at, error: %{code: "snapshot_timeout", message: "Snapshot timed out"}}
-
-      :unavailable ->
-        %{generated_at: generated_at, error: %{code: "snapshot_unavailable", message: "Snapshot unavailable"}}
-    end
+        _ ->
+          %{name: project_name, running: 0, retrying: 0}
+      end
+    end)
   end
 
   @spec issue_payload(String.t(), GenServer.name(), timeout()) :: {:ok, map()} | {:error, :issue_not_found}
@@ -197,4 +240,56 @@ defmodule SymphonyElixirWeb.Presenter do
   end
 
   defp iso8601(_datetime), do: nil
+
+  defp aggregate_project_snapshots(snapshot_timeout_ms) do
+    ProjectSupervisor.list_orchestrators()
+    |> Enum.flat_map(fn {project_name, pid} ->
+      try do
+        case Orchestrator.snapshot(pid, snapshot_timeout_ms) do
+          %{} = snapshot ->
+            [%{project_name: project_name, snapshot: snapshot}]
+
+          _ ->
+            []
+        end
+      catch
+        :exit, _ -> []
+      end
+    end)
+  end
+
+  defp merge_project_snapshots(snapshots) do
+    all_running =
+      snapshots
+      |> Enum.flat_map(fn %{project_name: project_name, snapshot: snap} ->
+        Enum.map(snap.running, &Map.put(&1, :project_name, project_name))
+      end)
+
+    all_retrying =
+      snapshots
+      |> Enum.flat_map(fn %{project_name: project_name, snapshot: snap} ->
+        Enum.map(snap.retrying, &Map.put(&1, :project_name, project_name))
+      end)
+
+    merged_totals =
+      Enum.reduce(snapshots, %{input_tokens: 0, output_tokens: 0, total_tokens: 0, seconds_running: 0}, fn %{snapshot: snap}, acc ->
+        totals = Map.get(snap, :claude_totals, %{input_tokens: 0, output_tokens: 0, total_tokens: 0, seconds_running: 0})
+
+        %{
+          input_tokens: acc.input_tokens + Map.get(totals, :input_tokens, 0),
+          output_tokens: acc.output_tokens + Map.get(totals, :output_tokens, 0),
+          total_tokens: acc.total_tokens + Map.get(totals, :total_tokens, 0),
+          seconds_running: acc.seconds_running + Map.get(totals, :seconds_running, 0)
+        }
+      end)
+
+    first_snap = hd(snapshots).snapshot
+
+    %{
+      running: all_running,
+      retrying: all_retrying,
+      claude_totals: merged_totals,
+      rate_limits: Map.get(first_snap, :rate_limits)
+    }
+  end
 end

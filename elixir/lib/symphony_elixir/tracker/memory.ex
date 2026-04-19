@@ -12,6 +12,11 @@ defmodule SymphonyElixir.Tracker.Memory do
     {:ok, issue_entries()}
   end
 
+  @spec fetch_candidate_issues(term()) :: {:ok, [Issue.t()]} | {:error, term()}
+  def fetch_candidate_issues(_config) do
+    fetch_candidate_issues()
+  end
+
   @spec fetch_issues_by_states([String.t()]) :: {:ok, [Issue.t()]} | {:error, term()}
   def fetch_issues_by_states(state_names) do
     normalized_states =
@@ -25,6 +30,11 @@ defmodule SymphonyElixir.Tracker.Memory do
      end)}
   end
 
+  @spec fetch_issues_by_states([String.t()], term()) :: {:ok, [Issue.t()]} | {:error, term()}
+  def fetch_issues_by_states(state_names, _config) do
+    fetch_issues_by_states(state_names)
+  end
+
   @spec fetch_issue_states_by_ids([String.t()]) :: {:ok, [Issue.t()]} | {:error, term()}
   def fetch_issue_states_by_ids(issue_ids) do
     wanted_ids = MapSet.new(issue_ids)
@@ -33,6 +43,11 @@ defmodule SymphonyElixir.Tracker.Memory do
      Enum.filter(issue_entries(), fn %Issue{id: id} ->
        MapSet.member?(wanted_ids, id)
      end)}
+  end
+
+  @spec fetch_issue_states_by_ids([String.t()], term()) :: {:ok, [Issue.t()]} | {:error, term()}
+  def fetch_issue_states_by_ids(issue_ids, _config) do
+    fetch_issue_states_by_ids(issue_ids)
   end
 
   @spec create_comment(String.t(), String.t()) :: :ok | {:error, term()}

@@ -16,14 +16,29 @@ defmodule SymphonyElixir.Tracker do
     adapter().fetch_candidate_issues()
   end
 
+  @spec fetch_candidate_issues(Config.Schema.t()) :: {:ok, [term()]} | {:error, term()}
+  def fetch_candidate_issues(config) when is_struct(config, Config.Schema) do
+    adapter(config).fetch_candidate_issues(config)
+  end
+
   @spec fetch_issues_by_states([String.t()]) :: {:ok, [term()]} | {:error, term()}
   def fetch_issues_by_states(states) do
     adapter().fetch_issues_by_states(states)
   end
 
+  @spec fetch_issues_by_states([String.t()], Config.Schema.t()) :: {:ok, [term()]} | {:error, term()}
+  def fetch_issues_by_states(states, config) when is_struct(config, Config.Schema) do
+    adapter(config).fetch_issues_by_states(states, config)
+  end
+
   @spec fetch_issue_states_by_ids([String.t()]) :: {:ok, [term()]} | {:error, term()}
   def fetch_issue_states_by_ids(issue_ids) do
     adapter().fetch_issue_states_by_ids(issue_ids)
+  end
+
+  @spec fetch_issue_states_by_ids([String.t()], Config.Schema.t()) :: {:ok, [term()]} | {:error, term()}
+  def fetch_issue_states_by_ids(issue_ids, config) when is_struct(config, Config.Schema) do
+    adapter(config).fetch_issue_states_by_ids(issue_ids, config)
   end
 
   @spec create_comment(String.t(), String.t()) :: :ok | {:error, term()}
@@ -39,6 +54,14 @@ defmodule SymphonyElixir.Tracker do
   @spec adapter() :: module()
   def adapter do
     case Config.settings!().tracker.kind do
+      "memory" -> SymphonyElixir.Tracker.Memory
+      _ -> SymphonyElixir.Linear.Adapter
+    end
+  end
+
+  @spec adapter(Config.Schema.t()) :: module()
+  def adapter(config) do
+    case config.tracker.kind do
       "memory" -> SymphonyElixir.Tracker.Memory
       _ -> SymphonyElixir.Linear.Adapter
     end

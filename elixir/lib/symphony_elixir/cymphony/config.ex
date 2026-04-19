@@ -18,12 +18,49 @@ defmodule SymphonyElixir.Cymphony.Config do
     case File.read(config_path()) do
       {:ok, content} ->
         case Jason.decode(content) do
-          {:ok, parsed} -> {:ok, parsed}
+          {:ok, parsed} -> {:ok, normalize(parsed)}
           {:error, reason} -> {:error, "Invalid JSON in #{config_path()}: #{inspect(reason)}"}
         end
 
       {:error, reason} ->
         {:error, "Failed to read #{config_path()}: #{inspect(reason)}"}
+    end
+  end
+
+  @doc """
+  Normalizes a config map into the multi-project format.
+
+  Old flat format (no "projects" key) is converted to a single-element
+  projects array with name derived from the linear_project_slug.
+  """
+  @spec normalize(map()) :: map()
+  def normalize(%{"projects" => [_ | _]} = config), do: config
+
+  def normalize(config) when is_map(config) do
+    if Map.has_key?(config, "projects") do
+      config
+    else
+      name = Map.get(config, "linear_project_slug", "default")
+      project = Map.put(config, "name", name)
+      Map.put(%{}, "projects", [project])
+    end
+  end
+
+  @doc """
+  Extracts the list of project configs from a normalized config map.
+  """
+  @spec projects(map()) :: [map()]
+  def projects(%{"projects" => projects}) when is_list(projects), do: projects
+  def projects(_config), do: []
+
+  @doc """
+  Finds a single project by name from a normalized config map.
+  """
+  @spec find_project(map(), String.t()) :: {:ok, map()} | {:error, :project_not_found}
+  def find_project(config, project_name) when is_binary(project_name) do
+    case Enum.find(projects(config), &(&1["name"] == project_name)) do
+      nil -> {:error, :project_not_found}
+      project -> {:ok, project}
     end
   end
 

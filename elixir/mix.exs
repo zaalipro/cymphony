@@ -4,8 +4,8 @@ defmodule SymphonyElixir.MixProject do
   def project do
     [
       app: :symphony_elixir,
-      version: "0.1.0",
-      elixir: "~> 1.19",
+      version: "0.2.0",
+      elixir: "~> 1.18",
       compilers: [:phoenix_live_view] ++ Mix.compilers(),
       start_permanent: Mix.env() == :prod,
       test_coverage: [
