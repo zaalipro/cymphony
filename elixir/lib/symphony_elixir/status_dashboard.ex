@@ -574,35 +574,40 @@ defmodule SymphonyElixir.StatusDashboard do
 
     case project_snapshots do
       [] ->
-        # Fallback to legacy single-orchestrator mode
-        if Process.whereis(Orchestrator) do
-          case Orchestrator.snapshot() do
-            %{
-              running: running,
-              retrying: retrying,
-              claude_totals: claude_totals
-            } = snapshot
-            when is_list(running) and is_list(retrying) ->
-              {:ok,
-               %{
-                 running: running,
-                 retrying: retrying,
-                 claude_totals: claude_totals,
-                 rate_limits: Map.get(snapshot, :rate_limits),
-                 polling: Map.get(snapshot, :polling)
-               }}
-
-            _ ->
-              :error
-          end
-        else
-          :error
-        end
+        legacy_snapshot()
 
       snapshots ->
         {:ok, merge_project_snapshots(snapshots)}
     end
   end
+
+  defp legacy_snapshot do
+    if Process.whereis(Orchestrator) do
+      extract_legacy_snapshot(Orchestrator.snapshot())
+    else
+      :error
+    end
+  end
+
+  defp extract_legacy_snapshot(
+         %{
+           running: running,
+           retrying: retrying,
+           claude_totals: claude_totals
+         } = snapshot
+       )
+       when is_list(running) and is_list(retrying) do
+    {:ok,
+     %{
+       running: running,
+       retrying: retrying,
+       claude_totals: claude_totals,
+       rate_limits: Map.get(snapshot, :rate_limits),
+       polling: Map.get(snapshot, :polling)
+     }}
+  end
+
+  defp extract_legacy_snapshot(_), do: :error
 
   defp aggregate_project_snapshots do
     alias SymphonyElixir.ProjectSupervisor
@@ -671,33 +676,36 @@ defmodule SymphonyElixir.StatusDashboard do
 
       names ->
         # Multi-project: sum max_concurrent_agents from each project's config
-        names
-        |> Enum.reduce(0, fn project_name, acc ->
-          case SymphonyElixir.ProjectSupervisor.lookup(project_name, :workflow_store) do
-            nil ->
-              acc
-
-            store_pid ->
-              case SymphonyElixir.WorkflowStore.current(store_pid) do
-                {:ok, %{config: raw_config}} when is_map(raw_config) ->
-                  case Config.Schema.parse(raw_config) do
-                    {:ok, settings} ->
-                      acc + settings.agent.max_concurrent_agents
-
-                    {:error, _} ->
-                      acc
-                  end
-
-                _ ->
-                  acc
-              end
-          end
-        end)
+        Enum.reduce(names, 0, &sum_project_max_agents/2)
     end
   rescue
     _ -> 10
   catch
     :exit, _ -> 10
+  end
+
+  defp sum_project_max_agents(project_name, acc) do
+    case SymphonyElixir.ProjectSupervisor.lookup(project_name, :workflow_store) do
+      nil -> acc
+      store_pid -> add_store_max_agents(store_pid, acc)
+    end
+  end
+
+  defp add_store_max_agents(store_pid, acc) do
+    case SymphonyElixir.WorkflowStore.current(store_pid) do
+      {:ok, %{config: raw_config}} when is_map(raw_config) ->
+        parse_and_add_max_agents(raw_config, acc)
+
+      _ ->
+        acc
+    end
+  end
+
+  defp parse_and_add_max_agents(raw_config, acc) do
+    case Config.Schema.parse(raw_config) do
+      {:ok, settings} -> acc + settings.agent.max_concurrent_agents
+      {:error, _} -> acc
+    end
   end
 
   defp format_running_rows(running, running_event_width) do

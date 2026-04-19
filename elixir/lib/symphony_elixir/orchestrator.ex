@@ -1166,11 +1166,9 @@ defmodule SymphonyElixir.Orchestrator do
 
   @spec request_refresh(GenServer.server()) :: map() | :unavailable
   def request_refresh(server) do
-    try do
-      GenServer.call(server, :request_refresh)
-    catch
-      :exit, _ -> :unavailable
-    end
+    GenServer.call(server, :request_refresh)
+  catch
+    :exit, _ -> :unavailable
   end
 
   @spec snapshot() :: map() | :timeout | :unavailable
@@ -1178,12 +1176,10 @@ defmodule SymphonyElixir.Orchestrator do
 
   @spec snapshot(GenServer.server(), timeout()) :: map() | :timeout | :unavailable
   def snapshot(server, timeout) do
-    try do
-      GenServer.call(server, :snapshot, timeout)
-    catch
-      :exit, {:timeout, _} -> :timeout
-      :exit, _ -> :unavailable
-    end
+    GenServer.call(server, :snapshot, timeout)
+  catch
+    :exit, {:timeout, _} -> :timeout
+    :exit, _ -> :unavailable
   end
 
   @impl true
@@ -1389,21 +1385,33 @@ defmodule SymphonyElixir.Orchestrator do
   defp load_project_config_from_store(nil), do: Config.settings!()
 
   defp load_project_config_from_store(project_name) when is_binary(project_name) do
+    case lookup_project_store(project_name) do
+      nil -> Config.settings!()
+      store_pid -> parse_store_config(store_pid)
+    end
+  end
+
+  defp lookup_project_store(project_name) do
     case ProjectSupervisor.lookup(project_name, :workflow_store) do
-      nil ->
+      nil -> nil
+      store_pid -> store_pid
+    end
+  end
+
+  defp parse_store_config(store_pid) do
+    case WorkflowStore.current(store_pid) do
+      {:ok, %{config: raw_config}} when is_map(raw_config) ->
+        parse_raw_config(raw_config)
+
+      _ ->
         Config.settings!()
+    end
+  end
 
-      store_pid ->
-        case WorkflowStore.current(store_pid) do
-          {:ok, %{config: raw_config}} when is_map(raw_config) ->
-            case Config.Schema.parse(raw_config) do
-              {:ok, settings} -> settings
-              {:error, _} -> Config.settings!()
-            end
-
-          _ ->
-            Config.settings!()
-        end
+  defp parse_raw_config(raw_config) do
+    case Config.Schema.parse(raw_config) do
+      {:ok, settings} -> settings
+      {:error, _} -> Config.settings!()
     end
   end
 

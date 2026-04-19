@@ -52,17 +52,7 @@ defmodule SymphonyElixir.Cymphony.Onboarding do
 
         case collect_project(existing_names) do
           {:ok, project} ->
-            updated_projects = Config.projects(config) ++ [project]
-            updated_config = Map.put(config, "projects", updated_projects)
-
-            case Config.save(updated_config) do
-              :ok ->
-                IO.puts("\nProject '#{project["name"]}' added to #{Config.config_path()}")
-                {:ok, updated_config}
-
-              {:error, reason} ->
-                {:error, "Failed to save configuration: #{inspect(reason)}"}
-            end
+            save_new_project(config, project)
 
           {:error, reason} ->
             {:error, reason}
@@ -70,6 +60,20 @@ defmodule SymphonyElixir.Cymphony.Onboarding do
 
       {:error, reason} ->
         {:error, "Configuration error: #{inspect(reason)}"}
+    end
+  end
+
+  defp save_new_project(config, project) do
+    updated_projects = Config.projects(config) ++ [project]
+    updated_config = Map.put(config, "projects", updated_projects)
+
+    case Config.save(updated_config) do
+      :ok ->
+        IO.puts("\nProject '#{project["name"]}' added to #{Config.config_path()}")
+        {:ok, updated_config}
+
+      {:error, reason} ->
+        {:error, "Failed to save configuration: #{inspect(reason)}"}
     end
   end
 
@@ -136,19 +140,21 @@ defmodule SymphonyElixir.Cymphony.Onboarding do
         projects
 
       input ->
-        if String.trim(String.downcase(input)) == "y" do
-          case collect_project(Enum.map(projects, & &1["name"])) do
-            {:ok, project} ->
-              collect_additional_projects(projects ++ [project])
-
-            {:error, _reason} ->
-              projects
-          end
-        else
-          projects
-        end
+        maybe_collect_another(String.trim(String.downcase(input)), projects)
     end
   end
+
+  defp maybe_collect_another("y", projects) do
+    case collect_project(Enum.map(projects, & &1["name"])) do
+      {:ok, project} ->
+        collect_additional_projects(projects ++ [project])
+
+      {:error, _reason} ->
+        projects
+    end
+  end
+
+  defp maybe_collect_another(_input, projects), do: projects
 
   defp ask_required(prompt) do
     case IO.gets(prompt) do

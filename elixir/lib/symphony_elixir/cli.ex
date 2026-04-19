@@ -124,27 +124,26 @@ defmodule SymphonyElixir.CLI do
 
   defp list_projects do
     case Onboarding.list_projects() do
+      {:ok, []} ->
+        IO.puts("No projects configured. Run `cymphony s` to set up.")
+        :ok
+
       {:ok, projects} ->
-        case projects do
-          [] ->
-            IO.puts("No projects configured. Run `cymphony s` to set up.")
-            :ok
-
-          projects ->
-            IO.puts("Configured projects:\n")
-
-            Enum.each(projects, fn project ->
-              name = Map.get(project, "name", "unnamed")
-              slug = Map.get(project, "linear_project_slug", "n/a")
-              IO.puts("  #{name} (slug: #{slug})")
-            end)
-
-            :ok
-        end
+        IO.puts("Configured projects:\n")
+        print_project_list(projects)
+        :ok
 
       {:error, reason} ->
         {:error, "Configuration error: #{inspect(reason)}"}
     end
+  end
+
+  defp print_project_list(projects) do
+    Enum.each(projects, fn project ->
+      name = Map.get(project, "name", "unnamed")
+      slug = Map.get(project, "linear_project_slug", "n/a")
+      IO.puts("  #{name} (slug: #{slug})")
+    end)
   end
 
   defp add_project do
@@ -158,42 +157,51 @@ defmodule SymphonyElixir.CLI do
     {opts, _, _} = OptionParser.parse(args, strict: @switches)
     project_filter = Keyword.get(opts, :project)
 
-    config =
-      if Keyword.get(opts, :setup, false) or not CymphonyConfig.exists?() do
-        Onboarding.run()
-      else
-        CymphonyConfig.load()
-      end
+    config = load_config(opts)
 
     case config do
       {:ok, cfg} ->
-        projects = CymphonyConfig.projects(cfg)
-        filtered_projects = filter_projects(projects, project_filter)
-
-        case filtered_projects do
-          [] ->
-            {:error,
-             if project_filter do
-               "Project '#{project_filter}' not found in config"
-             else
-               "No projects configured. Run `cymphony s` to set up."
-             end}
-
-          projects ->
-            case generate_workflow_files(projects) do
-              {:ok, project_workflow_pairs} ->
-                with :ok <- maybe_set_logs_root(opts, deps),
-                     :ok <- maybe_set_server_port(opts, deps) do
-                  run_multi_project(project_workflow_pairs, deps)
-                end
-
-              {:error, reason} ->
-                {:error, "Failed to generate workflow: #{inspect(reason)}"}
-            end
-        end
+        run_with_config(cfg, project_filter, opts, deps)
 
       {:error, reason} ->
         {:error, "Configuration error: #{inspect(reason)}"}
+    end
+  end
+
+  defp load_config(opts) do
+    if Keyword.get(opts, :setup, false) or not CymphonyConfig.exists?() do
+      Onboarding.run()
+    else
+      CymphonyConfig.load()
+    end
+  end
+
+  defp run_with_config(cfg, project_filter, opts, deps) do
+    projects = CymphonyConfig.projects(cfg)
+    filtered_projects = filter_projects(projects, project_filter)
+
+    case filtered_projects do
+      [] ->
+        {:error, empty_projects_error(project_filter)}
+
+      projects ->
+        generate_and_run(projects, opts, deps)
+    end
+  end
+
+  defp empty_projects_error(nil), do: "No projects configured. Run `cymphony s` to set up."
+  defp empty_projects_error(project_filter), do: "Project '#{project_filter}' not found in config"
+
+  defp generate_and_run(projects, opts, deps) do
+    case generate_workflow_files(projects) do
+      {:ok, project_workflow_pairs} ->
+        with :ok <- maybe_set_logs_root(opts, deps),
+             :ok <- maybe_set_server_port(opts, deps) do
+          run_multi_project(project_workflow_pairs, deps)
+        end
+
+      {:error, reason} ->
+        {:error, "Failed to generate workflow: #{inspect(reason)}"}
     end
   end
 

@@ -310,14 +310,7 @@ defmodule SymphonyElixir.Claude.AppServer do
         case Jason.decode(line) do
           {:ok, %{} = event} ->
             emit_message(on_message, :stream_event, %{event: event, raw: line}, metadata)
-
-            last_result =
-              if event["type"] == "result" do
-                event
-              else
-                acc.last_result
-              end
-
+            last_result = maybe_update_last_result(event, acc.last_result)
             %{acc | events: [event | acc.events], last_result: last_result}
 
           {:error, _} ->
@@ -340,6 +333,9 @@ defmodule SymphonyElixir.Claude.AppServer do
          }}
     end
   end
+
+  defp maybe_update_last_result(%{"type" => "result"} = event, _acc_result), do: event
+  defp maybe_update_last_result(_event, acc_result), do: acc_result
 
   defp find_last_json_line(lines) when is_list(lines) do
     lines

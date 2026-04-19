@@ -495,7 +495,10 @@ defmodule SymphonyElixir.Linear.Client do
   defp graphql_opts_for_config(nil), do: []
 
   defp graphql_opts_for_config(config) when is_struct(config, Config.Schema) do
-    [request_fun: fn payload, headers -> post_graphql_request(payload, headers, config) end, graphql_headers_fun: fn -> graphql_headers(config) end]
+    [
+      request_fun: fn payload, headers -> post_graphql_request(payload, headers, config) end,
+      graphql_headers_fun: fn -> graphql_headers(config) end
+    ]
   end
 
   defp decode_linear_response(%{"data" => %{"issues" => %{"nodes" => nodes}}}, assignee_filter) do
