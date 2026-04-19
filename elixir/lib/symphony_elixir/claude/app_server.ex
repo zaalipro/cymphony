@@ -34,15 +34,17 @@ defmodule SymphonyElixir.Claude.AppServer do
   @spec start_session(Path.t(), keyword()) :: {:ok, session()} | {:error, term()}
   def start_session(workspace, opts \\ []) do
     worker_host = Keyword.get(opts, :worker_host)
+    config = Keyword.get(opts, :config)
 
-    with {:ok, expanded_workspace} <- validate_workspace_cwd(workspace, worker_host) do
+    with {:ok, expanded_workspace} <- validate_workspace_cwd(workspace, worker_host, config) do
       {:ok,
        %{
          port: nil,
          metadata: %{},
          session_id: nil,
          workspace: expanded_workspace,
-         worker_host: worker_host
+         worker_host: worker_host,
+         config: config
        }}
     end
   end
@@ -52,15 +54,17 @@ defmodule SymphonyElixir.Claude.AppServer do
         %{
           workspace: workspace,
           worker_host: worker_host,
-          session_id: session_id
+          session_id: session_id,
+          config: session_config
         } = _session,
         prompt,
         issue,
         opts \\ []
       ) do
     on_message = Keyword.get(opts, :on_message, &default_on_message/1)
+    config = Keyword.get(opts, :config, session_config)
 
-    case spawn_claude_turn(workspace, worker_host, prompt, issue, session_id, opts) do
+    case spawn_claude_turn(workspace, worker_host, prompt, issue, session_id, config) do
       {:ok, port} ->
         metadata = port_metadata(port, worker_host)
         session_id = "#{session_id || "new"}"
@@ -132,14 +136,14 @@ defmodule SymphonyElixir.Claude.AppServer do
     stop_port(port)
   end
 
-  defp spawn_claude_turn(workspace, worker_host, prompt, issue, session_id, opts) do
-    with {:ok, command} <- build_claude_command(prompt, issue, session_id, opts) do
+  defp spawn_claude_turn(workspace, worker_host, prompt, issue, session_id, config) do
+    with {:ok, command} <- build_claude_command(prompt, issue, session_id, config) do
       start_port_for_command(command, workspace, worker_host)
     end
   end
 
-  defp build_claude_command(prompt, _issue, session_id, _opts) do
-    settings = Config.settings!().claude
+  defp build_claude_command(prompt, _issue, session_id, config) do
+    settings = if config, do: config.claude, else: Config.settings!().claude
 
     args =
       []
@@ -228,28 +232,31 @@ defmodule SymphonyElixir.Claude.AppServer do
   end
 
   defp await_process_completion(port, on_message, metadata) do
-    output = collect_output(port, "")
+    config = Map.get(metadata, :config)
+    output = collect_output(port, "", config)
 
     case output do
       {:ok, lines} ->
-        parse_claude_output(lines, on_message, metadata)
+        parse_claude_output(lines, on_message, metadata, config)
 
       {:error, reason} ->
         {:error, reason}
     end
   end
 
-  defp collect_output(port, buffer) do
+  defp collect_output(port, buffer, config) do
+    timeout_ms = if config, do: config.claude.turn_timeout_ms, else: Config.settings!().claude.turn_timeout_ms
+
     receive do
       {^port, {:data, {:eol, chunk}}} ->
         line = buffer <> to_string(chunk)
         log_stream_line(line)
 
-        with {:ok, lines} <- collect_output(port, ""),
+        with {:ok, lines} <- collect_output(port, "", config),
              do: {:ok, [line | lines]}
 
       {^port, {:data, {:noeol, chunk}}} ->
-        collect_output(port, buffer <> to_string(chunk))
+        collect_output(port, buffer <> to_string(chunk), config)
 
       {^port, {:exit_status, 0}} ->
         remaining = buffer |> to_string() |> String.trim()
@@ -261,14 +268,14 @@ defmodule SymphonyElixir.Claude.AppServer do
         if remaining != "", do: log_stream_line(remaining)
         {:error, {:claude_exit, status, remaining}}
     after
-      Config.settings!().claude.turn_timeout_ms ->
+      timeout_ms ->
         stop_port(port)
         {:error, :turn_timeout}
     end
   end
 
-  defp parse_claude_output(lines, on_message, metadata) do
-    settings = Config.settings!().claude
+  defp parse_claude_output(lines, on_message, metadata, config) do
+    settings = if config, do: config.claude, else: Config.settings!().claude
 
     case settings.output_format do
       "json" ->
@@ -354,9 +361,9 @@ defmodule SymphonyElixir.Claude.AppServer do
 
   defp json_line?(_), do: false
 
-  defp validate_workspace_cwd(workspace, nil) when is_binary(workspace) do
+  defp validate_workspace_cwd(workspace, nil, config) when is_binary(workspace) do
     expanded_workspace = Path.expand(workspace)
-    expanded_root = Path.expand(Config.settings!().workspace.root)
+    expanded_root = Path.expand(if config, do: config.workspace.root, else: Config.settings!().workspace.root)
     expanded_root_prefix = expanded_root <> "/"
 
     with {:ok, canonical_workspace} <- PathSafety.canonicalize(expanded_workspace),
@@ -382,7 +389,7 @@ defmodule SymphonyElixir.Claude.AppServer do
     end
   end
 
-  defp validate_workspace_cwd(workspace, worker_host)
+  defp validate_workspace_cwd(workspace, worker_host, _config)
        when is_binary(workspace) and is_binary(worker_host) do
     cond do
       String.trim(workspace) == "" ->

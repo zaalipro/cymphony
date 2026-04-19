@@ -141,7 +141,6 @@ defmodule SymphonyElixir.CLITest do
     test "shows help for --help" do
       assert {:error, text} = CLI.evaluate(["--help"])
       assert text =~ "Usage:"
-      assert text =~ "Shorthands"
     end
 
     test "shows help for -h" do
@@ -184,7 +183,7 @@ defmodule SymphonyElixir.CLITest do
       assert match?({:ok, _}, result) or match?({:error, _}, result)
     end
 
-    test "l <path> expands to --logs-root", %{deps: deps} do
+    test "--logs-root <path> sets log root", %{deps: deps} do
       parent = self()
 
       log_deps =
@@ -193,12 +192,12 @@ defmodule SymphonyElixir.CLITest do
           :ok
         end)
 
-      assert :ok = CLI.evaluate([@ack_flag, "l", "tmp/custom-logs", "WORKFLOW.md"], log_deps)
+      assert :ok = CLI.evaluate([@ack_flag, "--logs-root", "tmp/custom-logs", "WORKFLOW.md"], log_deps)
       assert_received {:logs_root, expanded}
       assert expanded == Path.expand("tmp/custom-logs")
     end
 
-    test "p <port> expands to --port", %{deps: deps} do
+    test "--port <port> sets server port", %{deps: deps} do
       parent = self()
 
       port_deps =
@@ -207,13 +206,12 @@ defmodule SymphonyElixir.CLITest do
           :ok
         end)
 
-      assert :ok = CLI.evaluate([@ack_flag, "p", "9090", "WORKFLOW.md"], port_deps)
+      assert :ok = CLI.evaluate([@ack_flag, "--port", "9090", "WORKFLOW.md"], port_deps)
       assert_received {:port, 9090}
     end
 
-    test "l without value shows help" do
-      assert {:error, text} = CLI.evaluate(["l"])
-      assert text =~ "Usage:"
+    test "l lists projects" do
+      assert :ok = CLI.evaluate(["l"])
     end
 
     test "p without value shows help" do

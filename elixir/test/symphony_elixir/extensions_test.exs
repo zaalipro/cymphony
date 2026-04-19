@@ -121,10 +121,13 @@ defmodule SymphonyElixir.ExtensionsTest do
     Workflow.set_workflow_file_path(third_workflow)
     assert {:ok, %{prompt: "Third prompt"}} = Workflow.current()
 
-    assert :ok = Supervisor.terminate_child(SymphonyElixir.Supervisor, WorkflowStore)
+    case Process.whereis(WorkflowStore) do
+      pid when is_pid(pid) -> GenServer.stop(pid)
+      _ -> :ok
+    end
+
     assert {:ok, %{prompt: "Third prompt"}} = WorkflowStore.current()
     assert :ok = WorkflowStore.force_reload()
-    assert {:ok, _pid} = Supervisor.restart_child(SymphonyElixir.Supervisor, WorkflowStore)
   end
 
   test "workflow store init stops on missing workflow file" do
@@ -140,7 +143,10 @@ defmodule SymphonyElixir.ExtensionsTest do
     manual_path = Path.join(Path.dirname(existing_path), "MANUAL_WORKFLOW.md")
     missing_path = Path.join(Path.dirname(existing_path), "MANUAL_MISSING_WORKFLOW.md")
 
-    assert :ok = Supervisor.terminate_child(SymphonyElixir.Supervisor, WorkflowStore)
+    case Process.whereis(WorkflowStore) do
+      pid when is_pid(pid) -> GenServer.stop(pid)
+      _ -> :ok
+    end
 
     Workflow.set_workflow_file_path(missing_path)
 
@@ -172,10 +178,7 @@ defmodule SymphonyElixir.ExtensionsTest do
     assert_receive :poll, 1_100
 
     Process.exit(manual_pid, :normal)
-    restart_result = Supervisor.restart_child(SymphonyElixir.Supervisor, WorkflowStore)
-
-    assert match?({:ok, _pid}, restart_result) or
-             match?({:error, {:already_started, _pid}}, restart_result)
+    ensure_workflow_store_running()
 
     Workflow.set_workflow_file_path(existing_path)
     WorkflowStore.force_reload()
@@ -741,7 +744,7 @@ defmodule SymphonyElixir.ExtensionsTest do
     if Process.whereis(WorkflowStore) do
       :ok
     else
-      case Supervisor.restart_child(SymphonyElixir.Supervisor, WorkflowStore) do
+      case WorkflowStore.start_link() do
         {:ok, _pid} -> :ok
         {:error, {:already_started, _pid}} -> :ok
       end

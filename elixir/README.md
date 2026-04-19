@@ -44,25 +44,23 @@ cymphony
 ### CLI reference
 
 ```
-cymphony                       Run with saved config
+cymphony                       Run with saved config (all projects)
+cymphony p frontend            Run only the "frontend" project
 cymphony s                     Re-run setup / onboarding wizard
-cymphony l <path>              Override log directory
-cymphony p <port>              Override HTTP server port
+cymphony a                     Add a project to existing config
+cymphony l                     List configured projects
+cymphony v                     Show version
 cymphony h                     Show help
-```
-
-Shorthands can be combined:
-
-```bash
-cymphony s l /tmp/logs p 8080
 ```
 
 Flags (long form):
 
 - `--setup` — force onboarding wizard
+- `--project <name>` — run a specific project
 - `--logs-root <path>` — override log directory
 - `--port <port>` — override HTTP server port
 - `--help`, `-h` — show help
+- `--version` — show version
 
 ### Reconfigure
 

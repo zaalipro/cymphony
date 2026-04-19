@@ -11,8 +11,10 @@ defmodule SymphonyElixir.AgentRunner do
 
   @spec run(map(), pid() | nil, keyword()) :: :ok | no_return()
   def run(issue, claude_update_recipient \\ nil, opts \\ []) do
+    config = Keyword.get(opts, :config)
     # The orchestrator owns host retries so one worker lifetime never hops machines.
-    worker_host = selected_worker_host(Keyword.get(opts, :worker_host), Config.settings!().worker.ssh_hosts)
+    worker_hosts = if config, do: config.worker.ssh_hosts, else: Config.settings!().worker.ssh_hosts
+    worker_host = selected_worker_host(Keyword.get(opts, :worker_host), worker_hosts)
 
     Logger.info("Starting agent run for #{issue_context(issue)} worker_host=#{worker_host_for_log(worker_host)}")
 
@@ -27,18 +29,19 @@ defmodule SymphonyElixir.AgentRunner do
   end
 
   defp run_on_worker_host(issue, claude_update_recipient, opts, worker_host) do
+    config = Keyword.get(opts, :config)
     Logger.info("Starting worker attempt for #{issue_context(issue)} worker_host=#{worker_host_for_log(worker_host)}")
 
-    case Workspace.create_for_issue(issue, worker_host) do
+    case Workspace.create_for_issue(issue, worker_host, config: config) do
       {:ok, workspace} ->
         send_worker_runtime_info(claude_update_recipient, issue, worker_host, workspace)
 
         try do
-          with :ok <- Workspace.run_before_run_hook(workspace, issue, worker_host) do
+          with :ok <- Workspace.run_before_run_hook(workspace, issue, worker_host, config: config) do
             run_claude_turns(workspace, issue, claude_update_recipient, opts, worker_host)
           end
         after
-          Workspace.run_after_run_hook(workspace, issue, worker_host)
+          Workspace.run_after_run_hook(workspace, issue, worker_host, config: config)
         end
 
       {:error, reason} ->
@@ -77,33 +80,35 @@ defmodule SymphonyElixir.AgentRunner do
   defp send_worker_runtime_info(_recipient, _issue, _worker_host, _workspace), do: :ok
 
   defp run_claude_turns(workspace, issue, claude_update_recipient, opts, worker_host) do
-    max_turns = Keyword.get(opts, :max_turns, Config.settings!().agent.max_turns)
-    issue_state_fetcher = Keyword.get(opts, :issue_state_fetcher, &Tracker.fetch_issue_states_by_ids/1)
+    config = Keyword.get(opts, :config)
+    max_turns = Keyword.get(opts, :max_turns) || (if config, do: config.agent.max_turns, else: Config.settings!().agent.max_turns)
+    issue_state_fetcher = Keyword.get(opts, :issue_state_fetcher) || if config, do: &Tracker.fetch_issue_states_by_ids(&1, config), else: &Tracker.fetch_issue_states_by_ids/1
 
-    with {:ok, session} <- AppServer.start_session(workspace, worker_host: worker_host) do
+    with {:ok, session} <- AppServer.start_session(workspace, worker_host: worker_host, config: config) do
       try do
-        do_run_claude_turns(session, workspace, issue, claude_update_recipient, opts, issue_state_fetcher, 1, max_turns)
+        do_run_claude_turns(session, workspace, issue, claude_update_recipient, opts, issue_state_fetcher, 1, max_turns, config)
       after
         AppServer.stop_session(session)
       end
     end
   end
 
-  defp do_run_claude_turns(app_session, workspace, issue, claude_update_recipient, opts, issue_state_fetcher, turn_number, max_turns) do
-    prompt = build_turn_prompt(issue, opts, turn_number, max_turns)
+  defp do_run_claude_turns(app_session, workspace, issue, claude_update_recipient, opts, issue_state_fetcher, turn_number, max_turns, config) do
+    prompt = build_turn_prompt(issue, opts, turn_number, max_turns, config)
 
     with {:ok, turn_result} <-
            AppServer.run_turn(
              app_session,
              prompt,
              issue,
-             on_message: claude_message_handler(claude_update_recipient, issue)
+             on_message: claude_message_handler(claude_update_recipient, issue),
+             config: config
            ) do
       session_id = turn_result[:session_id]
 
       Logger.info("Completed agent run for #{issue_context(issue)} session_id=#{session_id} workspace=#{workspace} turn=#{turn_number}/#{max_turns}")
 
-      case continue_with_issue?(issue, issue_state_fetcher) do
+      case continue_with_issue?(issue, issue_state_fetcher, config) do
         {:continue, refreshed_issue} when turn_number < max_turns ->
           Logger.info("Continuing agent run for #{issue_context(refreshed_issue)} after normal turn completion turn=#{turn_number}/#{max_turns}")
 
@@ -118,7 +123,8 @@ defmodule SymphonyElixir.AgentRunner do
             opts,
             issue_state_fetcher,
             turn_number + 1,
-            max_turns
+            max_turns,
+            config
           )
 
         {:continue, refreshed_issue} ->
@@ -135,9 +141,18 @@ defmodule SymphonyElixir.AgentRunner do
     end
   end
 
-  defp build_turn_prompt(issue, opts, 1, _max_turns), do: PromptBuilder.build_prompt(issue, opts)
+  defp build_turn_prompt(issue, opts, 1, _max_turns, config) do
+    opts =
+      if config do
+        Keyword.put(opts, :config, config)
+      else
+        opts
+      end
 
-  defp build_turn_prompt(_issue, _opts, turn_number, max_turns) do
+    PromptBuilder.build_prompt(issue, opts)
+  end
+
+  defp build_turn_prompt(_issue, _opts, turn_number, max_turns, _config) do
     """
     Continuation guidance:
 
@@ -149,10 +164,10 @@ defmodule SymphonyElixir.AgentRunner do
     """
   end
 
-  defp continue_with_issue?(%Issue{id: issue_id} = issue, issue_state_fetcher) when is_binary(issue_id) do
+  defp continue_with_issue?(%Issue{id: issue_id} = issue, issue_state_fetcher, config) when is_binary(issue_id) do
     case issue_state_fetcher.([issue_id]) do
       {:ok, [%Issue{} = refreshed_issue | _]} ->
-        if active_issue_state?(refreshed_issue.state) do
+        if active_issue_state?(refreshed_issue.state, config) do
           {:continue, refreshed_issue}
         else
           {:done, refreshed_issue}
@@ -166,16 +181,17 @@ defmodule SymphonyElixir.AgentRunner do
     end
   end
 
-  defp continue_with_issue?(issue, _issue_state_fetcher), do: {:done, issue}
+  defp continue_with_issue?(issue, _issue_state_fetcher, _config), do: {:done, issue}
 
-  defp active_issue_state?(state_name) when is_binary(state_name) do
+  defp active_issue_state?(state_name, config) when is_binary(state_name) do
     normalized_state = normalize_issue_state(state_name)
+    active_states = if config, do: config.tracker.active_states, else: Config.settings!().tracker.active_states
 
-    Config.settings!().tracker.active_states
+    active_states
     |> Enum.any?(fn active_state -> normalize_issue_state(active_state) == normalized_state end)
   end
 
-  defp active_issue_state?(_state_name), do: false
+  defp active_issue_state?(_state_name, _config), do: false
 
   defp selected_worker_host(nil, []), do: nil
 

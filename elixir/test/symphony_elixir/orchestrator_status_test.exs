@@ -1131,16 +1131,14 @@ defmodule SymphonyElixir.OrchestratorStatusTest do
     orchestrator_pid = Process.whereis(SymphonyElixir.Orchestrator)
 
     on_exit(fn ->
-      if is_nil(Process.whereis(SymphonyElixir.Orchestrator)) do
-        case Supervisor.restart_child(SymphonyElixir.Supervisor, SymphonyElixir.Orchestrator) do
-          {:ok, _pid} -> :ok
-          {:error, {:already_started, _pid}} -> :ok
-        end
+      case Process.whereis(SymphonyElixir.Orchestrator) do
+        pid when is_pid(pid) -> GenServer.stop(pid)
+        _ -> :ok
       end
     end)
 
     if is_pid(orchestrator_pid) do
-      assert :ok = Supervisor.terminate_child(SymphonyElixir.Supervisor, SymphonyElixir.Orchestrator)
+      GenServer.stop(orchestrator_pid)
     end
 
     {:ok, pid} =

@@ -9,9 +9,20 @@ defmodule SymphonyElixir.PromptBuilder do
 
   @spec build_prompt(SymphonyElixir.Linear.Issue.t(), keyword()) :: String.t()
   def build_prompt(issue, opts \\ []) do
+    prompt_template = Keyword.get(opts, :prompt_template)
+    config = Keyword.get(opts, :config)
+
     template =
-      Workflow.current()
-      |> prompt_template!()
+      if prompt_template do
+        prompt_template
+      else
+        if config do
+          config_prompt_template(config)
+        else
+          Workflow.current()
+          |> prompt_template!()
+        end
+      end
       |> parse_template!()
 
     template
@@ -23,6 +34,12 @@ defmodule SymphonyElixir.PromptBuilder do
       @render_opts
     )
     |> IO.iodata_to_binary()
+  end
+
+  defp config_prompt_template(_config) do
+    # Config.Schema does not store the prompt template; it must be passed via opts.
+    # Fall back to the global workflow prompt for backward compatibility.
+    Config.workflow_prompt()
   end
 
   defp prompt_template!({:ok, %{prompt_template: prompt}}), do: default_prompt(prompt)

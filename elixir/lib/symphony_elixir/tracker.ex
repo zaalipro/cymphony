@@ -51,6 +51,11 @@ defmodule SymphonyElixir.Tracker do
     adapter().update_issue_state(issue_id, state_name)
   end
 
+  @spec update_issue_state(String.t(), String.t(), Config.Schema.t()) :: :ok | {:error, term()}
+  def update_issue_state(issue_id, state_name, config) when is_struct(config, Config.Schema) do
+    adapter(config).update_issue_state(issue_id, state_name, config)
+  end
+
   @spec adapter() :: module()
   def adapter do
     case Config.settings!().tracker.kind do

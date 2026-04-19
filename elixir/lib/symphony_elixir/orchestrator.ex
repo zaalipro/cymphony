@@ -29,6 +29,7 @@ defmodule SymphonyElixir.Orchestrator do
     defstruct [
       :config,
       :project_name,
+      :prompt_template,
       :poll_interval_ms,
       :max_concurrent_agents,
       :next_poll_due_at_ms,
@@ -54,11 +55,12 @@ defmodule SymphonyElixir.Orchestrator do
   def init(opts) do
     now_ms = System.monotonic_time(:millisecond)
     project_name = Keyword.get(opts, :project_name)
-    config = load_project_config_from_store(project_name)
+    {config, prompt_template} = load_project_config_from_store(project_name)
 
     state = %State{
       config: config,
       project_name: project_name,
+      prompt_template: prompt_template,
       poll_interval_ms: config.polling.interval_ms,
       max_concurrent_agents: config.agent.max_concurrent_agents,
       next_poll_due_at_ms: now_ms,
@@ -700,6 +702,22 @@ defmodule SymphonyElixir.Orchestrator do
     |> MapSet.new()
   end
 
+  defp transition_to_in_progress(%Issue{} = issue, %State{config: nil}) do
+    transition_to_in_progress(issue)
+  end
+
+  defp transition_to_in_progress(%Issue{} = issue, %State{config: config}) do
+    if normalize_issue_state(issue.state || "") == "todo" do
+      case Tracker.update_issue_state(issue.id, "In Progress", config) do
+        :ok ->
+          Logger.info("Transitioned issue to In Progress: #{issue_context(issue)}")
+
+        {:error, reason} ->
+          Logger.warning("Failed to transition issue to In Progress: #{issue_context(issue)} reason=#{inspect(reason)}")
+      end
+    end
+  end
+
   defp transition_to_in_progress(%Issue{} = issue) do
     if normalize_issue_state(issue.state || "") == "todo" do
       case Tracker.update_issue_state(issue.id, "In Progress") do
@@ -715,7 +733,7 @@ defmodule SymphonyElixir.Orchestrator do
   defp dispatch_issue(%State{} = state, issue, attempt \\ nil, preferred_worker_host \\ nil) do
     case revalidate_issue_for_dispatch(issue, &Tracker.fetch_issue_states_by_ids(&1, state.config), terminal_state_set(state)) do
       {:ok, %Issue{} = refreshed_issue} ->
-        transition_to_in_progress(refreshed_issue)
+        transition_to_in_progress(refreshed_issue, state)
         do_dispatch_issue(state, refreshed_issue, attempt, preferred_worker_host)
 
       {:skip, :missing} ->
@@ -748,7 +766,12 @@ defmodule SymphonyElixir.Orchestrator do
 
   defp spawn_issue_on_worker_host(%State{} = state, issue, attempt, recipient, worker_host) do
     case Task.Supervisor.start_child(SymphonyElixir.TaskSupervisor, fn ->
-           AgentRunner.run(issue, recipient, attempt: attempt, worker_host: worker_host)
+           AgentRunner.run(issue, recipient,
+             attempt: attempt,
+             worker_host: worker_host,
+             config: state.config,
+             prompt_template: state.prompt_template
+           )
          end) do
       {:ok, pid} ->
         ref = Process.monitor(pid)
@@ -1383,26 +1406,39 @@ defmodule SymphonyElixir.Orchestrator do
 
   defp record_session_completion_totals(state, _running_entry), do: state
 
-  # Loads config from the project-specific WorkflowStore via the registry.
+  # Loads config and prompt_template from the project-specific WorkflowStore.
+  # Returns {config, prompt_template}.
   # Falls back to global Config.settings!() for legacy single-project mode
   # or when the project store is not yet registered.
-  defp load_project_config_from_store(nil), do: Config.settings!()
+  defp load_project_config_from_store(nil) do
+    {Config.settings!(), Config.workflow_prompt()}
+  end
 
   defp load_project_config_from_store(project_name) when is_binary(project_name) do
     case ProjectSupervisor.lookup(project_name, :workflow_store) do
       nil ->
-        Config.settings!()
+        Logger.warning("Project workflow store not found for '#{project_name}', falling back to global config")
+        {Config.settings!(), Config.workflow_prompt()}
 
       store_pid ->
         case WorkflowStore.current(store_pid) do
-          {:ok, %{config: raw_config}} when is_map(raw_config) ->
+          {:ok, %{config: raw_config, prompt_template: prompt_template}} when is_map(raw_config) ->
             case Config.Schema.parse(raw_config) do
-              {:ok, settings} -> settings
-              {:error, _} -> Config.settings!()
+              {:ok, settings} ->
+                {settings, prompt_template}
+
+              {:error, reason} ->
+                Logger.warning("Failed to parse config for project '#{project_name}': #{inspect(reason)}; falling back to global config")
+                {Config.settings!(), Config.workflow_prompt()}
             end
 
-          _ ->
-            Config.settings!()
+          {:error, reason} ->
+            Logger.warning("Workflow store returned error for project '#{project_name}': #{inspect(reason)}; falling back to global config")
+            {Config.settings!(), Config.workflow_prompt()}
+
+          other ->
+            Logger.warning("Unexpected workflow store response for project '#{project_name}': #{inspect(other)}; falling back to global config")
+            {Config.settings!(), Config.workflow_prompt()}
         end
     end
   end

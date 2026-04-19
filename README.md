@@ -33,9 +33,11 @@ First run triggers an interactive setup (GitHub repo URL, Linear project slug, A
 
 ```bash
 cymphony                       # Run with saved config
+cymphony p frontend            # Run only the "frontend" project
 cymphony s                     # Re-run setup
-cymphony l <path>              # Override log directory
-cymphony p <port>              # Enable web dashboard (e.g. p 4040)
+cymphony a                     # Add a project
+cymphony l                     # List projects
+cymphony v                     # Show version
 cymphony h                     # Show help
 ```
 

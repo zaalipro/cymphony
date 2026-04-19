@@ -212,7 +212,8 @@ defmodule SymphonyElixir.Linear.Client do
 
       ids ->
         with {:ok, assignee_filter} <- routing_assignee_filter(config) do
-          do_fetch_issue_states(ids, assignee_filter, &graphql/2)
+          graphql_fun = fn query, variables -> graphql(query, variables, graphql_opts_for_config(config)) end
+          do_fetch_issue_states(ids, assignee_filter, graphql_fun)
         end
     end
   end
@@ -492,9 +493,11 @@ defmodule SymphonyElixir.Linear.Client do
     )
   end
 
-  defp graphql_opts_for_config(nil), do: []
+  @doc false
+  @spec graphql_opts_for_config(term()) :: keyword()
+  def graphql_opts_for_config(nil), do: []
 
-  defp graphql_opts_for_config(config) when is_struct(config, Config.Schema) do
+  def graphql_opts_for_config(config) when is_struct(config, Config.Schema) do
     [request_fun: fn payload, headers -> post_graphql_request(payload, headers, config) end, graphql_headers_fun: fn -> graphql_headers(config) end]
   end
 

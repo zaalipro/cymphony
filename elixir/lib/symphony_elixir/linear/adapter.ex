@@ -84,6 +84,22 @@ defmodule SymphonyElixir.Linear.Adapter do
     end
   end
 
+  @spec update_issue_state(String.t(), String.t(), term()) :: :ok | {:error, term()}
+  def update_issue_state(issue_id, state_name, config)
+      when is_binary(issue_id) and is_binary(state_name) do
+    graphql_fun = graphql_with_config(config)
+
+    with {:ok, state_id} <- resolve_state_id(issue_id, state_name, config),
+         {:ok, response} <- graphql_fun.(@update_state_mutation, %{issueId: issue_id, stateId: state_id}),
+         true <- get_in(response, ["data", "issueUpdate", "success"]) == true do
+      :ok
+    else
+      false -> {:error, :issue_update_failed}
+      {:error, reason} -> {:error, reason}
+      _ -> {:error, :issue_update_failed}
+    end
+  end
+
   defp client_module do
     Application.get_env(:symphony_elixir, :linear_client_module, Client)
   end
@@ -98,5 +114,24 @@ defmodule SymphonyElixir.Linear.Adapter do
       {:error, reason} -> {:error, reason}
       _ -> {:error, :state_not_found}
     end
+  end
+
+  defp resolve_state_id(issue_id, state_name, config) do
+    graphql_fun = graphql_with_config(config)
+
+    with {:ok, response} <- graphql_fun.(@state_lookup_query, %{issueId: issue_id, stateName: state_name}),
+         state_id when is_binary(state_id) <-
+           get_in(response, ["data", "issue", "team", "states", "nodes", Access.at(0), "id"]) do
+      {:ok, state_id}
+    else
+      {:error, reason} -> {:error, reason}
+      _ -> {:error, :state_not_found}
+    end
+  end
+
+  defp graphql_with_config(config) do
+    client = client_module()
+    opts = client.graphql_opts_for_config(config)
+    fn query, variables -> client.graphql(query, variables, opts) end
   end
 end

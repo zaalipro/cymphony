@@ -16,7 +16,8 @@ defmodule SymphonyElixir.CLI do
     logs_root: :string,
     port: :integer,
     project: :string,
-    setup: :boolean
+    setup: :boolean,
+    version: :boolean
   ]
 
   @type ensure_started_result :: {:ok, [atom()]} | {:error, term()}
@@ -48,6 +49,9 @@ defmodule SymphonyElixir.CLI do
       help_requested?(args) ->
         {:error, help_text()}
 
+      version_requested?(args) ->
+        show_version()
+
       list_requested?(args) ->
         list_projects()
 
@@ -67,15 +71,21 @@ defmodule SymphonyElixir.CLI do
 
   defp expand_shorthands(["h" | rest]), do: ["--help" | expand_shorthands(rest)]
   defp expand_shorthands(["s" | rest]), do: ["--setup" | expand_shorthands(rest)]
-  defp expand_shorthands(["l", value | rest]), do: ["--logs-root", value | expand_shorthands(rest)]
-  defp expand_shorthands(["l" | _]), do: ["--help"]
-  defp expand_shorthands(["p", value | rest]), do: ["--port", value | expand_shorthands(rest)]
+  defp expand_shorthands(["l" | rest]), do: ["list" | expand_shorthands(rest)]
+  defp expand_shorthands(["a" | rest]), do: ["add-project" | expand_shorthands(rest)]
+  defp expand_shorthands(["v" | rest]), do: ["--version" | expand_shorthands(rest)]
+  defp expand_shorthands(["p", value | rest]), do: ["--project", value | expand_shorthands(rest)]
   defp expand_shorthands(["p" | _]), do: ["--help"]
   defp expand_shorthands([arg | rest]), do: [arg | expand_shorthands(rest)]
 
   defp help_requested?(args) do
     {opts, _, _} = OptionParser.parse(args, strict: @switches)
     Keyword.get(opts, :help, false)
+  end
+
+  defp version_requested?(args) do
+    {opts, _, _} = OptionParser.parse(args, strict: @switches)
+    Keyword.get(opts, :version, false)
   end
 
   defp list_requested?(args) do
@@ -91,16 +101,12 @@ defmodule SymphonyElixir.CLI do
 
     Usage:
       cymphony                       Run with saved config (all projects)
-      cymphony --project frontend    Run only the "frontend" project
+      cymphony p frontend            Run only the "frontend" project
       cymphony s                     Run setup / onboarding wizard
-      cymphony add-project           Add a project to existing config
-      cymphony list                  List configured projects
-      cymphony l <path>              Override log directory
-      cymphony p <port>              Override HTTP server port
+      cymphony a                     Add a project to existing config
+      cymphony l                     List configured projects
+      cymphony v                     Show version
       cymphony h                     Show this help
-
-    Shorthands can be combined:
-      cymphony s l /tmp/logs p 8080
 
     Flags:
       --setup                  Force onboarding wizard
@@ -108,6 +114,7 @@ defmodule SymphonyElixir.CLI do
       --logs-root <path>       Override log directory
       --port <port>            Override HTTP server port
       --help, -h               Show this help
+      --version                Show version
 
     Legacy mode (advanced):
       cymphony [WORKFLOW.md] --i-understand-that-this-will-be-running-without-the-usual-guardrails
@@ -152,6 +159,12 @@ defmodule SymphonyElixir.CLI do
       {:ok, _config} -> :ok
       {:error, reason} -> {:error, inspect(reason)}
     end
+  end
+
+  defp show_version do
+    version = Application.spec(:symphony_elixir, :vsn) || "unknown"
+    IO.puts("cymphony #{version}")
+    :ok
   end
 
   defp cymphony_evaluate(args, deps) do
@@ -301,7 +314,7 @@ defmodule SymphonyElixir.CLI do
 
   @spec usage_message() :: String.t()
   defp usage_message do
-    "Usage: cymphony [--setup] [--logs-root <path>] [--port <port>]\n" <>
+    "Usage: cymphony [--setup] [--project <name>] [--logs-root <path>] [--port <port>]\n" <>
       "       cymphony [--logs-root <path>] [--port <port>] [path-to-WORKFLOW.md] --i-understand-that-this-will-be-running-without-the-usual-guardrails"
   end
 
