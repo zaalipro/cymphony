@@ -26,6 +26,23 @@ defmodule SymphonyElixir.Orchestrator do
     Runtime state for the orchestrator polling loop.
     """
 
+    @type t :: %__MODULE__{
+            config: SymphonyElixir.Config.Schema.t() | nil,
+            project_name: String.t() | nil,
+            poll_interval_ms: non_neg_integer(),
+            max_concurrent_agents: non_neg_integer(),
+            next_poll_due_at_ms: integer(),
+            poll_check_in_progress: boolean(),
+            tick_timer_ref: reference() | nil,
+            tick_token: reference() | nil,
+            running: map(),
+            completed: MapSet.t(),
+            claimed: MapSet.t(),
+            retry_attempts: map(),
+            claude_totals: map() | nil,
+            claude_rate_limits: map() | nil
+          }
+
     defstruct [
       :config,
       :project_name,
@@ -936,6 +953,7 @@ defmodule SymphonyElixir.Orchestrator do
 
   defp cleanup_issue_workspace(_identifier, _worker_host), do: :ok
 
+  @dialyzer {:nowarn_function, run_terminal_workspace_cleanup: 1}
   defp run_terminal_workspace_cleanup(%State{config: nil}) do
     terminal_states = load_config().tracker.terminal_states
     do_terminal_workspace_cleanup(terminal_states, load_config())

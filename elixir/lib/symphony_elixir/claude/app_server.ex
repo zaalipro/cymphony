@@ -392,6 +392,8 @@ defmodule SymphonyElixir.Claude.AppServer do
     end
   end
 
+  @dialyzer {:nowarn_function, port_metadata: 2}
+
   defp port_metadata(port, worker_host) when is_port(port) do
     base_metadata =
       case :erlang.port_info(port, :os_pid) do
@@ -408,6 +410,7 @@ defmodule SymphonyElixir.Claude.AppServer do
     end
   end
 
+  @dialyzer {:nowarn_function, port_metadata: 2}
   defp port_metadata(_port, worker_host) do
     case worker_host do
       host when is_binary(host) -> %{worker_host: host}
