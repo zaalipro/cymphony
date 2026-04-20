@@ -162,9 +162,12 @@ defmodule SymphonyElixir.CLI do
   defp cymphony_mode?(args) do
     {opts, positional, _invalid} = OptionParser.parse(args, strict: @switches)
 
-    positional == [] and
-      not Keyword.has_key?(opts, @acknowledgement_switch) and
-      not File.regular?(Path.expand("WORKFLOW.md"))
+    # Daemon-internal processes are always spawned by cymphony itself
+    # and should always use config-based cymphony mode.
+    Keyword.get(opts, :daemon_internal, false) or
+      (positional == [] and
+         not Keyword.has_key?(opts, @acknowledgement_switch) and
+         not File.regular?(Path.expand("WORKFLOW.md")))
   end
 
   defp list_projects do
@@ -321,7 +324,7 @@ defmodule SymphonyElixir.CLI do
           :ok = write_pidfile(System.pid())
         end
 
-        with :ok <- require_guardrails_acknowledgement(opts),
+        with :ok <- maybe_require_guardrails(opts),
              :ok <- maybe_set_logs_root(opts, deps),
              :ok <- maybe_set_server_port(opts, deps) do
           run(Path.expand("WORKFLOW.md"), deps)
@@ -332,7 +335,7 @@ defmodule SymphonyElixir.CLI do
           :ok = write_pidfile(System.pid())
         end
 
-        with :ok <- require_guardrails_acknowledgement(opts),
+        with :ok <- maybe_require_guardrails(opts),
              :ok <- maybe_set_logs_root(opts, deps),
              :ok <- maybe_set_server_port(opts, deps) do
           run(workflow_path, deps)
@@ -392,6 +395,14 @@ defmodule SymphonyElixir.CLI do
         else
           :ok = deps.set_logs_root.(Path.expand(logs_root))
         end
+    end
+  end
+
+  defp maybe_require_guardrails(opts) do
+    if Keyword.get(opts, :daemon_internal, false) do
+      :ok
+    else
+      require_guardrails_acknowledgement(opts)
     end
   end
 
