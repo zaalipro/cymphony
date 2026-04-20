@@ -211,7 +211,7 @@ defmodule SymphonyElixir.CLITest do
     end
 
     test "l lists projects" do
-      assert :ok = CLI.evaluate(["l"])
+      assert :done = CLI.evaluate(["l"])
     end
 
     test "p without value shows help" do

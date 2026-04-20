@@ -12,10 +12,14 @@ defmodule SymphonyElixir.CLI do
   @acknowledgement_switch :i_understand_that_this_will_be_running_without_the_usual_guardrails
   @switches [
     {@acknowledgement_switch, :boolean},
+    background: :boolean,
+    background_stop: :boolean,
+    daemon_internal: :boolean,
     help: :boolean,
     logs_root: :string,
     port: :integer,
     project: :string,
+    restart: :boolean,
     setup: :boolean,
     version: :boolean
   ]
@@ -35,13 +39,17 @@ defmodule SymphonyElixir.CLI do
       :ok ->
         wait_for_shutdown()
 
+      :done ->
+        :ok
+
       {:error, message} ->
+        cleanup_pidfile()
         IO.puts(:stderr, message)
         System.halt(1)
     end
   end
 
-  @spec evaluate([String.t()], deps()) :: :ok | {:error, String.t()}
+  @spec evaluate([String.t()], deps()) :: :ok | :done | {:error, String.t()}
   def evaluate(args, deps \\ runtime_deps()) do
     args = expand_shorthands(args)
 
@@ -58,6 +66,15 @@ defmodule SymphonyElixir.CLI do
       add_project_requested?(args) ->
         add_project()
 
+      stop_background_requested?(args) ->
+        stop_background()
+
+      restart_requested?(args) ->
+        restart_background(args, deps)
+
+      background_requested?(args) ->
+        run_background(args, deps)
+
       true ->
         if cymphony_mode?(args) do
           cymphony_evaluate(args, deps)
@@ -69,7 +86,10 @@ defmodule SymphonyElixir.CLI do
 
   defp expand_shorthands([]), do: []
 
+  defp expand_shorthands(["b" | rest]), do: ["--background" | expand_shorthands(rest)]
+  defp expand_shorthands(["bs" | rest]), do: ["--background-stop" | expand_shorthands(rest)]
   defp expand_shorthands(["h" | rest]), do: ["--help" | expand_shorthands(rest)]
+  defp expand_shorthands(["r" | rest]), do: ["--restart" | expand_shorthands(rest)]
   defp expand_shorthands(["s" | rest]), do: ["--setup" | expand_shorthands(rest)]
   defp expand_shorthands(["l" | rest]), do: ["list" | expand_shorthands(rest)]
   defp expand_shorthands(["a" | rest]), do: ["add-project" | expand_shorthands(rest)]
@@ -77,6 +97,21 @@ defmodule SymphonyElixir.CLI do
   defp expand_shorthands(["p", value | rest]), do: ["--project", value | expand_shorthands(rest)]
   defp expand_shorthands(["p" | _]), do: ["--help"]
   defp expand_shorthands([arg | rest]), do: [arg | expand_shorthands(rest)]
+
+  defp background_requested?(args) do
+    {opts, _, _} = OptionParser.parse(args, strict: @switches)
+    Keyword.get(opts, :background, false)
+  end
+
+  defp stop_background_requested?(args) do
+    {opts, _, _} = OptionParser.parse(args, strict: @switches)
+    Keyword.get(opts, :background_stop, false)
+  end
+
+  defp restart_requested?(args) do
+    {opts, _, _} = OptionParser.parse(args, strict: @switches)
+    Keyword.get(opts, :restart, false)
+  end
 
   defp help_requested?(args) do
     {opts, _, _} = OptionParser.parse(args, strict: @switches)
@@ -102,6 +137,9 @@ defmodule SymphonyElixir.CLI do
     Usage:
       cymphony                       Run with saved config (all projects)
       cymphony p frontend            Run only the "frontend" project
+      cymphony b                     Run in background
+      cymphony bs                    Stop background process
+      cymphony r                     Restart background process
       cymphony s                     Run setup / onboarding wizard
       cymphony a                     Add a project to existing config
       cymphony l                     List configured projects
@@ -135,7 +173,7 @@ defmodule SymphonyElixir.CLI do
         case projects do
           [] ->
             IO.puts("No projects configured. Run `cymphony s` to set up.")
-            :ok
+            :done
 
           projects ->
             IO.puts("Configured projects:\n")
@@ -146,7 +184,7 @@ defmodule SymphonyElixir.CLI do
               IO.puts("  #{name} (slug: #{slug})")
             end)
 
-            :ok
+            :done
         end
 
       {:error, reason} ->
@@ -156,7 +194,7 @@ defmodule SymphonyElixir.CLI do
 
   defp add_project do
     case Onboarding.add_project() do
-      {:ok, _config} -> :ok
+      {:ok, _config} -> :done
       {:error, reason} -> {:error, inspect(reason)}
     end
   end
@@ -164,12 +202,16 @@ defmodule SymphonyElixir.CLI do
   defp show_version do
     version = Application.spec(:symphony_elixir, :vsn) || "unknown"
     IO.puts("cymphony #{version}")
-    :ok
+    :done
   end
 
   defp cymphony_evaluate(args, deps) do
     {opts, _, _} = OptionParser.parse(args, strict: @switches)
     project_filter = Keyword.get(opts, :project)
+
+    if Keyword.get(opts, :daemon_internal, false) do
+      :ok = write_pidfile(System.pid())
+    end
 
     config =
       if Keyword.get(opts, :setup, false) or not CymphonyConfig.exists?() do
@@ -275,6 +317,10 @@ defmodule SymphonyElixir.CLI do
   defp legacy_evaluate(args, deps) do
     case OptionParser.parse(args, strict: @switches) do
       {opts, [], []} ->
+        if Keyword.get(opts, :daemon_internal, false) do
+          :ok = write_pidfile(System.pid())
+        end
+
         with :ok <- require_guardrails_acknowledgement(opts),
              :ok <- maybe_set_logs_root(opts, deps),
              :ok <- maybe_set_server_port(opts, deps) do
@@ -282,6 +328,10 @@ defmodule SymphonyElixir.CLI do
         end
 
       {opts, [workflow_path], []} ->
+        if Keyword.get(opts, :daemon_internal, false) do
+          :ok = write_pidfile(System.pid())
+        end
+
         with :ok <- require_guardrails_acknowledgement(opts),
              :ok <- maybe_set_logs_root(opts, deps),
              :ok <- maybe_set_server_port(opts, deps) do
@@ -416,6 +466,7 @@ defmodule SymphonyElixir.CLI do
   defp wait_for_shutdown do
     case Process.whereis(SymphonyElixir.Supervisor) do
       nil ->
+        cleanup_pidfile()
         IO.puts(:stderr, "Symphony supervisor is not running")
         System.halt(1)
 
@@ -424,6 +475,8 @@ defmodule SymphonyElixir.CLI do
 
         receive do
           {:DOWN, ^ref, :process, ^pid, reason} ->
+            cleanup_pidfile()
+
             case reason do
               :normal -> System.halt(0)
               _ -> System.halt(1)
@@ -431,4 +484,176 @@ defmodule SymphonyElixir.CLI do
         end
     end
   end
+
+  # ─── Background process management ───
+
+  defp run_background(args, deps) do
+    case read_pidfile() do
+      {:ok, pid} ->
+        if process_alive?(pid) do
+          {:error, "Cymphony is already running in background (PID: #{pid})"}
+        else
+          remove_pidfile()
+          do_run_background(args, deps)
+        end
+
+      :error ->
+        do_run_background(args, deps)
+    end
+  end
+
+  defp do_run_background(args, _deps) do
+    filtered_args =
+      args
+      |> Enum.reject(&(&1 == "--background"))
+      |> Kernel.++(["--daemon-internal"])
+
+    escript = escript_path()
+    log_file = Path.join(CymphonyConfig.config_dir(), "cymphony.log")
+
+    # Use nohup to detach from terminal; the inner & backgrounds the process
+    # so the outer sh exits immediately.
+    cmd =
+      "nohup #{escript} #{Enum.join(filtered_args, " ")} > #{log_file} 2>&1 </dev/null &"
+
+    _ = System.cmd("sh", ["-c", cmd], stderr_to_stdout: true)
+
+    # Give the child process a moment to write its pidfile
+    case wait_for_pidfile(5_000) do
+      {:ok, pid} ->
+        IO.puts("Cymphony started in background (PID: #{pid})")
+        :done
+
+      :timeout ->
+        IO.puts("Cymphony started in background (PID unknown)")
+        :done
+    end
+  end
+
+  defp stop_background do
+    case read_pidfile() do
+      :error ->
+        {:error, "Cymphony is not running in background"}
+
+      {:ok, pid} ->
+        if not process_alive?(pid) do
+          remove_pidfile()
+          {:error, "Cymphony is not running in background (stale pidfile removed)"}
+        else
+          System.cmd("kill", ["-TERM", pid])
+
+          case wait_for_process_death(pid, 10_000) do
+            :ok ->
+              remove_pidfile()
+              IO.puts("Cymphony stopped (PID: #{pid})")
+              :done
+
+            :timeout ->
+              {:error, "Timed out waiting for Cymphony (PID: #{pid}) to stop"}
+          end
+        end
+    end
+  end
+
+  defp restart_background(args, deps) do
+    _ = stop_background()
+    run_background(args, deps)
+  end
+
+  # ─── Pidfile helpers ───
+
+  defp pidfile_path do
+    Path.join(CymphonyConfig.config_dir(), "cymphony.pid")
+  end
+
+  defp read_pidfile do
+    case File.read(pidfile_path()) do
+      {:ok, content} ->
+        pid = String.trim(content)
+        if pid != "", do: {:ok, pid}, else: :error
+
+      {:error, _} ->
+        :error
+    end
+  end
+
+  defp write_pidfile(pid) when is_binary(pid) do
+    :ok = File.mkdir_p(CymphonyConfig.config_dir())
+    File.write(pidfile_path(), pid)
+  end
+
+  defp write_pidfile(pid) when is_integer(pid) do
+    write_pidfile(Integer.to_string(pid))
+  end
+
+  defp remove_pidfile do
+    case File.rm(pidfile_path()) do
+      :ok -> :ok
+      {:error, _} -> :ok
+    end
+  end
+
+  defp cleanup_pidfile do
+    case read_pidfile() do
+      {:ok, pid} ->
+        if pid == System.pid() do
+          remove_pidfile()
+        end
+
+      :error ->
+        :ok
+    end
+  end
+
+  defp process_alive?(pid) when is_binary(pid) do
+    case System.cmd("kill", ["-0", pid], stderr_to_stdout: true) do
+      {_, 0} -> true
+      _ -> false
+    end
+  end
+
+  defp escript_path do
+    script = :escript.script_name()
+
+    cond do
+      is_binary(script) and script != "" ->
+        script
+
+      is_list(script) and script != [] ->
+        List.to_string(script)
+
+      true ->
+        case :init.get_argument(:progname) do
+          {:ok, [[path]]} when path != ~c"erl" and path != ~c"erlexec" ->
+            List.to_string(path)
+
+          _ ->
+            System.find_executable("cymphony") || "cymphony"
+        end
+    end
+  end
+
+  defp wait_for_pidfile(timeout_ms) when timeout_ms > 0 do
+    case read_pidfile() do
+      {:ok, pid} ->
+        {:ok, pid}
+
+      :error ->
+        Process.sleep(200)
+        wait_for_pidfile(max(0, timeout_ms - 200))
+    end
+  end
+
+  defp wait_for_pidfile(_timeout_ms), do: :timeout
+
+  defp wait_for_process_death(pid, timeout_ms) when timeout_ms > 0 do
+    if process_alive?(pid) do
+      Process.sleep(200)
+      wait_for_process_death(pid, max(0, timeout_ms - 200))
+    else
+      :ok
+    end
+  end
+
+  defp wait_for_process_death(_pid, _timeout_ms), do: :timeout
 end
