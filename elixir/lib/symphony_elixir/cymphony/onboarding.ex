@@ -92,7 +92,7 @@ defmodule SymphonyElixir.Cymphony.Onboarding do
          {:ok, github_repo} <- ask_required("GitHub repo URL (e.g. git@github.com:user/repo.git): "),
          {:ok, project_slug} <- ask_required("Linear project slug (e.g. myteam-ab12cd34ef56): "),
          {:ok, api_key} <- ask_linear_api_key(),
-         {:ok, workspace_root} <- ask_optional("Workspace root [~/cymphony-workspaces/#{name}]: ", "~/cymphony-workspaces/#{name}"),
+         {:ok, workspace_root} <- ask_optional("Workspace root [~/.cymphony/workspaces/#{name}]: ", "~/.cymphony/workspaces/#{name}"),
          {:ok, polling_interval} <- ask_optional("Polling interval in seconds [5]: ", "5") do
       polling_ms =
         case Integer.parse(polling_interval) do

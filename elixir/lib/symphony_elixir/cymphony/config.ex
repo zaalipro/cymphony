@@ -86,7 +86,7 @@ defmodule SymphonyElixir.Cymphony.Config do
   @spec to_workflow_yaml(map()) :: String.t()
   def to_workflow_yaml(config) do
     github_repo = Map.get(config, "github_repo_url", "")
-    workspace_root = Map.get(config, "workspace_root", "~/cymphony-workspaces")
+    workspace_root = Map.get(config, "workspace_root", "~/.cymphony/workspaces")
     polling_ms = Map.get(config, "polling_interval_ms", 5000)
 
     hooks_section =
