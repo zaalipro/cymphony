@@ -1,15 +1,16 @@
 # Cymphony Elixir
 
-This directory contains the current Elixir/OTP implementation of Cymphony, based on
-[`SPEC.md`](../SPEC.md) at the repository root.
+> A rewrite of [openai/symphony](https://github.com/openai/symphony) that uses **Claude Code** instead of Codex as the underlying coding agent.
 
-> [!WARNING]
-> Cymphony Elixir is prototype software intended for evaluation only and is presented as-is.
-> We recommend implementing your own hardened version based on `SPEC.md`.
+This directory contains the current Elixir/OTP implementation of Cymphony, based on [`SPEC.md`](../SPEC.md) at the repository root.
 
 ## Screenshot
 
 ![Cymphony Elixir screenshot](../.github/media/elixir-screenshot.png)
+
+## Background
+
+Cymphony started as OpenAI's Symphony project — a service for orchestrating coding agents against issue trackers. This is a reimagining that swaps Codex for Anthropic's Claude Code, built in Elixir/OTP for rock-solid long-running process supervision and hot code reloading.
 
 ## Install via Homebrew (macOS)
 
@@ -82,28 +83,20 @@ brew upgrade zaalipro/cymphony/cymphony
 4. Sends a workflow prompt to Claude Code
 5. Keeps Claude Code working on the issue until the work is done
 
-Claude Code has built-in Read, Edit, and Bash tools. For Linear GraphQL operations, Claude Code
-can use `curl` directly when the `LINEAR_API_KEY` environment variable is available.
+Claude Code has built-in Read, Edit, and Bash tools. For Linear GraphQL operations, Claude Code can use `curl` directly when the `LINEAR_API_KEY` environment variable is available.
 
-If a claimed issue moves to a terminal state (`Done`, `Closed`, `Cancelled`, or `Duplicate`),
-Cymphony stops the active agent for that issue and cleans up matching workspaces.
+If a claimed issue moves to a terminal state (`Done`, `Closed`, `Cancelled`, or `Duplicate`), Cymphony stops the active agent for that issue and cleans up matching workspaces.
 
 ## How to use it
 
-1. Make sure your codebase is set up to work well with agents: see
-   [Harness engineering](https://openai.com/index/harness-engineering/).
-2. Get a new personal token in Linear via Settings → Security & access → Personal API keys, and
-   set it as the `LINEAR_API_KEY` environment variable.
+1. Make sure your codebase is set up to work well with agents: see [Harness engineering](https://openai.com/index/harness-engineering/).
+2. Get a new personal token in Linear via Settings → Security & access → Personal API keys, and set it as the `LINEAR_API_KEY` environment variable.
 3. Copy this directory's `WORKFLOW.md` to your repo.
 4. Optionally copy the `commit`, `push`, `pull`, `land`, and `linear` skills to your repo.
-   - The `linear` skill uses Bash `curl` for raw Linear GraphQL operations such as comment
-     editing or upload flows.
+   - The `linear` skill uses Bash `curl` for raw Linear GraphQL operations such as comment editing or upload flows.
 5. Customize the copied `WORKFLOW.md` file for your project.
-   - To get your project's slug, right-click the project and copy its URL. The slug is part of the
-     URL.
-   - When creating a workflow based on this repo, note that it depends on non-standard Linear
-     issue statuses: "Rework", "Human Review", and "Merging". You can customize them in
-     Team Settings → Workflow in Linear.
+   - To get your project's slug, right-click the project and copy its URL. The slug is part of the URL.
+   - When creating a workflow based on this repo, note that it depends on non-standard Linear issue statuses: "Rework", "Human Review", and "Merging". You can customize them in Team Settings → Workflow in Linear.
 6. Follow the instructions below to install the required runtime dependencies and start the service.
 
 ## Prerequisites
@@ -142,8 +135,7 @@ Optional flags:
 - `--logs-root` tells Cymphony to write logs under a different directory (default: `./log`)
 - `--port` also starts the Phoenix observability service (default: disabled)
 
-The `WORKFLOW.md` file uses YAML front matter for configuration, plus a Markdown body used as the
-Claude Code session prompt.
+The `WORKFLOW.md` file uses YAML front matter for configuration, plus a Markdown body used as the Claude Code session prompt.
 
 Minimal example:
 
@@ -179,19 +171,13 @@ Notes:
   - `claude.thread_sandbox` defaults to `workspace-write`
 - Supported `claude.approval_policy` values map to Claude Code `--permission-mode` and `--allowedTools` flags.
 - Supported `claude.permission_mode` values: `acceptEdits`, `plan`, `acceptAll`.
-- `agent.max_turns` caps how many back-to-back Claude Code turns Cymphony will run in a single agent
-  invocation when a turn completes normally but the issue is still in an active state. Default: `20`.
-- If the Markdown body is blank, Cymphony uses a default prompt template that includes the issue
-  identifier, title, and body.
-- Use `hooks.after_create` to bootstrap a fresh workspace. For a Git-backed repo, you can run
-  `git clone ... .` there, along with any other setup commands you need.
-- If a hook needs `mise exec` inside a freshly cloned workspace, trust the repo config and fetch
-  the project dependencies in `hooks.after_create` before invoking `mise` later from other hooks.
+- `agent.max_turns` caps how many back-to-back Claude Code turns Cymphony will run in a single agent invocation when a turn completes normally but the issue is still in an active state. Default: `20`.
+- If the Markdown body is blank, Cymphony uses a default prompt template that includes the issue identifier, title, and body.
+- Use `hooks.after_create` to bootstrap a fresh workspace. For a Git-backed repo, you can run `git clone ... .` there, along with any other setup commands you need.
+- If a hook needs `mise exec` inside a freshly cloned workspace, trust the repo config and fetch the project dependencies in `hooks.after_create` before invoking `mise` later from other hooks.
 - `tracker.api_key` reads from `LINEAR_API_KEY` when unset or when value is `$LINEAR_API_KEY`.
 - For path values, `~` is expanded to the home directory.
-- For env-backed path values, use `$VAR`. `workspace.root` resolves `$VAR` before path handling,
-  while `claude.command` stays a shell command string and any `$VAR` expansion there happens in the
-  launched shell.
+- For env-backed path values, use `$VAR`. `workspace.root` resolves `$VAR` before path handling, while `claude.command` stays a shell command string and any `$VAR` expansion there happens in the launched shell.
 
 ```yaml
 tracker:
@@ -206,14 +192,12 @@ claude:
 ```
 
 - If `WORKFLOW.md` is missing or has invalid YAML at startup, Cymphony does not boot.
-- If a later reload fails, Cymphony keeps running with the last known good workflow and logs the
-  reload error until the file is fixed.
-- `server.port` or CLI `--port` enables the optional Phoenix LiveView dashboard and JSON API at
-  `/`, `/api/v1/state`, `/api/v1/<issue_identifier>`, and `/api/v1/refresh`.
+- If a later reload fails, Cymphony keeps running with the last known good workflow and logs the reload error until the file is fixed.
+- `server.port` or CLI `--port` enables the optional Phoenix LiveView dashboard and JSON API at `/`, `/api/v1/state`, `/api/v1/<issue_identifier>`, and `/api/v1/refresh`.
 
 ## Web dashboard
 
-The observability UI now runs on a minimal Phoenix stack:
+The observability UI runs on a minimal Phoenix stack:
 
 - LiveView for the dashboard at `/`
 - JSON API for operational debugging under `/api/v1/*`
@@ -233,8 +217,7 @@ The observability UI now runs on a minimal Phoenix stack:
 make all
 ```
 
-Run the real external end-to-end test only when you want Cymphony to create disposable Linear
-resources and launch a real `claude -p` session:
+Run the real external end-to-end test only when you want Cymphony to create disposable Linear resources and launch a real `claude -p` session:
 
 ```bash
 cd elixir
@@ -248,33 +231,30 @@ Optional environment variables:
 - `SYMPHONY_LIVE_SSH_WORKER_HOSTS` uses those SSH hosts when set, as a comma-separated list
 
 `make e2e` runs two live scenarios:
+
 - one with a local worker
 - one with SSH workers
 
-If `SYMPHONY_LIVE_SSH_WORKER_HOSTS` is unset, the SSH scenario uses `docker compose` to start two
-disposable SSH workers on `localhost:<port>`. The live test generates a temporary SSH keypair,
-mounts the host `~/.claude/auth.json` into each worker, verifies that Cymphony can talk to them
-over real SSH, then runs the same orchestration flow against those worker addresses. This keeps
-the transport representative without depending on long-lived external machines.
+If `SYMPHONY_LIVE_SSH_WORKER_HOSTS` is unset, the SSH scenario uses `docker compose` to start two disposable SSH workers on `localhost:<port>`. The live test generates a temporary SSH keypair, mounts the host `~/.claude/auth.json` into each worker, verifies that Cymphony can talk to them over real SSH, then runs the same orchestration flow against those worker addresses. This keeps the transport representative without depending on long-lived external machines.
 
 Set `SYMPHONY_LIVE_SSH_WORKER_HOSTS` if you want `make e2e` to target real SSH hosts instead.
 
-The live test creates a temporary Linear project and issue, writes a temporary `WORKFLOW.md`, runs
-a real agent turn, verifies the workspace side effect, requires Claude Code to comment on and close
-the Linear issue, then marks the project completed so the run remains visible in Linear.
+The live test creates a temporary Linear project and issue, writes a temporary `WORKFLOW.md`, runs a real agent turn, verifies the workspace side effect, requires Claude Code to comment on and close the Linear issue, then marks the project completed so the run remains visible in Linear.
 
 ## FAQ
 
 ### Why Elixir?
 
-Elixir is built on Erlang/BEAM/OTP, which is great for supervising long-running processes. It has an
-active ecosystem of tools and libraries. It also supports hot code reloading without stopping
-actively running subagents, which is very useful during development.
+Elixir is built on Erlang/BEAM/OTP, which is great for supervising long-running processes. It has an active ecosystem of tools and libraries. It also supports hot code reloading without stopping actively running subagents, which is very useful during development.
 
 ### What's the easiest way to set this up for my own codebase?
 
-Launch `claude` in your repo, give it the URL to the Cymphony repo, and ask it to set things up for
-you.
+Launch `claude` in your repo, give it the URL to the Cymphony repo, and ask it to set things up for you.
+
+## Status
+
+> [!WARNING]
+> Cymphony is a low-key engineering preview for testing in trusted environments.
 
 ## License
 
