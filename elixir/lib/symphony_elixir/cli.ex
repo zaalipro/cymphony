@@ -60,6 +60,9 @@ defmodule SymphonyElixir.CLI do
       version_requested?(args) ->
         show_version()
 
+      log_requested?(args) ->
+        show_log(args)
+
       list_requested?(args) ->
         list_projects()
 
@@ -94,6 +97,7 @@ defmodule SymphonyElixir.CLI do
   defp expand_shorthands(["l" | rest]), do: ["list" | expand_shorthands(rest)]
   defp expand_shorthands(["a" | rest]), do: ["add-project" | expand_shorthands(rest)]
   defp expand_shorthands(["v" | rest]), do: ["--version" | expand_shorthands(rest)]
+  defp expand_shorthands(["log" | rest]), do: ["log" | expand_shorthands(rest)]
   defp expand_shorthands(["p", value | rest]), do: ["--project", value | expand_shorthands(rest)]
   defp expand_shorthands(["p" | _]), do: ["--help"]
   defp expand_shorthands([arg | rest]), do: [arg | expand_shorthands(rest)]
@@ -131,6 +135,98 @@ defmodule SymphonyElixir.CLI do
     args == ["add-project"]
   end
 
+  defp log_requested?(["log" | _]), do: true
+  defp log_requested?(_), do: false
+
+  defp show_log(args) do
+    tail_count =
+      case args do
+        ["log"] -> nil
+        ["log", count | _] ->
+          case Integer.parse(count) do
+            {n, ""} when n > 0 -> n
+            _ -> nil
+          end
+        _ -> nil
+      end
+
+    log_path = SymphonyElixir.LogFile.default_log_file()
+
+    if File.exists?(log_path) or has_rotated_logs?(log_path) do
+      output =
+        case tail_count do
+          nil ->
+            read_all_logs(log_path)
+
+          n ->
+            read_all_logs(log_path) |> tail_lines(n)
+        end
+
+      IO.write(output)
+    else
+      IO.puts(:stderr, "No log file found at #{log_path}")
+    end
+
+    :done
+  end
+
+  defp has_rotated_logs?(log_path) do
+    log_dir = Path.dirname(log_path)
+    base = Path.basename(log_path)
+
+    case File.ls(log_dir) do
+      {:ok, files} ->
+        Enum.any?(files, &String.starts_with?(&1, base <> "."))
+
+      {:error, _} ->
+        false
+    end
+  end
+
+  defp read_all_logs(log_path) do
+    log_dir = Path.dirname(log_path)
+    base = Path.basename(log_path)
+
+    rotated =
+      case File.ls(log_dir) do
+        {:ok, files} ->
+          files
+          |> Enum.filter(&String.starts_with?(&1, base <> "."))
+          |> Enum.sort_by(
+            fn f ->
+              case String.trim_leading(f, base <> ".") |> Integer.parse() do
+                {n, ""} -> n
+                _ -> 0
+              end
+            end,
+            :desc
+          )
+          |> Enum.map(&Path.join(log_dir, &1))
+
+        {:error, _} ->
+          []
+      end
+
+    # Read rotated logs (oldest rotation index first, then newer), then current
+    all_paths = Enum.reverse(rotated) ++ [log_path]
+
+    all_paths
+    |> Enum.map(fn path ->
+      case File.read(path) do
+        {:ok, content} -> content
+        {:error, _} -> ""
+      end
+    end)
+    |> Enum.join()
+  end
+
+  defp tail_lines(content, n) do
+    content
+    |> String.split("\n")
+    |> Enum.take(-n)
+    |> Enum.join("\n")
+  end
+
   defp help_text do
     """
 
@@ -144,6 +240,8 @@ defmodule SymphonyElixir.CLI do
       cymphony a                     Add a project to existing config
       cymphony l                     List configured projects
       cymphony v                     Show version
+      cymphony log                   Show full log
+      cymphony log 50                Show last 50 lines of log
       cymphony h                     Show this help
 
     Flags:
@@ -202,9 +300,10 @@ defmodule SymphonyElixir.CLI do
     end
   end
 
+  @version Mix.Project.config()[:version]
+
   defp show_version do
-    version = Application.spec(:symphony_elixir, :vsn) || "unknown"
-    IO.puts("cymphony #{version}")
+    IO.puts("cymphony #{@version}")
     :done
   end
 
