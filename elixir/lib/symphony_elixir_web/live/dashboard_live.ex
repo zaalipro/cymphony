@@ -303,7 +303,7 @@ defmodule SymphonyElixirWeb.DashboardLive do
     value
     |> Integer.to_string()
     |> String.reverse()
-    |> String.replace(~r/.{3}(?=.)/, "\\0,")
+    |> String.replace(Regex.compile!(".{3}(?=.)", "s"), "\\0,")
     |> String.reverse()
   end
 

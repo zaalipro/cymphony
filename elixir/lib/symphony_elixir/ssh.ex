@@ -70,7 +70,7 @@ defmodule SymphonyElixir.SSH do
     # OpenSSH does not interpret bare "host:port" as "host + port"; it treats the
     # whole value as a hostname and leaves the port at 22. We split that shorthand
     # here so worker config can use "localhost:2222" without requiring ssh:// URIs.
-    case Regex.run(~r/^(.*):(\d+)$/, trimmed_target, capture: :all_but_first) do
+    case Regex.run(Regex.compile!("^(.*):([0-9]+)$"), trimmed_target, capture: :all_but_first) do
       [destination, port] ->
         if valid_port_destination?(destination) do
           %{destination: destination, port: port}

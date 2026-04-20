@@ -816,7 +816,7 @@ defmodule SymphonyElixir.StatusDashboard do
       |> String.replace("\r\n", " ")
       |> String.replace("\r", " ")
       |> String.replace("\n", " ")
-      |> String.replace(~r/\s+/, " ")
+      |> String.replace(Regex.compile!("\\s+"), " ")
       |> String.trim()
 
     if sanitized == "" do
@@ -938,7 +938,7 @@ defmodule SymphonyElixir.StatusDashboard do
       value
       |> to_string()
       |> String.replace("\n", " ")
-      |> String.replace(~r/\s+/, " ")
+      |> String.replace(Regex.compile!("\\s+"), " ")
       |> String.trim()
       |> truncate_plain(width)
 
@@ -973,7 +973,7 @@ defmodule SymphonyElixir.StatusDashboard do
 
     unsigned
     |> String.reverse()
-    |> String.replace(~r/(\d{3})(?=\d)/, "\\1,")
+    |> String.replace(Regex.compile!("(\\d{3})(?=\\d)"), "\\1,")
     |> String.reverse()
     |> prepend(sign)
   end
@@ -1330,9 +1330,9 @@ defmodule SymphonyElixir.StatusDashboard do
 
   defp sanitize_ansi_and_control_bytes(value) when is_binary(value) do
     value
-    |> String.replace(~r/\x1B\[[0-9;]*[A-Za-z]/, "")
-    |> String.replace(~r/\x1B./, "")
-    |> String.replace(~r/[\x00-\x1F\x7F]/, "")
+    |> String.replace(Regex.compile!("\\x1B\\[[0-9;]*[A-Za-z]"), "")
+    |> String.replace(Regex.compile!("\\x1B."), "")
+    |> String.replace(Regex.compile!("[\\x00-\\x1F\\x7F]"), "")
   end
 
   defp humanize_claude_method("thread/started", payload) do
@@ -1880,7 +1880,7 @@ defmodule SymphonyElixir.StatusDashboard do
 
   defp humanize_item_type(type) when is_binary(type) do
     type
-    |> String.replace(~r/([a-z0-9])([A-Z])/, "\\1 \\2")
+    |> String.replace(Regex.compile!("([a-z0-9])([A-Z])"), "\\1 \\2")
     |> String.replace("_", " ")
     |> String.replace("/", " ")
     |> String.downcase()
@@ -1914,7 +1914,7 @@ defmodule SymphonyElixir.StatusDashboard do
   defp inline_text(text) when is_binary(text) do
     text
     |> String.replace("\n", " ")
-    |> String.replace(~r/\s+/, " ")
+    |> String.replace(Regex.compile!("\\s+"), " ")
     |> String.trim()
     |> truncate(80)
   end

@@ -455,7 +455,7 @@ defmodule SymphonyElixir.Claude.AppServer do
       |> String.slice(0, @max_stream_log_bytes)
 
     if text != "" do
-      if String.match?(text, ~r/\b(error|warn|warning|failed|fatal|panic|exception)\b/i) do
+      if String.match?(text, Regex.compile!("\\b(error|warn|warning|failed|fatal|panic|exception)\\b", "i")) do
         Logger.warning("Claude output: #{text}")
       else
         Logger.debug("Claude output: #{text}")
@@ -471,7 +471,7 @@ defmodule SymphonyElixir.Claude.AppServer do
       |> String.slice(0, @max_stream_log_bytes)
 
     if text != "" do
-      if String.match?(text, ~r/\b(error|warn|warning|failed|fatal|panic|exception)\b/i) do
+      if String.match?(text, Regex.compile!("\\b(error|warn|warning|failed|fatal|panic|exception)\\b", "i")) do
         Logger.warning("#{stream_label} output: #{text}")
       else
         Logger.debug("#{stream_label} output: #{text}")

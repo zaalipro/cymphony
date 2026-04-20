@@ -29,7 +29,7 @@ defmodule SymphonyElixir.Cymphony.WorkflowGenerator do
 
   defp safe_project_slug(name) when is_binary(name) do
     name
-    |> String.replace(~r/[^a-zA-Z0-9._-]/, "_")
+    |> String.replace(Regex.compile!("[^a-zA-Z0-9._-]"), "_")
     |> String.slice(0, 32)
   end
 end

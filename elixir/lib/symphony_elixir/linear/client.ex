@@ -429,7 +429,7 @@ defmodule SymphonyElixir.Linear.Client do
 
   defp summarize_error_body(body) when is_binary(body) do
     body
-    |> String.replace(~r/\s+/, " ")
+    |> String.replace(Regex.compile!("\\s+"), " ")
     |> String.trim()
     |> truncate_error_body()
     |> inspect()

@@ -218,7 +218,7 @@ defmodule SymphonyElixir.Workspace do
   defp workspace_root(config), do: config.workspace.root
 
   defp safe_identifier(identifier) do
-    String.replace(identifier || "issue", ~r/[^a-zA-Z0-9._-]/, "_")
+    String.replace(identifier || "issue", Regex.compile!("[^a-zA-Z0-9._-]"), "_")
   end
 
   defp maybe_run_after_create_hook(workspace, issue_context, created?, worker_host, config) do

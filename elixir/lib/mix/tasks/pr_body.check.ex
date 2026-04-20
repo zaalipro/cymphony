@@ -76,7 +76,7 @@ defmodule Mix.Tasks.PrBody.Check do
 
   defp extract_template_headings(template, template_path) do
     headings =
-      Regex.scan(~r/^\#{4,6}\s+.+$/m, template)
+      Regex.scan(Regex.compile!("^\\\#{4,6}\\s+.+$", "m"), template)
       |> Enum.map(&hd/1)
 
     if headings == [] do
@@ -149,9 +149,9 @@ defmodule Mix.Tasks.PrBody.Check do
   end
 
   defp maybe_require_bullets(errors, heading, template_section, body_section) do
-    requires_bullets = Regex.match?(~r/^- /m, template_section || "")
+    requires_bullets = Regex.match?(Regex.compile!("^- ", "m"), template_section || "")
 
-    if requires_bullets and not Regex.match?(~r/^- /m, body_section) do
+    if requires_bullets and not Regex.match?(Regex.compile!("^- ", "m"), body_section) do
       errors ++ ["Section must include at least one bullet item: #{heading}"]
     else
       errors
@@ -159,9 +159,9 @@ defmodule Mix.Tasks.PrBody.Check do
   end
 
   defp maybe_require_checkboxes(errors, heading, template_section, body_section) do
-    requires_checkboxes = Regex.match?(~r/^- \[ \] /m, template_section || "")
+    requires_checkboxes = Regex.match?(Regex.compile!("^- \\[ \\] ", "m"), template_section || "")
 
-    if requires_checkboxes and not Regex.match?(~r/^- \[[ xX]\] /m, body_section) do
+    if requires_checkboxes and not Regex.match?(Regex.compile!("^- \\[[ xX]\\] ", "m"), body_section) do
       errors ++ ["Section must include at least one checkbox item: #{heading}"]
     else
       errors

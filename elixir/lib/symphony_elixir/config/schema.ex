@@ -483,7 +483,7 @@ defmodule SymphonyElixir.Config.Schema do
   end
 
   defp env_reference_name("$" <> env_name) do
-    if String.match?(env_name, ~r/^[A-Za-z_][A-Za-z0-9_]*$/) do
+    if String.match?(env_name, Regex.compile!("^[A-Za-z_][A-Za-z0-9_]*$")) do
       {:ok, env_name}
     else
       :error
