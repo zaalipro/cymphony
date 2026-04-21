@@ -34,18 +34,20 @@ jobs:
           path: |
             elixir/deps
             elixir/_build
-          key: ${{ runner.os }}-mix-${{ hashFiles('elixir/mix.lock') }}
+          key: ${{ runner.os }}-mix-release-${{ hashFiles('elixir/mix.lock') }}
           restore-keys: |
-            ${{ runner.os }}-mix-
+            ${{ runner.os }}-mix-release-
 
       - name: Install dependencies
+        env:
+          BURRITO_BUILD: "1"
         run: mix deps.get
 
       - name: Build burrito release
         env:
           BURRITO_BUILD: "1"
           MIX_ENV: prod
-        run: mix release
+        run: mix release --overwrite
 
       - name: Upload binary artifact
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
