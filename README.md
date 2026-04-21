@@ -24,17 +24,51 @@ cymphony
 
 First run triggers an interactive setup (GitHub repo URL, Linear project slug, API key).
 
-### Install the CLI (Ubuntu)
+### Install the CLI (Ubuntu / Debian)
+
+#### Prerequisites
+
+Cymphony requires the `claude` CLI from Anthropic. Install it first if you haven't already:
+
+```bash
+# Via npm (requires Node.js 18+)
+npm install -g @anthropic-ai/claude-code
+
+# Or follow the latest instructions at:
+# https://docs.anthropic.com/en/docs/agents-and-tools/claude-code/overview
+```
+
+#### Install
 
 Download the latest `.deb` from [GitHub Releases](https://github.com/zaalipro/cymphony/releases) and install it:
 
 ```bash
+# Download the latest release (amd64 only)
 wget https://github.com/zaalipro/cymphony/releases/download/v0.4.0/cymphony_0.4.0_amd64.deb
+
+# Install
 sudo dpkg -i cymphony_0.4.0_amd64.deb
+
+# Run setup
 cymphony
 ```
 
-> **Note:** The `claude` CLI must be installed separately. See the [Anthropic documentation](https://docs.anthropic.com/en/docs/agents-and-tools/claude-code/overview) for installation instructions.
+First run triggers an interactive setup (GitHub repo URL, Linear project slug, API key).
+
+#### Upgrade
+
+```bash
+wget https://github.com/zaalipro/cymphony/releases/download/v0.4.0/cymphony_0.4.0_amd64.deb
+sudo dpkg -i cymphony_0.4.0_amd64.deb
+```
+
+#### Uninstall
+
+```bash
+sudo dpkg -r cymphony
+```
+
+> **Note:** The `.deb` bundles the Erlang VM, so no separate Erlang/Elixir installation is required.
 
 ### Run Commands
 
