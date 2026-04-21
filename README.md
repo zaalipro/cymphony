@@ -24,6 +24,18 @@ cymphony
 
 First run triggers an interactive setup (GitHub repo URL, Linear project slug, API key).
 
+### Install the CLI (Ubuntu)
+
+Download the latest `.deb` from [GitHub Releases](https://github.com/zaalipro/cymphony/releases) and install it:
+
+```bash
+wget https://github.com/zaalipro/cymphony/releases/download/v0.4.0/cymphony_0.4.0_amd64.deb
+sudo dpkg -i cymphony_0.4.0_amd64.deb
+cymphony
+```
+
+> **Note:** The `claude` CLI must be installed separately. See the [Anthropic documentation](https://docs.anthropic.com/en/docs/agents-and-tools/claude-code/overview) for installation instructions.
+
 ### Run Commands
 
 ```bash

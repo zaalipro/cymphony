@@ -22,8 +22,13 @@ defmodule CymphonyElixir.Application do
   @impl true
   def start(_type, _args) do
     :ok = CymphonyElixir.LogFile.configure()
+    Supervisor.start_link(children(), strategy: :one_for_one, name: CymphonyElixir.Supervisor)
+  end
 
-    children = [
+  @doc false
+  @spec children() :: [Supervisor.child_spec() | module() | {module(), term()}]
+  def children do
+    [
       {Phoenix.PubSub, name: CymphonyElixir.PubSub},
       {Registry, keys: :unique, name: CymphonyElixir.ProjectRegistry},
       {Task.Supervisor, name: CymphonyElixir.TaskSupervisor},
@@ -31,12 +36,6 @@ defmodule CymphonyElixir.Application do
       CymphonyElixir.HttpServer,
       CymphonyElixir.StatusDashboard
     ]
-
-    Supervisor.start_link(
-      children,
-      strategy: :one_for_one,
-      name: CymphonyElixir.Supervisor
-    )
   end
 
   @impl true

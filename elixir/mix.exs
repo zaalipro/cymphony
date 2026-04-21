@@ -4,7 +4,7 @@ defmodule CymphonyElixir.MixProject do
   def project do
     [
       app: :cymphony_elixir,
-      version: "0.3.0",
+      version: "0.4.0",
       elixir: "~> 1.19",
       compilers: [:phoenix_live_view] ++ Mix.compilers(),
       start_permanent: Mix.env() == :prod,
@@ -47,6 +47,7 @@ defmodule CymphonyElixir.MixProject do
         plt_add_apps: [:mix]
       ],
       escript: escript(),
+      releases: releases(),
       aliases: aliases(),
       deps: deps()
     ]
@@ -55,9 +56,17 @@ defmodule CymphonyElixir.MixProject do
   # Run "mix help compile.app" to learn about applications.
   def application do
     [
-      mod: {CymphonyElixir.Application, []},
+      mod: application_mod(),
       extra_applications: [:logger]
     ]
+  end
+
+  defp application_mod do
+    if System.get_env("BURRITO_BUILD") == "1" do
+      {CymphonyElixir.BurritoCLI, []}
+    else
+      {CymphonyElixir.Application, []}
+    end
   end
 
   # Run "mix help deps" to learn about dependencies.
@@ -75,7 +84,8 @@ defmodule CymphonyElixir.MixProject do
       {:solid, "~> 1.2"},
       {:ecto, "~> 3.13"},
       {:credo, "~> 1.7", only: [:dev, :test], runtime: false},
-      {:dialyxir, "~> 1.4", only: [:dev], runtime: false}
+      {:dialyxir, "~> 1.4", only: [:dev], runtime: false},
+      {:burrito, "~> 1.2"}
     ]
   end
 
@@ -83,7 +93,11 @@ defmodule CymphonyElixir.MixProject do
     [
       setup: ["deps.get"],
       build: ["escript.build"],
-      lint: ["specs.check", "credo --strict"]
+      lint: ["specs.check", "credo --strict"],
+      release: [
+        fn _ -> System.put_env("BURRITO_BUILD", "1") end,
+        "release"
+      ]
     ]
   end
 
@@ -93,6 +107,19 @@ defmodule CymphonyElixir.MixProject do
       main_module: CymphonyElixir.CLI,
       name: "cymphony",
       path: "bin/cymphony"
+    ]
+  end
+
+  defp releases do
+    [
+      cymphony: [
+        steps: [:assemble, &Burrito.wrap/1],
+        burrito: [
+          targets: [
+            linux: [os: :linux, cpu: :x86_64]
+          ]
+        ]
+      ]
     ]
   end
 end

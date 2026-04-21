@@ -1,0 +1,118 @@
+name: Release
+
+on:
+  push:
+    tags:
+      - 'v*'
+
+jobs:
+  build-linux:
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: elixir
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
+
+      - name: Set up mise tools
+        uses: jdx/mise-action@5228313ee0372e111a38da051671ca30fc5a96db # v3
+        with:
+          install: true
+          cache: true
+          working_directory: elixir
+
+      - name: Set up Zig
+        uses: mlugg/setup-zig@7c813a67d4ac14f983441de7f7b2757937450f98 # v1
+        with:
+          version: 0.15.2
+
+      - name: Cache deps and build
+        uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830 # v4
+        with:
+          path: |
+            elixir/deps
+            elixir/_build
+          key: ${{ runner.os }}-mix-${{ hashFiles('elixir/mix.lock') }}
+          restore-keys: |
+            ${{ runner.os }}-mix-
+
+      - name: Install dependencies
+        run: mix deps.get
+
+      - name: Build burrito release
+        env:
+          BURRITO_BUILD: "1"
+          MIX_ENV: prod
+        run: mix release
+
+      - name: Upload binary artifact
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: cymphony-linux
+          path: elixir/burrito_out/*
+
+  package-deb:
+    needs: build-linux
+    runs-on: ubuntu-latest
+    steps:
+      - name: Download binary artifact
+        uses: actions/download-artifact@95815c38cf2ff2164869cbab79da8d1f422bc89e # v4
+        with:
+          name: cymphony-linux
+          path: ./artifacts
+
+      - name: Install fpm
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y ruby ruby-dev build-essential
+          sudo gem install --no-document fpm
+
+      - name: Build .deb package
+        run: |
+          VERSION=${GITHUB_REF_NAME#v}
+          BINARY=$(ls artifacts/cymphony_linux* | head -n 1)
+
+          mkdir -p pkg/usr/bin
+          cp "$BINARY" pkg/usr/bin/cymphony
+          chmod +x pkg/usr/bin/cymphony
+
+          fpm -s dir -t deb \
+            -n cymphony \
+            -v "$VERSION" \
+            --architecture amd64 \
+            --description "Cymphony - Claude Code orchestrator" \
+            --url "https://github.com/${{ github.repository }}" \
+            --maintainer "Cymphony Authors" \
+            --license "Apache-2.0" \
+            --prefix / \
+            -C pkg \
+            .
+
+      - name: Upload .deb artifact
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: cymphony-deb
+          path: ./*.deb
+
+  release:
+    needs: package-deb
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - name: Download .deb artifact
+        uses: actions/download-artifact@95815c38cf2ff2164869cbab79da8d1f422bc89e # v4
+        with:
+          name: cymphony-deb
+          path: ./artifacts
+
+      - name: Create GitHub Release
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          gh release create "${{ github.ref_name }}" \
+            --title "Cymphony ${{ github.ref_name }}" \
+            --generate-notes \
+            artifacts/*.deb
