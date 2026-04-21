@@ -16,10 +16,10 @@ description:
 
 ## Log Sources
 
-- Primary runtime log: `log/symphony.log`
-  - Default comes from `SymphonyElixir.LogFile` (`log/symphony.log`).
+- Primary runtime log: `log/cymphony.log`
+  - Default comes from `CymphonyElixir.LogFile` (`log/cymphony.log`).
   - Includes orchestrator, agent runner, and Claude session lifecycle logs.
-- Rotated runtime logs: `log/symphony.log*`
+- Rotated runtime logs: `log/cymphony.log*`
   - Check these when the relevant run is older.
 
 ## Correlation Keys
@@ -45,19 +45,19 @@ them as your join keys during debugging.
 
 ```bash
 # 1) Narrow by ticket key (fastest entry point)
-rg -n "issue_identifier=MT-625" log/symphony.log*
+rg -n "issue_identifier=MT-625" log/cymphony.log*
 
 # 2) If needed, narrow by Linear UUID
-rg -n "issue_id=<linear-uuid>" log/symphony.log*
+rg -n "issue_id=<linear-uuid>" log/cymphony.log*
 
 # 3) Pull session IDs seen for that ticket
-rg -o "session_id=[^ ;]+" log/symphony.log* | sort -u
+rg -o "session_id=[^ ;]+" log/cymphony.log* | sort -u
 
 # 4) Trace one session end-to-end
-rg -n "session_id=<uuid>" log/symphony.log*
+rg -n "session_id=<uuid>" log/cymphony.log*
 
 # 5) Focus on stuck/retry signals
-rg -n "Issue stalled|scheduling retry|turn_timeout|turn_failed|session ended with error|Starting agent run" log/symphony.log*
+rg -n "Issue stalled|scheduling retry|turn_timeout|turn_failed|session ended with error|Starting agent run" log/cymphony.log*
 ```
 
 ## Investigation Flow
@@ -84,7 +84,7 @@ rg -n "Issue stalled|scheduling retry|turn_timeout|turn_failed|session ended wit
 
 ## Reading Agent Session Logs
 
-In Cymphony, agent session diagnostics are emitted into `log/symphony.log` and
+In Cymphony, agent session diagnostics are emitted into `log/cymphony.log` and
 keyed by `session_id`. Read them as a lifecycle:
 
 1. `Starting agent run for issue ... issue_identifier=...`
@@ -98,7 +98,7 @@ For one specific session investigation, keep the trace narrow:
 
 1. Capture one `session_id` for the ticket.
 2. Build a timestamped slice for only that session:
-    - `rg -n "session_id=<uuid>" log/symphony.log*`
+    - `rg -n "session_id=<uuid>" log/cymphony.log*`
 3. Mark the exact failing stage:
     - Startup failure before stream events.
     - Turn/runtime failure after stream events (`turn_*` / `ended with error`).
@@ -112,6 +112,6 @@ concurrent runs.
 ## Notes
 
 - Prefer `rg` over `grep` for speed on large logs.
-- Check rotated logs (`log/symphony.log*`) before concluding data is missing.
+- Check rotated logs (`log/cymphony.log*`) before concluding data is missing.
 - If required context fields are missing in new log statements, align with
   `elixir/docs/logging.md` conventions.

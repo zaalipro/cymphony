@@ -4,7 +4,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## What This Project Is
 
-Cymphony is an Elixir-based orchestrator that polls Linear for issues and dispatches them as autonomous Claude Code agent runs. It's a rewrite of OpenAI's Symphony, using Claude Code instead of Codex.
+Cymphony is an Elixir-based orchestrator that polls Linear for issues and dispatches them as autonomous Claude Code agent runs. It's a rewrite of OpenAI's Cymphony, using Claude Code instead of Codex.
 
 ## Build & Development Commands
 
@@ -28,7 +28,7 @@ make all               # Full CI gate (setup, build, fmt-check, lint, coverage, 
 
 ## Architecture
 
-The application is an escript CLI (`main_module: SymphonyElixir.CLI`) that starts an OTP supervision tree.
+The application is an escript CLI (`main_module: CymphonyElixir.CLI`) that starts an OTP supervision tree.
 
 ### Core Data Flow
 
@@ -36,7 +36,7 @@ The application is an escript CLI (`main_module: SymphonyElixir.CLI`) that start
 CLI → WorkflowStore → Orchestrator (GenServer, per-project) → AgentRunner (Task) → Claude.AppServer (Port)
 ```
 
-1. **CLI** (`lib/symphony_elixir/cli.ex`) — Escript entrypoint. Handles onboarding, multi-project mode, background process management, and legacy WORKFLOW.md mode.
+1. **CLI** (`lib/cymphony_elixir/cli.ex`) — Escript entrypoint. Handles onboarding, multi-project mode, background process management, and legacy WORKFLOW.md mode.
 2. **Workflow** (`workflow.ex`) + **WorkflowStore** (`workflow_store.ex`) — Loads and hot-reloads `WORKFLOW.md` (YAML front matter + prompt body). `WorkflowStore` is a GenServer that holds the current workflow state per project.
 3. **Config** (`config.ex` + `config/schema.ex`) — Validates workflow config via Ecto embedded schemas. Resolves `$ENV_VAR` references and provides typed access to all settings (tracker, polling, workspace, claude, hooks, etc.).
 4. **Orchestrator** (`orchestrator.ex`) — Central GenServer. Poll tick loop dispatches issues, reconciles running state, handles retries with exponential backoff, tracks token usage, and detects stalled agents.
@@ -48,7 +48,7 @@ CLI → WorkflowStore → Orchestrator (GenServer, per-project) → AgentRunner 
 ### OTP Supervision Tree
 
 ```
-SymphonyElixir.Supervisor (one_for_one)
+CymphonyElixir.Supervisor (one_for_one)
 ├── Phoenix.PubSub
 ├── Registry (ProjectRegistry, :unique)
 ├── Task.Supervisor (for AgentRunner tasks)
@@ -66,7 +66,7 @@ Each project gets its own `ProjectSupervisor` with a `WorkflowStore` and `Orches
 
 - All public `def` in `lib/` must have `@spec` — enforced by `mix specs.check`
 - `defp` specs are optional; `@impl` callbacks are exempt
-- Runtime config comes from `WORKFLOW.md` YAML front matter, accessed through `SymphonyElixir.Config` (never read env vars directly in business logic)
+- Runtime config comes from `WORKFLOW.md` YAML front matter, accessed through `CymphonyElixir.Config` (never read env vars directly in business logic)
 - Workspace safety is critical: Claude Code must never run in the source repo cwd; all workspaces are validated to stay under the configured root
 - Regexes must be compiled at runtime with `Regex.compile!/1` (not sigils) for OTP 28 compat
 - Keep implementation aligned with `SPEC.md`; update spec when behavior changes meaningfully
