@@ -1,6 +1,6 @@
 # Cymphony
 
-> A rewrite of [openai/cymphony](https://github.com/openai/cymphony) that uses **Claude Code** instead of Codex as the underlying coding agent.
+> A rewrite of [openai/symphony](https://github.com/openai/symphony) that uses **Claude Code** instead of Codex as the underlying coding agent.
 
 Cymphony turns project work into isolated, autonomous implementation runs, allowing teams to manage work instead of supervising coding agents.
 
