@@ -1,9 +1,9 @@
-defmodule SymphonyElixir.MixProject do
+defmodule CymphonyElixir.MixProject do
   use Mix.Project
 
   def project do
     [
-      app: :symphony_elixir,
+      app: :cymphony_elixir,
       version: "0.2.9",
       elixir: "~> 1.19",
       compilers: [:phoenix_live_view] ++ Mix.compilers(),
@@ -13,30 +13,30 @@ defmodule SymphonyElixir.MixProject do
           threshold: 100
         ],
         ignore_modules: [
-          SymphonyElixir.Config,
-          SymphonyElixir.Linear.Client,
-          SymphonyElixir.SpecsCheck,
-          SymphonyElixir.Orchestrator,
-          SymphonyElixir.Orchestrator.State,
-          SymphonyElixir.AgentRunner,
-          SymphonyElixir.CLI,
-          SymphonyElixir.Claude.AppServer,
-          SymphonyElixir.Claude.DynamicTool,
-          SymphonyElixir.HttpServer,
-          SymphonyElixir.StatusDashboard,
-          SymphonyElixir.LogFile,
-          SymphonyElixir.Workspace,
-          SymphonyElixirWeb.DashboardLive,
-          SymphonyElixirWeb.Endpoint,
-          SymphonyElixirWeb.ErrorHTML,
-          SymphonyElixirWeb.ErrorJSON,
-          SymphonyElixirWeb.Layouts,
-          SymphonyElixirWeb.ObservabilityApiController,
-          SymphonyElixirWeb.Presenter,
-          SymphonyElixirWeb.StaticAssetController,
-          SymphonyElixirWeb.StaticAssets,
-          SymphonyElixirWeb.Router,
-          SymphonyElixirWeb.Router.Helpers
+          CymphonyElixir.Config,
+          CymphonyElixir.Linear.Client,
+          CymphonyElixir.SpecsCheck,
+          CymphonyElixir.Orchestrator,
+          CymphonyElixir.Orchestrator.State,
+          CymphonyElixir.AgentRunner,
+          CymphonyElixir.CLI,
+          CymphonyElixir.Claude.AppServer,
+          CymphonyElixir.Claude.DynamicTool,
+          CymphonyElixir.HttpServer,
+          CymphonyElixir.StatusDashboard,
+          CymphonyElixir.LogFile,
+          CymphonyElixir.Workspace,
+          CymphonyElixirWeb.DashboardLive,
+          CymphonyElixirWeb.Endpoint,
+          CymphonyElixirWeb.ErrorHTML,
+          CymphonyElixirWeb.ErrorJSON,
+          CymphonyElixirWeb.Layouts,
+          CymphonyElixirWeb.ObservabilityApiController,
+          CymphonyElixirWeb.Presenter,
+          CymphonyElixirWeb.StaticAssetController,
+          CymphonyElixirWeb.StaticAssets,
+          CymphonyElixirWeb.Router,
+          CymphonyElixirWeb.Router.Helpers
         ]
       ],
       test_ignore_filters: [
@@ -55,7 +55,7 @@ defmodule SymphonyElixir.MixProject do
   # Run "mix help compile.app" to learn about applications.
   def application do
     [
-      mod: {SymphonyElixir.Application, []},
+      mod: {CymphonyElixir.Application, []},
       extra_applications: [:logger]
     ]
   end
@@ -90,7 +90,7 @@ defmodule SymphonyElixir.MixProject do
   defp escript do
     [
       app: nil,
-      main_module: SymphonyElixir.CLI,
+      main_module: CymphonyElixir.CLI,
       name: "cymphony",
       path: "bin/cymphony"
     ]

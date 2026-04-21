@@ -1,14 +1,14 @@
 # Claude Code Token Accounting
 
 This document explains how Claude Code reports token usage through the `claude -p`
-headless CLI and how Symphony should account for it.
+headless CLI and how Cymphony should account for it.
 
 ## Short Version
 
 - Claude Code `--output-format json` includes a top-level `usage` field with
   `input_tokens` and `output_tokens`.
 - This usage is reported once per `claude -p` invocation, at session completion.
-- Symphony tracks cumulative totals by accumulating per-turn usage values.
+- Cymphony tracks cumulative totals by accumulating per-turn usage values.
 
 ## Primary Source Semantics
 
@@ -35,7 +35,7 @@ These values are absolute totals for the single `claude -p` invocation.
 
 ### `claude/event/token_count`
 
-Symphony emits internal `claude/event/token_count` events when it parses usage
+Cymphony emits internal `claude/event/token_count` events when it parses usage
 from Claude Code JSON output. These events carry:
 
 ```json
@@ -48,15 +48,15 @@ from Claude Code JSON output. These events carry:
 }
 ```
 
-These are absolute cumulative snapshots per Symphony turn.
+These are absolute cumulative snapshots per Cymphony turn.
 
 ### `turn/completed`
 
-When a Claude Code turn completes, Symphony records the usage from the JSON
+When a Claude Code turn completes, Cymphony records the usage from the JSON
 output as the final turn state. The usage payload is the same schema as the
 per-session usage above.
 
-## Recommended Accounting Strategy For Symphony
+## Recommended Accounting Strategy For Cymphony
 
 Track usage per active issue session.
 
@@ -85,21 +85,21 @@ When a token-related event arrives, use this precedence:
 - Ignore the event for accounting.
 - Keep the last accepted absolute high-water mark unchanged.
 
-## What Symphony Should And Should Not Do
+## What Cymphony Should And Should Not Do
 
 ### Do
 
 - Prefer per-turn usage from Claude Code JSON output for live reporting.
 - Treat `usage.input_tokens` and `usage.output_tokens` as authoritative for turn totals.
 - Key accounting by `session_id` (resumed sessions maintain continuity).
-- Expect one session to span multiple turns when Symphony passes `--resume <session_id>`.
+- Expect one session to span multiple turns when Cymphony passes `--resume <session_id>`.
 
 ### Do not
 
 - Do not assume usage is available for every turn (Claude Code may omit it in error cases).
 - Do not double-count usage across turns that share the same session.
 
-## Practical Interpretation For Symphony Logs
+## Practical Interpretation For Cymphony Logs
 
 When reading Claude Code output:
 
@@ -108,9 +108,9 @@ When reading Claude Code output:
 - `turn/completed` event
   - best used as end-of-turn state, carrying the final usage snapshot
 
-## Recommended Symphony Documentation Contract
+## Recommended Cymphony Documentation Contract
 
-If Symphony documents token reporting externally, the contract should be:
+If Cymphony documents token reporting externally, the contract should be:
 
 - Live token totals come from Claude Code per-session usage reporting.
 - Usage is reported at turn completion, not streamed incrementally.

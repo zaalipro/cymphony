@@ -1,6 +1,6 @@
 # Cymphony Elixir
 
-> A rewrite of [openai/symphony](https://github.com/openai/symphony) that uses **Claude Code** instead of Codex as the underlying coding agent.
+> A rewrite of [openai/cymphony](https://github.com/openai/cymphony) that uses **Claude Code** instead of Codex as the underlying coding agent.
 
 This directory contains the current Elixir/OTP implementation of Cymphony, based on [`SPEC.md`](../SPEC.md) at the repository root.
 
@@ -10,7 +10,7 @@ This directory contains the current Elixir/OTP implementation of Cymphony, based
 
 ## Background
 
-Cymphony started as OpenAI's Symphony project — a service for orchestrating coding agents against issue trackers. This is a reimagining that swaps Codex for Anthropic's Claude Code, built in Elixir/OTP for rock-solid long-running process supervision and hot code reloading.
+Cymphony started as OpenAI's Cymphony project — a service for orchestrating coding agents against issue trackers. This is a reimagining that swaps Codex for Anthropic's Claude Code, built in Elixir/OTP for rock-solid long-running process supervision and hot code reloading.
 
 ## Install via Homebrew (macOS)
 
@@ -117,15 +117,15 @@ mise trust
 mise install
 mise exec -- mix setup
 mise exec -- mix build
-mise exec -- ./bin/symphony ./WORKFLOW.md --i-understand-that-this-will-be-running-without-the-usual-guardrails
+mise exec -- ./bin/cymphony ./WORKFLOW.md --i-understand-that-this-will-be-running-without-the-usual-guardrails
 ```
 
 ## Configuration
 
-Pass a custom workflow file path to `./bin/symphony` when starting the service:
+Pass a custom workflow file path to `./bin/cymphony` when starting the service:
 
 ```bash
-./bin/symphony /path/to/custom/WORKFLOW.md
+./bin/cymphony /path/to/custom/WORKFLOW.md
 ```
 
 If no path is passed, Cymphony defaults to `./WORKFLOW.md`.

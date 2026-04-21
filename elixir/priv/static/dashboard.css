@@ -412,6 +412,107 @@ pre,
   color: var(--muted);
 }
 
+.state-stack {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.35rem;
+  align-items: center;
+}
+
+.state-badge-stalled {
+  background: #fff7e8;
+  border-color: #f1d8a6;
+  color: #8a5a00;
+}
+
+.host-badge {
+  display: inline-flex;
+  align-items: center;
+  min-height: 1.6rem;
+  padding: 0.2rem 0.55rem;
+  border-radius: 999px;
+  border: 1px solid var(--line);
+  background: var(--card-muted);
+  color: var(--muted);
+  font-size: 0.78rem;
+  font-weight: 600;
+  line-height: 1;
+}
+
+.log-row {
+  background: var(--card-muted);
+}
+
+.log-row td {
+  padding: 0.75rem 0.5rem;
+  border-top: 1px solid var(--line);
+}
+
+.log-list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  font-family: "Sohne Mono", "SFMono-Regular", "SF Mono", Consolas, "Liberation Mono", monospace;
+  font-size: 0.84rem;
+  max-height: 20rem;
+  overflow-y: auto;
+}
+
+.log-event {
+  display: flex;
+  gap: 0.55rem;
+  align-items: flex-start;
+  padding: 0.25rem 0;
+  line-height: 1.4;
+}
+
+.log-event-at {
+  color: var(--muted);
+  font-size: 0.78rem;
+  white-space: nowrap;
+  flex-shrink: 0;
+  min-width: 10.5rem;
+}
+
+.log-event-name {
+  display: inline-flex;
+  align-items: center;
+  min-height: 1.45rem;
+  padding: 0.12rem 0.45rem;
+  border-radius: 999px;
+  border: 1px solid var(--line);
+  background: var(--card-muted);
+  color: var(--muted);
+  font-size: 0.72rem;
+  font-weight: 600;
+  line-height: 1;
+  flex-shrink: 0;
+}
+
+.log-event-danger {
+  background: var(--danger-soft);
+  border-color: #f6d3cf;
+  color: var(--danger);
+}
+
+.log-event-success {
+  background: var(--accent-soft);
+  border-color: rgba(16, 163, 127, 0.18);
+  color: var(--accent-ink);
+}
+
+.log-event-accent {
+  background: #eef4ff;
+  border-color: #c7d7f7;
+  color: #1e3a5f;
+}
+
+.log-event-message {
+  color: var(--ink);
+  word-break: break-word;
+  min-width: 0;
+}
+
 .error-card {
   border-radius: 24px;
   padding: 1.25rem;
