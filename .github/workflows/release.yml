@@ -24,7 +24,7 @@ jobs:
           working_directory: elixir
 
       - name: Set up Zig
-        uses: mlugg/setup-zig@7c813a67d4ac14f983441de7f7b2757937450f98 # v1
+        uses: goto-bus-stop/setup-zig@v2
         with:
           version: 0.15.2
 
