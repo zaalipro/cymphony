@@ -138,7 +138,7 @@ defmodule CymphonyElixir.Claude.AppServer do
 
   defp spawn_claude_turn(workspace, worker_host, prompt, issue, session_id, config) do
     with {:ok, command} <- build_claude_command(prompt, issue, session_id, config) do
-      start_port_for_command(command, workspace, worker_host)
+      start_port_for_command(command, workspace, worker_host, config)
     end
   end
 
@@ -183,7 +183,9 @@ defmodule CymphonyElixir.Claude.AppServer do
   defp maybe_add_resume_flag(args, ""), do: args
   defp maybe_add_resume_flag(args, session_id) when is_binary(session_id), do: args ++ ["--resume", shell_escape(session_id)]
 
-  defp start_port_for_command(command, workspace, nil) do
+  defp start_port_for_command(command, workspace, worker_host, config \\ nil)
+
+  defp start_port_for_command(command, workspace, nil, config) do
     executable = System.find_executable("bash")
 
     if is_nil(executable) do
@@ -199,7 +201,7 @@ defmodule CymphonyElixir.Claude.AppServer do
             args: [~c"-lc", String.to_charlist(command)],
             cd: String.to_charlist(workspace),
             line: @port_line_bytes,
-            env: claude_env()
+            env: claude_env(config)
           ]
         )
 
@@ -207,7 +209,7 @@ defmodule CymphonyElixir.Claude.AppServer do
     end
   end
 
-  defp start_port_for_command(command, workspace, worker_host) when is_binary(worker_host) do
+  defp start_port_for_command(command, workspace, worker_host, _config) when is_binary(worker_host) do
     remote_command = remote_launch_command(workspace, command)
     SSH.start_port(worker_host, remote_command, line: @port_line_bytes)
   end
@@ -221,14 +223,47 @@ defmodule CymphonyElixir.Claude.AppServer do
     |> Enum.join(" && ")
   end
 
-  defp claude_env do
-    case System.get_env("ANTHROPIC_API_KEY") do
-      key when is_binary(key) and key != "" ->
-        [{~c"ANTHROPIC_API_KEY", String.to_charlist(key)}]
+  defp claude_env(nil) do
+    claude_env(Config.settings!())
+  end
 
-      _ ->
+  defp claude_env(config) do
+    base_env =
+      case System.get_env("ANTHROPIC_API_KEY") do
+        key when is_binary(key) and key != "" ->
+          [{~c"ANTHROPIC_API_KEY", String.to_charlist(key)}]
+
+        _ ->
+          []
+      end
+
+    provider_env =
+      if config do
+        provider_name = config.claude.provider
+        providers = config.providers || %{}
+
+        case provider_name do
+          name when is_binary(name) and name != "" ->
+            provider_config = Map.get(providers, name) || Map.get(providers, String.to_atom(name))
+
+            case provider_config do
+              env_map when is_map(env_map) ->
+                Enum.map(env_map, fn {k, v} ->
+                  {String.to_charlist(to_string(k)), String.to_charlist(to_string(v))}
+                end)
+
+              _ ->
+                []
+            end
+
+          _ ->
+            []
+        end
+      else
         []
-    end
+      end
+
+    provider_env ++ base_env
   end
 
   defp await_process_completion(port, on_message, metadata) do

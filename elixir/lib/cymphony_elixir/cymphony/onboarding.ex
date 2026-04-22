@@ -18,7 +18,8 @@ defmodule CymphonyElixir.Cymphony.Onboarding do
     case collect_project(nil) do
       {:ok, first_project} ->
         projects = collect_additional_projects([first_project])
-        config = %{"projects" => projects}
+        providers = collect_providers()
+        config = %{"projects" => projects, "providers" => providers}
 
         case Config.save(config) do
           :ok ->
@@ -55,6 +56,15 @@ defmodule CymphonyElixir.Cymphony.Onboarding do
             updated_projects = Config.projects(config) ++ [project]
             updated_config = Map.put(config, "projects", updated_projects)
 
+            # If no providers exist yet, offer to add some
+            updated_config =
+              if map_size(Config.providers(config)) == 0 do
+                providers = collect_providers()
+                Map.put(updated_config, "providers", providers)
+              else
+                updated_config
+              end
+
             case Config.save(updated_config) do
               :ok ->
                 IO.puts("\nProject '#{project["name"]}' added to #{Config.config_path()}")
@@ -87,30 +97,36 @@ defmodule CymphonyElixir.Cymphony.Onboarding do
     end
   end
 
-  defp collect_project(existing_names) do
+  defp collect_project(existing_names, providers \\ %{}) do
     with {:ok, name} <- ask_project_name(existing_names),
          {:ok, github_repo} <- ask_required("GitHub repo URL (e.g. git@github.com:user/repo.git): "),
          {:ok, project_slug} <- ask_required("Linear project slug (e.g. myteam-ab12cd34ef56): "),
          {:ok, api_key} <- ask_linear_api_key(),
          {:ok, workspace_root} <- ask_optional("Workspace root [~/.cymphony/workspaces/#{name}]: ", "~/.cymphony/workspaces/#{name}"),
          {:ok, polling_interval} <- ask_optional("Polling interval in seconds [5]: ", "5"),
-         {:ok, claude_command} <- ask_optional("Claude command [claude]: ", "claude") do
+         {:ok, claude_command} <- ask_optional("Claude command [claude]: ", "claude"),
+         {:ok, provider} <- ask_provider(providers) do
       polling_ms =
         case Integer.parse(polling_interval) do
           {secs, _} -> secs * 1000
           :error -> 5000
         end
 
-      {:ok,
-       %{
-         "name" => name,
-         "github_repo_url" => github_repo,
-         "linear_project_slug" => project_slug,
-         "linear_api_key" => api_key,
-         "workspace_root" => workspace_root,
-         "polling_interval_ms" => polling_ms,
-         "claude_command" => claude_command
-       }}
+      project =
+        %{
+          "name" => name,
+          "github_repo_url" => github_repo,
+          "linear_project_slug" => project_slug,
+          "linear_api_key" => api_key,
+          "workspace_root" => workspace_root,
+          "polling_interval_ms" => polling_ms,
+          "claude_command" => claude_command
+        }
+
+      project =
+        if provider != nil and provider != "", do: Map.put(project, "provider", provider), else: project
+
+      {:ok, project}
     end
   end
 
@@ -129,7 +145,7 @@ defmodule CymphonyElixir.Cymphony.Onboarding do
     end
   end
 
-  defp collect_additional_projects(projects) do
+  defp collect_additional_projects(projects, providers \\ %{}) do
     case IO.gets("Add another project? [y/N]: ") do
       :eof ->
         projects
@@ -139,9 +155,9 @@ defmodule CymphonyElixir.Cymphony.Onboarding do
 
       input ->
         if String.trim(String.downcase(input)) == "y" do
-          case collect_project(Enum.map(projects, & &1["name"])) do
+          case collect_project(Enum.map(projects, & &1["name"]), providers) do
             {:ok, project} ->
-              collect_additional_projects(projects ++ [project])
+              collect_additional_projects(projects ++ [project], providers)
 
             {:error, _reason} ->
               projects
@@ -218,6 +234,112 @@ defmodule CymphonyElixir.Cymphony.Onboarding do
       input ->
         value = String.trim(input)
         {:ok, if(value == "", do: default, else: value)}
+    end
+  end
+
+  defp ask_provider(providers) do
+    provider_names = Map.keys(providers)
+
+    if provider_names == [] do
+      {:ok, nil}
+    else
+      names_str = Enum.join(provider_names, ", ")
+      prompt = "Provider (#{names_str}) [none]: "
+
+      case IO.gets(prompt) do
+        :eof ->
+          {:ok, nil}
+
+        {:error, _} ->
+          {:ok, nil}
+
+        input ->
+          value = String.trim(input)
+
+          if value == "" do
+            {:ok, nil}
+          else
+            string_names = Enum.map(provider_names, &to_string/1)
+
+            if value in string_names do
+              {:ok, value}
+            else
+              IO.puts("  Unknown provider '#{value}'. Available: #{names_str}")
+              ask_provider(providers)
+            end
+          end
+      end
+    end
+  end
+
+  defp collect_providers do
+    IO.puts("\n--- Providers ---")
+    IO.puts("Providers let you set environment variables (API keys, model names, etc.)")
+    IO.puts("for different Claude backends. Leave empty to skip.\n")
+    do_collect_providers(%{})
+  end
+
+  defp do_collect_providers(providers) do
+    case IO.gets("Add a provider? [y/N]: ") do
+      :eof ->
+        providers
+
+      {:error, _} ->
+        providers
+
+      input ->
+        if String.trim(String.downcase(input)) == "y" do
+          case collect_single_provider() do
+            {:ok, {name, env}} ->
+              do_collect_providers(Map.put(providers, name, env))
+
+            {:error, _} ->
+              providers
+          end
+        else
+          providers
+        end
+    end
+  end
+
+  defp collect_single_provider do
+    with {:ok, name} <- ask_required("Provider name (e.g. cz, ck, cm): "),
+         {:ok, env_vars} <- collect_env_vars() do
+      {:ok, {name, env_vars}}
+    end
+  end
+
+  defp collect_env_vars do
+    IO.puts("Enter environment variables (empty key to finish):")
+    do_collect_env_vars(%{})
+  end
+
+  defp do_collect_env_vars(acc) do
+    case IO.gets("  Key: ") do
+      :eof ->
+        {:ok, acc}
+
+      {:error, _} ->
+        {:ok, acc}
+
+      input ->
+        key = String.trim(input)
+
+        if key == "" do
+          {:ok, acc}
+        else
+          case IO.gets("  Value: ") do
+            :eof ->
+              {:ok, Map.put(acc, key, "")}
+
+            {:error, _} ->
+              {:ok, Map.put(acc, key, "")}
+
+            val_input ->
+              value = String.trim(val_input)
+              do_collect_env_vars(Map.put(acc, key, value))
+          end
+        end
     end
   end
 end

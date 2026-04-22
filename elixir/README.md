@@ -47,6 +47,7 @@ cymphony
 ```
 cymphony                       Run with saved config (all projects)
 cymphony p frontend            Run only the "frontend" project
+cymphony c cz                  Run with a Claude provider (e.g. cz, ck, cm)
 cymphony s                     Re-run setup / onboarding wizard
 cymphony a                     Add a project to existing config
 cymphony l                     List configured projects
@@ -58,10 +59,57 @@ Flags (long form):
 
 - `--setup` — force onboarding wizard
 - `--project <name>` — run a specific project
+- `--provider <name>` — override the Claude provider for this run
+- `--claude-command <cmd>` — override the Claude command for this run
 - `--logs-root <path>` — override log directory
 - `--port <port>` — override HTTP server port
 - `--help`, `-h` — show help
 - `--version` — show version
+
+### Provider Configuration
+
+Cymphony supports **providers** — named environment variable sets that let you switch between Claude backends without shell functions or aliases.
+
+Providers are stored in `~/.cymphony/config.json` under the top-level `providers` key. Each provider maps a name to environment variables that Cymphony injects into the Claude Code process.
+
+**Example `config.json`:**
+
+```json
+{
+  "projects": [
+    {
+      "name": "myproject",
+      "github_repo_url": "git@github.com:your-org/repo.git",
+      "linear_project_slug": "yourteam-ab12cd34ef56",
+      "linear_api_key": "lin_api_...",
+      "claude_command": "claude",
+      "provider": "cz"
+    }
+  ],
+  "providers": {
+    "cz": {
+      "ANTHROPIC_BASE_URL": "https://api.z.ai/coding/v4",
+      "ANTHROPIC_API_KEY": "sk-zai-...",
+      "ANTHROPIC_MODEL": "glm5-.1",
+      "CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC": "1"
+    },
+    "ck": {
+      "ANTHROPIC_BASE_URL": "https://api.kimi.com/coding",
+      "ANTHROPIC_API_KEY": "sk-kimi-...",
+      "ANTHROPIC_MODEL": "kimi-k2.6"
+    }
+  }
+}
+```
+
+**Key behaviors:**
+
+- Set `provider` on a project to use that provider by default.
+- Override per-run with `cymphony c <provider>` or `cymphony --provider <name>`.
+- If a provider name is not found, `cymphony c <cmd>` falls back to treating it as a raw command override.
+- Provider env vars are injected via `Port.open` env, so they work even when `claude` is spawned headlessly.
+
+Providers can be configured interactively during `cymphony s` setup, or edited directly in `config.json`.
 
 ### Reconfigure
 
@@ -189,6 +237,21 @@ hooks:
     git clone --depth 1 "$SOURCE_REPO_URL" .
 claude:
   command: "$CLAUDE_BIN -p --model claude-sonnet-4-6"
+```
+
+**Providers in `WORKFLOW.md`:**
+
+When using config-based mode (`cymphony` without a `WORKFLOW.md` path), providers from `~/.cymphony/config.json` are automatically included in the generated workflow. You can also define providers directly in `WORKFLOW.md` for legacy mode:
+
+```yaml
+claude:
+  command: claude
+  provider: cz
+providers:
+  cz:
+    ANTHROPIC_BASE_URL: "https://api.z.ai/coding/v4"
+    ANTHROPIC_API_KEY: "sk-zai-..."
+    ANTHROPIC_MODEL: "glm5-.1"
 ```
 
 - If `WORKFLOW.md` is missing or has invalid YAML at startup, Cymphony does not boot.

@@ -44,10 +44,10 @@ Download the latest `.deb` from [GitHub Releases](https://github.com/zaalipro/cy
 
 ```bash
 # Download the latest release (amd64 only)
-wget https://github.com/zaalipro/cymphony/releases/download/v0.4.1/cymphony_0.4.1_amd64.deb
+wget https://github.com/zaalipro/cymphony/releases/download/v0.4.2/cymphony_0.4.2_amd64.deb
 
 # Install
-sudo dpkg -i cymphony_0.4.1_amd64.deb
+sudo dpkg -i cymphony_0.4.2_amd64.deb
 
 # Run setup
 cymphony
@@ -58,8 +58,8 @@ First run triggers an interactive setup (GitHub repo URL, Linear project slug, A
 #### Upgrade
 
 ```bash
-wget https://github.com/zaalipro/cymphony/releases/download/v0.4.0/cymphony_0.4.0_amd64.deb
-sudo dpkg -i cymphony_0.4.0_amd64.deb
+wget https://github.com/zaalipro/cymphony/releases/download/v0.4.2/cymphony_0.4.2_amd64.deb
+sudo dpkg -i cymphony_0.4.2_amd64.deb
 ```
 
 #### Uninstall
@@ -82,6 +82,48 @@ cymphony l                     # List projects
 cymphony v                     # Show version
 cymphony h                     # Show help
 ```
+
+### Provider Configuration
+
+Cymphony supports **providers** — named environment variable sets that let you switch between Claude backends (e.g., Anthropic, Kimi, OpenRouter) without shell functions.
+
+Providers are stored in `~/.cymphony/config.json` under the top-level `providers` key. Each provider is a name mapped to a set of environment variables that Cymphony injects when spawning Claude Code.
+
+**Example `config.json`:**
+
+```json
+{
+  "projects": [
+    {
+      "name": "myproject",
+      "github_repo_url": "git@github.com:your-org/repo.git",
+      "linear_project_slug": "yourteam-ab12cd34ef56",
+      "linear_api_key": "lin_api_...",
+      "claude_command": "claude",
+      "provider": "cz"
+    }
+  ],
+  "providers": {
+    "cz": {
+      "ANTHROPIC_BASE_URL": "https://api.z.ai/coding/v4",
+      "ANTHROPIC_API_KEY": "sk-zai-...",
+      "ANTHROPIC_MODEL": "glm5-.1",
+      "CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC": "1"
+    },
+    "ck": {
+      "ANTHROPIC_BASE_URL": "https://api.kimi.com/coding",
+      "ANTHROPIC_API_KEY": "sk-kimi-...",
+      "ANTHROPIC_MODEL": "kimi-k2.6"
+    }
+  }
+}
+```
+
+- Set `provider` on a project to use that provider by default.
+- Override per-run with `cymphony c <provider>` or `cymphony --provider <name>`.
+- If a provider is not found, `cymphony c <cmd>` falls back to treating it as a raw Claude command override.
+
+Providers are configured interactively during `cymphony s` setup, or you can edit `config.json` directly.
 
 ### Run from Source
 

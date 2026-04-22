@@ -158,6 +158,7 @@ defmodule CymphonyElixir.Config.Schema do
     @primary_key false
     embedded_schema do
       field(:command, :string, default: "claude")
+      field(:provider, :string)
 
       field(:approval_policy, StringOrMap,
         default: %{
@@ -191,6 +192,7 @@ defmodule CymphonyElixir.Config.Schema do
         attrs,
         [
           :command,
+          :provider,
           :approval_policy,
           :permission_mode,
           :allowed_tools,
@@ -288,6 +290,7 @@ defmodule CymphonyElixir.Config.Schema do
   end
 
   embedded_schema do
+    field(:providers, :map)
     embeds_one(:tracker, Tracker, on_replace: :update, defaults_to_struct: true)
     embeds_one(:polling, Polling, on_replace: :update, defaults_to_struct: true)
     embeds_one(:workspace, Workspace, on_replace: :update, defaults_to_struct: true)
@@ -379,7 +382,7 @@ defmodule CymphonyElixir.Config.Schema do
 
   defp changeset(attrs) do
     %__MODULE__{}
-    |> cast(attrs, [])
+    |> cast(attrs, [:providers])
     |> cast_embed(:tracker, with: &Tracker.changeset/2)
     |> cast_embed(:polling, with: &Polling.changeset/2)
     |> cast_embed(:workspace, with: &Workspace.changeset/2)

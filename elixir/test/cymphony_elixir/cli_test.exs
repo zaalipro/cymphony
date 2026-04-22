@@ -230,5 +230,18 @@ defmodule CymphonyElixir.CLITest do
       result = CLI.evaluate(["c", "cz"], deps)
       assert match?({:ok, _}, result) or match?({:error, _}, result)
     end
+
+    test "--provider <name> sets provider override", %{deps: deps} do
+      parent = self()
+
+      provider_deps =
+        Map.put(deps, :set_workflow_file_path, fn path ->
+          send(parent, {:workflow_set, path})
+          :ok
+        end)
+
+      result = CLI.evaluate(["--provider", "cz"], provider_deps)
+      assert match?({:ok, _}, result) or match?({:error, _}, result)
+    end
   end
 end

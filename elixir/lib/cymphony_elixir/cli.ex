@@ -20,6 +20,7 @@ defmodule CymphonyElixir.CLI do
     logs_root: :string,
     port: :integer,
     project: :string,
+    provider: :string,
     restart: :boolean,
     setup: :boolean,
     version: :boolean
@@ -240,7 +241,7 @@ defmodule CymphonyElixir.CLI do
     Usage:
       cymphony                       Run with saved config (all projects)
       cymphony p frontend            Run only the "frontend" project
-      cymphony c cz                  Run with a different Claude command (e.g. cz, ck, cm)
+      cymphony c cz                  Run with a different Claude provider (e.g. cz, ck, cm)
       cymphony b                     Run in background
       cymphony bs                    Stop background process
       cymphony r                     Restart background process
@@ -255,6 +256,7 @@ defmodule CymphonyElixir.CLI do
     Flags:
       --setup                  Force onboarding wizard
       --project <name>         Run a specific project
+      --provider <name>        Override the Claude provider for this run
       --claude-command <cmd>   Override the Claude command for this run
       --logs-root <path>       Override log directory
       --port <port>            Override HTTP server port
@@ -334,12 +336,19 @@ defmodule CymphonyElixir.CLI do
     case config do
       {:ok, cfg} ->
         projects = CymphonyConfig.projects(cfg)
+        providers = CymphonyConfig.providers(cfg)
         filtered_projects = filter_projects(projects, project_filter)
 
         filtered_projects =
           case Keyword.get(opts, :claude_command) do
             nil -> filtered_projects
-            cmd -> Enum.map(filtered_projects, &Map.put(&1, "claude_command", cmd))
+            cmd -> Enum.map(filtered_projects, &resolve_command_override(&1, cmd, providers))
+          end
+
+        filtered_projects =
+          case Keyword.get(opts, :provider) do
+            nil -> filtered_projects
+            provider -> Enum.map(filtered_projects, &Map.put(&1, "provider", provider))
           end
 
         case filtered_projects do
@@ -352,7 +361,9 @@ defmodule CymphonyElixir.CLI do
              end}
 
           projects ->
-            case generate_workflow_files(projects) do
+            projects_with_providers = Enum.map(projects, &Map.put(&1, "providers", providers))
+
+            case generate_workflow_files(projects_with_providers) do
               {:ok, project_workflow_pairs} ->
                 with :ok <- maybe_set_logs_root(opts, deps),
                      :ok <- maybe_set_server_port(opts, deps) do
@@ -366,6 +377,14 @@ defmodule CymphonyElixir.CLI do
 
       {:error, reason} ->
         {:error, "Configuration error: #{inspect(reason)}"}
+    end
+  end
+
+  defp resolve_command_override(project, cmd, providers) do
+    if Map.has_key?(providers, cmd) or Map.has_key?(providers, String.to_atom(cmd)) do
+      Map.put(project, "provider", cmd)
+    else
+      Map.put(project, "claude_command", cmd)
     end
   end
 

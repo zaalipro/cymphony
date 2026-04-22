@@ -64,6 +64,13 @@ defmodule CymphonyElixir.Cymphony.Config do
     end
   end
 
+  @doc """
+  Extracts the providers map from a normalized config map.
+  """
+  @spec providers(map()) :: map()
+  def providers(%{"providers" => providers}) when is_map(providers), do: providers
+  def providers(_config), do: %{}
+
   @spec save(map()) :: :ok | {:error, term()}
   def save(config) do
     dir = config_dir()
@@ -89,6 +96,8 @@ defmodule CymphonyElixir.Cymphony.Config do
     workspace_root = Map.get(config, "workspace_root", "~/.cymphony/workspaces")
     polling_ms = Map.get(config, "polling_interval_ms", 5000)
     claude_command = Map.get(config, "claude_command", "claude")
+    provider = Map.get(config, "provider")
+    providers = Map.get(config, "providers", %{})
 
     hooks_section =
       if github_repo != "" do
@@ -98,6 +107,28 @@ defmodule CymphonyElixir.Cymphony.Config do
           "    if command -v mise >/dev/null 2>&1; then\n" <>
           "      cd elixir && mise trust && mise exec -- mix deps.get\n" <>
           "    fi\n"
+      else
+        ""
+      end
+
+    provider_section =
+      if provider != nil and provider != "" do
+        "  provider: #{provider}\n"
+      else
+        ""
+      end
+
+    providers_section =
+      if map_size(providers) > 0 do
+        env_lines =
+          Enum.flat_map(providers, fn {name, env_map} ->
+            [
+              "  #{name}:\n"
+              | Enum.map(env_map, fn {k, v} -> "    #{k}: #{v}\n" end)
+            ]
+          end)
+
+        "providers:\n" <> Enum.join(env_lines)
       else
         ""
       end
@@ -127,10 +158,12 @@ defmodule CymphonyElixir.Cymphony.Config do
       "  max_turns: 20\n" <>
       "claude:\n" <>
       "  command: #{claude_command}\n" <>
+      "#{provider_section}" <>
       "  output_format: stream-json\n" <>
       "  approval_policy: \"never\"\n" <>
       "  thread_sandbox: workspace-write\n" <>
       "  turn_sandbox_policy:\n" <>
-      "    type: workspaceWrite\n"
+      "    type: workspaceWrite\n" <>
+      "#{providers_section}"
   end
 end
