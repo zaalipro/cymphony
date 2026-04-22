@@ -32,7 +32,7 @@ First run triggers an interactive setup that saves config to `~/.cymphony/config
 GitHub repo URL (e.g. git@github.com:user/repo.git): git@github.com:your-org/repo.git
 Linear project slug (e.g. myteam-ab12cd34ef56): myteam-ab12cd34ef56
 Linear API key: lin_api_...
-Workspace root [~/cymphony-workspaces]:
+Workspace root [~/.cymphony/workspaces]:
 Polling interval in seconds [5]:
 ```
 

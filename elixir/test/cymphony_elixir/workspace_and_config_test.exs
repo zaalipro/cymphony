@@ -1085,15 +1085,15 @@ defmodule CymphonyElixir.WorkspaceAndConfigTest do
   test "schema keeps workspace roots raw while sandbox helpers expand only for local use" do
     assert {:ok, settings} =
              Schema.parse(%{
-               workspace: %{root: "~/.cymphony-workspaces"},
+               workspace: %{root: "~/.cymphony/workspaces"},
                claude: %{}
              })
 
-    assert settings.workspace.root == "~/.cymphony-workspaces"
+    assert settings.workspace.root == "~/.cymphony/workspaces"
 
     assert Schema.resolve_turn_sandbox_policy(settings) == %{
              "type" => "workspaceWrite",
-             "writableRoots" => [Path.expand("~/.cymphony-workspaces")],
+             "writableRoots" => [Path.expand("~/.cymphony/workspaces")],
              "readOnlyAccess" => %{"type" => "fullAccess"},
              "networkAccess" => false,
              "excludeTmpdirEnvVar" => false,
@@ -1105,7 +1105,7 @@ defmodule CymphonyElixir.WorkspaceAndConfigTest do
 
     assert remote_policy == %{
              "type" => "workspaceWrite",
-             "writableRoots" => ["~/.cymphony-workspaces"],
+             "writableRoots" => ["~/.cymphony/workspaces"],
              "readOnlyAccess" => %{"type" => "fullAccess"},
              "networkAccess" => false,
              "excludeTmpdirEnvVar" => false,
