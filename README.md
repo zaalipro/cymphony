@@ -44,10 +44,10 @@ Download the latest `.deb` from [GitHub Releases](https://github.com/zaalipro/cy
 
 ```bash
 # Download the latest release (amd64 only)
-wget https://github.com/zaalipro/cymphony/releases/download/v0.4.0/cymphony_0.4.0_amd64.deb
+wget https://github.com/zaalipro/cymphony/releases/download/v0.4.1/cymphony_0.4.1_amd64.deb
 
 # Install
-sudo dpkg -i cymphony_0.4.0_amd64.deb
+sudo dpkg -i cymphony_0.4.1_amd64.deb
 
 # Run setup
 cymphony
@@ -75,6 +75,7 @@ sudo dpkg -r cymphony
 ```bash
 cymphony                       # Run with saved config
 cymphony p frontend            # Run only the "frontend" project
+cymphony c cz                  # Run with a different Claude provider (e.g. cz, ck, cm)
 cymphony s                     # Re-run setup
 cymphony a                     # Add a project
 cymphony l                     # List projects

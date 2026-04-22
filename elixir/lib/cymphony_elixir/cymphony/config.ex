@@ -88,6 +88,7 @@ defmodule CymphonyElixir.Cymphony.Config do
     github_repo = Map.get(config, "github_repo_url", "")
     workspace_root = Map.get(config, "workspace_root", "~/.cymphony/workspaces")
     polling_ms = Map.get(config, "polling_interval_ms", 5000)
+    claude_command = Map.get(config, "claude_command", "claude")
 
     hooks_section =
       if github_repo != "" do
@@ -125,7 +126,7 @@ defmodule CymphonyElixir.Cymphony.Config do
       "  max_concurrent_agents: 10\n" <>
       "  max_turns: 20\n" <>
       "claude:\n" <>
-      "  command: claude\n" <>
+      "  command: #{claude_command}\n" <>
       "  output_format: stream-json\n" <>
       "  approval_policy: \"never\"\n" <>
       "  thread_sandbox: workspace-write\n" <>

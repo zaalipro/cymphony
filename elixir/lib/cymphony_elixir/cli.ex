@@ -14,6 +14,7 @@ defmodule CymphonyElixir.CLI do
     {@acknowledgement_switch, :boolean},
     background: :boolean,
     background_stop: :boolean,
+    claude_command: :string,
     daemon_internal: :boolean,
     help: :boolean,
     logs_root: :string,
@@ -100,6 +101,8 @@ defmodule CymphonyElixir.CLI do
   defp expand_shorthands(["log" | rest]), do: ["log" | expand_shorthands(rest)]
   defp expand_shorthands(["p", value | rest]), do: ["--project", value | expand_shorthands(rest)]
   defp expand_shorthands(["p" | _]), do: ["--help"]
+  defp expand_shorthands(["c", value | rest]), do: ["--claude-command", value | expand_shorthands(rest)]
+  defp expand_shorthands(["c" | _]), do: ["--help"]
   defp expand_shorthands([arg | rest]), do: [arg | expand_shorthands(rest)]
 
   defp background_requested?(args) do
@@ -237,6 +240,7 @@ defmodule CymphonyElixir.CLI do
     Usage:
       cymphony                       Run with saved config (all projects)
       cymphony p frontend            Run only the "frontend" project
+      cymphony c cz                  Run with a different Claude command (e.g. cz, ck, cm)
       cymphony b                     Run in background
       cymphony bs                    Stop background process
       cymphony r                     Restart background process
@@ -251,6 +255,7 @@ defmodule CymphonyElixir.CLI do
     Flags:
       --setup                  Force onboarding wizard
       --project <name>         Run a specific project
+      --claude-command <cmd>   Override the Claude command for this run
       --logs-root <path>       Override log directory
       --port <port>            Override HTTP server port
       --help, -h               Show this help
@@ -330,6 +335,12 @@ defmodule CymphonyElixir.CLI do
       {:ok, cfg} ->
         projects = CymphonyConfig.projects(cfg)
         filtered_projects = filter_projects(projects, project_filter)
+
+        filtered_projects =
+          case Keyword.get(opts, :claude_command) do
+            nil -> filtered_projects
+            cmd -> Enum.map(filtered_projects, &Map.put(&1, "claude_command", cmd))
+          end
 
         case filtered_projects do
           [] ->

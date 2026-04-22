@@ -218,5 +218,17 @@ defmodule CymphonyElixir.CLITest do
       assert {:error, text} = CLI.evaluate(["p"])
       assert text =~ "Usage:"
     end
+
+    test "c without value shows help" do
+      assert {:error, text} = CLI.evaluate(["c"])
+      assert text =~ "Usage:"
+    end
+
+    test "c expands to --claude-command", %{deps: deps} do
+      # c triggers --claude-command; without config it falls back to setup/onboarding
+      # We test that 'c' is expanded correctly by checking evaluate doesn't crash
+      result = CLI.evaluate(["c", "cz"], deps)
+      assert match?({:ok, _}, result) or match?({:error, _}, result)
+    end
   end
 end

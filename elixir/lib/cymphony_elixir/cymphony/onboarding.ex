@@ -93,7 +93,8 @@ defmodule CymphonyElixir.Cymphony.Onboarding do
          {:ok, project_slug} <- ask_required("Linear project slug (e.g. myteam-ab12cd34ef56): "),
          {:ok, api_key} <- ask_linear_api_key(),
          {:ok, workspace_root} <- ask_optional("Workspace root [~/.cymphony/workspaces/#{name}]: ", "~/.cymphony/workspaces/#{name}"),
-         {:ok, polling_interval} <- ask_optional("Polling interval in seconds [5]: ", "5") do
+         {:ok, polling_interval} <- ask_optional("Polling interval in seconds [5]: ", "5"),
+         {:ok, claude_command} <- ask_optional("Claude command [claude]: ", "claude") do
       polling_ms =
         case Integer.parse(polling_interval) do
           {secs, _} -> secs * 1000
@@ -107,7 +108,8 @@ defmodule CymphonyElixir.Cymphony.Onboarding do
          "linear_project_slug" => project_slug,
          "linear_api_key" => api_key,
          "workspace_root" => workspace_root,
-         "polling_interval_ms" => polling_ms
+         "polling_interval_ms" => polling_ms,
+         "claude_command" => claude_command
        }}
     end
   end
