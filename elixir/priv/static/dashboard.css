@@ -823,6 +823,20 @@ pre,
   gap: 0.5rem;
 }
 
+.session-log-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+}
+
+.session-log-title {
+  font-size: 0.78rem;
+  color: var(--muted);
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+}
+
 .session-log-terminal {
   background: var(--terminal-bg);
   border: 1px solid var(--terminal-border);
