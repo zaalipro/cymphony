@@ -451,7 +451,7 @@ defmodule CymphonyElixirWeb.DashboardLive do
                         <% end %>
                       </div>
                       <div class="session-activity-content">
-                        <span class={log_event_badge_class(to_string(entry.last_event))}>
+                        <span class={log_event_badge_class(entry.last_event)}>
                           <%= entry.last_event %>
                         </span>
                         <span class="session-activity-message">
@@ -662,9 +662,9 @@ defmodule CymphonyElixirWeb.DashboardLive do
     inspect(message, pretty: true, limit: 80)
   end
 
-  defp log_event_badge_class(event) when is_binary(event) do
+  defp log_event_badge_class(event) when is_binary(event) or is_atom(event) do
     base = "log-event-name"
-    normalized = String.downcase(event)
+    normalized = event |> to_string() |> String.downcase()
 
     cond do
       String.contains?(normalized, ["error", "failed", "exit"]) -> "#{base} log-event-danger"
