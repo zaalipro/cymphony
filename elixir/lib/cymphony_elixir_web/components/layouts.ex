@@ -17,16 +17,18 @@ defmodule CymphonyElixirWeb.Layouts do
         <meta name="viewport" content="width=device-width, initial-scale=1" />
         <meta name="csrf-token" content={@csrf_token} />
         <title>Cymphony Observability</title>
-        <script defer src="/vendor/phoenix_html/phoenix_html.js"></script>
-        <script defer src="/vendor/phoenix/phoenix.js"></script>
-        <script defer src="/vendor/phoenix_live_view/phoenix_live_view.js"></script>
+        <script src="/vendor/phoenix_html/phoenix_html.js"></script>
+        <script src="/vendor/phoenix/phoenix.js"></script>
+        <script src="/vendor/phoenix_live_view/phoenix_live_view.js"></script>
         <script>
-          window.addEventListener("DOMContentLoaded", function () {
-            var csrfToken = document
-              .querySelector("meta[name='csrf-token']")
-              ?.getAttribute("content");
+          (function() {
+            var meta = document.querySelector("meta[name='csrf-token']");
+            var csrfToken = meta ? meta.getAttribute("content") : null;
 
-            if (!window.Phoenix || !window.LiveView) return;
+            if (!window.Phoenix || !window.LiveView) {
+              console.error("Phoenix or LiveView not loaded");
+              return;
+            }
 
             var liveSocket = new window.LiveView.LiveSocket("/live", window.Phoenix.Socket, {
               params: {_csrf_token: csrfToken}
@@ -34,7 +36,7 @@ defmodule CymphonyElixirWeb.Layouts do
 
             liveSocket.connect();
             window.liveSocket = liveSocket;
-          });
+          })();
         </script>
         <link rel="stylesheet" href="/dashboard.css" />
       </head>
