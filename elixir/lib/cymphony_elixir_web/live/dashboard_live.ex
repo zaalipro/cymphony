@@ -25,7 +25,6 @@ defmodule CymphonyElixirWeb.DashboardLive do
       socket
       |> assign(:payload, @default_payload)
       |> assign(:now, DateTime.utc_now())
-      |> assign(:expanded_issue_id, nil)
       |> assign(:stalled_alert_dismissed, false)
       |> assign(:filter_project, nil)
       |> assign(:token_samples, [])
@@ -38,13 +37,6 @@ defmodule CymphonyElixirWeb.DashboardLive do
     end
 
     {:ok, socket}
-  end
-
-  @impl true
-  def handle_event("toggle_logs", %{"issue" => issue_id}, socket) do
-    currently_expanded = socket.assigns.expanded_issue_id
-    expanded = if currently_expanded == issue_id, do: nil, else: issue_id
-    {:noreply, assign(socket, :expanded_issue_id, expanded)}
   end
 
   @impl true
@@ -470,34 +462,21 @@ defmodule CymphonyElixirWeb.DashboardLive do
                   <% end %>
 
                   <div class="session-card-log">
-                    <div class="session-log-header">
-                      <span class="session-log-title">Recent logs</span>
-                      <button
-                        type="button"
-                        class="subtle-button"
-                        phx-click="toggle_logs"
-                        phx-value-issue={entry.issue_identifier}
-                      >
-                        <%= if @expanded_issue_id == entry.issue_identifier do %>Hide<% else %>Show<% end %>
-                      </button>
+                    <div class="session-log-terminal">
+                      <%= if entry.log_events == [] do %>
+                        <p class="empty-state">No log events yet.</p>
+                      <% else %>
+                        <ul class="log-list">
+                          <%= for log <- entry.log_events do %>
+                            <li class="log-event">
+                              <span class="log-event-at"><%= format_log_at(log.at) %></span>
+                              <span class={log_event_badge_class(log.event)}><%= log.event %></span>
+                              <span class="log-event-message"><%= format_log_message(log.message) %></span>
+                            </li>
+                          <% end %>
+                        </ul>
+                      <% end %>
                     </div>
-                    <%= if @expanded_issue_id == entry.issue_identifier do %>
-                      <div class="session-log-terminal">
-                        <%= if entry.log_events == [] do %>
-                          <p class="empty-state">No log events yet.</p>
-                        <% else %>
-                          <ul class="log-list">
-                            <%= for log <- entry.log_events do %>
-                              <li class="log-event">
-                                <span class="log-event-at"><%= format_log_at(log.at) %></span>
-                                <span class={log_event_badge_class(log.event)}><%= log.event %></span>
-                                <span class="log-event-message"><%= format_log_message(log.message) %></span>
-                              </li>
-                            <% end %>
-                          </ul>
-                        <% end %>
-                      </div>
-                    <% end %>
                   </div>
                 </article>
               <% end %>
