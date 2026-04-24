@@ -1,5 +1,5 @@
 ```text
-╭─ SYMPHONY STATUS
+╭─ CYMPHONY STATUS
 │ Agents: 0/10
 │ Throughput: 0 tps
 │ Runtime: 0m 0s

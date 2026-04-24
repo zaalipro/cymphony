@@ -1285,8 +1285,8 @@ defmodule CymphonyElixir.WorkspaceAndConfigTest do
       printf 'ARGV:%s\\n' "$*" >> "$trace_file"
 
       case "$*" in
-        *"__SYMPHONY_WORKSPACE__"*)
-          printf '%s\\t%s\\t%s\\n' '__SYMPHONY_WORKSPACE__' '1' '#{workspace_path}'
+        *"__CYMPHONY_WORKSPACE__"*)
+          printf '%s\\t%s\\t%s\\n' '__CYMPHONY_WORKSPACE__' '1' '#{workspace_path}'
           ;;
       esac
 
@@ -1312,7 +1312,7 @@ defmodule CymphonyElixir.WorkspaceAndConfigTest do
 
       trace = File.read!(trace_file)
       assert trace =~ "-p 2200 worker-01 bash -lc"
-      assert trace =~ "__SYMPHONY_WORKSPACE__"
+      assert trace =~ "__CYMPHONY_WORKSPACE__"
       assert trace =~ "~/.cymphony-remote-workspaces/MT-SSH-WS"
       assert trace =~ "${workspace#~/}"
       assert trace =~ "echo before-run"

@@ -13,8 +13,8 @@ defmodule CymphonyElixir.LiveE2ETest do
   @docker_support_dir Path.expand("../support/live_e2e_docker", __DIR__)
   @docker_compose_file Path.join(@docker_support_dir, "docker-compose.yml")
   @result_file "LIVE_E2E_RESULT.txt"
-  @live_e2e_skip_reason if(System.get_env("SYMPHONY_RUN_LIVE_E2E") != "1",
-                          do: "set SYMPHONY_RUN_LIVE_E2E=1 to enable the real Linear/Claude Code end-to-end test"
+  @live_e2e_skip_reason if(System.get_env("CYMPHONY_RUN_LIVE_E2E") != "1",
+                          do: "set CYMPHONY_RUN_LIVE_E2E=1 to enable the real Linear/Claude Code end-to-end test"
                         )
 
   @team_query """
@@ -441,7 +441,7 @@ defmodule CymphonyElixir.LiveE2ETest do
     workflow_root = Path.join(test_root, "workflow")
     workflow_file = Path.join(workflow_root, "WORKFLOW.md")
     worker_setup = live_worker_setup!(backend, run_id, test_root)
-    team_key = System.get_env("SYMPHONY_LIVE_LINEAR_TEAM_KEY") || @default_team_key
+    team_key = System.get_env("CYMPHONY_LIVE_LINEAR_TEAM_KEY") || @default_team_key
     original_workflow_path = Workflow.workflow_file_path()
     orchestrator_pid = Process.whereis(CymphonyElixir.Orchestrator)
 
@@ -573,10 +573,10 @@ defmodule CymphonyElixir.LiveE2ETest do
     worker_ports = reserve_tcp_ports(@docker_worker_count)
     worker_hosts = Enum.map(worker_ports, &"localhost:#{&1}")
     project_name = docker_project_name(run_id)
-    previous_ssh_config = System.get_env("SYMPHONY_SSH_CONFIG")
+    previous_ssh_config = System.get_env("CYMPHONY_SSH_CONFIG")
 
     base_cleanup = fn ->
-      restore_env("SYMPHONY_SSH_CONFIG", previous_ssh_config)
+      restore_env("CYMPHONY_SSH_CONFIG", previous_ssh_config)
       docker_compose_down(project_name, docker_compose_env(worker_ports, auth_json_path, key_path <> ".pub"))
     end
 
@@ -585,7 +585,7 @@ defmodule CymphonyElixir.LiveE2ETest do
         File.mkdir_p!(ssh_root)
         generate_ssh_keypair!(key_path)
         write_docker_ssh_config!(config_path, key_path)
-        System.put_env("SYMPHONY_SSH_CONFIG", config_path)
+        System.put_env("CYMPHONY_SSH_CONFIG", config_path)
 
         docker_compose_up!(project_name, docker_compose_env(worker_ports, auth_json_path, key_path <> ".pub"))
         wait_for_ssh_hosts!(worker_hosts)
@@ -624,7 +624,7 @@ defmodule CymphonyElixir.LiveE2ETest do
   end
 
   defp live_ssh_worker_hosts do
-    System.get_env("SYMPHONY_LIVE_SSH_WORKER_HOSTS", "")
+    System.get_env("CYMPHONY_LIVE_SSH_WORKER_HOSTS", "")
     |> String.split(",", trim: true)
     |> Enum.map(&String.trim/1)
     |> Enum.reject(&(&1 == ""))
@@ -738,10 +738,10 @@ defmodule CymphonyElixir.LiveE2ETest do
   defp docker_compose_env(worker_ports, auth_json_path, authorized_key_path)
        when is_list(worker_ports) and is_binary(auth_json_path) and is_binary(authorized_key_path) do
     [
-      {"SYMPHONY_LIVE_DOCKER_AUTH_JSON", auth_json_path},
-      {"SYMPHONY_LIVE_DOCKER_AUTHORIZED_KEY", authorized_key_path},
-      {"SYMPHONY_LIVE_DOCKER_WORKER_1_PORT", Integer.to_string(Enum.at(worker_ports, 0))},
-      {"SYMPHONY_LIVE_DOCKER_WORKER_2_PORT", Integer.to_string(Enum.at(worker_ports, 1))}
+      {"CYMPHONY_LIVE_DOCKER_AUTH_JSON", auth_json_path},
+      {"CYMPHONY_LIVE_DOCKER_AUTHORIZED_KEY", authorized_key_path},
+      {"CYMPHONY_LIVE_DOCKER_WORKER_1_PORT", Integer.to_string(Enum.at(worker_ports, 0))},
+      {"CYMPHONY_LIVE_DOCKER_WORKER_2_PORT", Integer.to_string(Enum.at(worker_ports, 1))}
     ]
   end
 

@@ -47,16 +47,16 @@ defmodule CymphonyElixir.SSHTest do
     test_root = Path.join(System.tmp_dir!(), "cymphony-ssh-test-#{System.unique_integer([:positive])}")
     trace_file = Path.join(test_root, "ssh.trace")
     previous_path = System.get_env("PATH")
-    previous_ssh_config = System.get_env("SYMPHONY_SSH_CONFIG")
+    previous_ssh_config = System.get_env("CYMPHONY_SSH_CONFIG")
 
     on_exit(fn ->
       restore_env("PATH", previous_path)
-      restore_env("SYMPHONY_SSH_CONFIG", previous_ssh_config)
+      restore_env("CYMPHONY_SSH_CONFIG", previous_ssh_config)
       File.rm_rf(test_root)
     end)
 
     install_fake_ssh!(test_root, trace_file)
-    System.put_env("SYMPHONY_SSH_CONFIG", "/tmp/cymphony-test-ssh-config")
+    System.put_env("CYMPHONY_SSH_CONFIG", "/tmp/cymphony-test-ssh-config")
 
     assert {:ok, {"", 0}} =
              SSH.run("localhost:2222", "echo ready", stderr_to_stdout: true)
@@ -106,11 +106,11 @@ defmodule CymphonyElixir.SSHTest do
     test_root = Path.join(System.tmp_dir!(), "cymphony-ssh-port-test-#{System.unique_integer([:positive])}")
     trace_file = Path.join(test_root, "ssh.trace")
     previous_path = System.get_env("PATH")
-    previous_ssh_config = System.get_env("SYMPHONY_SSH_CONFIG")
+    previous_ssh_config = System.get_env("CYMPHONY_SSH_CONFIG")
 
     on_exit(fn ->
       restore_env("PATH", previous_path)
-      restore_env("SYMPHONY_SSH_CONFIG", previous_ssh_config)
+      restore_env("CYMPHONY_SSH_CONFIG", previous_ssh_config)
       File.rm_rf(test_root)
     end)
 
@@ -121,7 +121,7 @@ defmodule CymphonyElixir.SSHTest do
     exit 0
     """)
 
-    System.delete_env("SYMPHONY_SSH_CONFIG")
+    System.delete_env("CYMPHONY_SSH_CONFIG")
 
     assert {:ok, port} = SSH.start_port("localhost", "printf ok")
     assert is_port(port)

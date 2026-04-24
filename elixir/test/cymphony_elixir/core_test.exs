@@ -1166,12 +1166,12 @@ defmodule CymphonyElixir.CoreTest do
       printf 'ARGV:%s\\n' "$*" >> "$trace_file"
 
       case "$*" in
-        *worker-a*"__SYMPHONY_WORKSPACE__"*)
+        *worker-a*"__CYMPHONY_WORKSPACE__"*)
           printf '%s\\n' 'worker-a prepare failed' >&2
           exit 75
           ;;
-        *worker-b*"__SYMPHONY_WORKSPACE__"*)
-          printf '%s\\t%s\\t%s\\n' '__SYMPHONY_WORKSPACE__' '1' '/remote/home/.cymphony-remote-workspaces/MT-SSH-FAILOVER'
+        *worker-b*"__CYMPHONY_WORKSPACE__"*)
+          printf '%s\\t%s\\t%s\\n' '__CYMPHONY_WORKSPACE__' '1' '/remote/home/.cymphony-remote-workspaces/MT-SSH-FAILOVER'
           exit 0
           ;;
         *)

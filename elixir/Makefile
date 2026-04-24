@@ -34,7 +34,7 @@ dialyzer:
 	$(MIX) dialyzer --format short
 
 e2e:
-	SYMPHONY_RUN_LIVE_E2E=1 $(MIX) test test/cymphony_elixir/live_e2e_test.exs
+	CYMPHONY_RUN_LIVE_E2E=1 $(MIX) test test/cymphony_elixir/live_e2e_test.exs
 
 ci:
 	$(MAKE) setup

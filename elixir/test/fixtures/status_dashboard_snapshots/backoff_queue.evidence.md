@@ -1,5 +1,5 @@
 ```text
-╭─ SYMPHONY STATUS
+╭─ CYMPHONY STATUS
 │ Agents: 1/10
 │ Throughput: 15 tps
 │ Runtime: 45m 0s
