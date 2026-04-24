@@ -4,7 +4,7 @@ defmodule CymphonyElixir.MixProject do
   def project do
     [
       app: :cymphony_elixir,
-      version: "0.4.6",
+      version: "0.4.7",
       elixir: "~> 1.19",
       compilers: [:phoenix_live_view] ++ Mix.compilers(),
       start_permanent: Mix.env() == :prod,
