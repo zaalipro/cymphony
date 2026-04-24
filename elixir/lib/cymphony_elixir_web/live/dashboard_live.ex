@@ -25,7 +25,6 @@ defmodule CymphonyElixirWeb.DashboardLive do
       socket
       |> assign(:payload, @default_payload)
       |> assign(:now, DateTime.utc_now())
-      |> assign(:expanded_issue_id, nil)
       |> assign(:stalled_alert_dismissed, false)
       |> assign(:filter_project, nil)
       |> assign(:token_samples, [])
@@ -38,13 +37,6 @@ defmodule CymphonyElixirWeb.DashboardLive do
     end
 
     {:ok, socket}
-  end
-
-  @impl true
-  def handle_event("toggle_logs", %{"issue" => issue_id}, socket) do
-    currently_expanded = socket.assigns.expanded_issue_id
-    expanded = if currently_expanded == issue_id, do: nil, else: issue_id
-    {:noreply, assign(socket, :expanded_issue_id, expanded)}
   end
 
   @impl true
