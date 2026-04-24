@@ -888,6 +888,8 @@ defmodule CymphonyElixir.CoreTest do
     assert prompt =~ "Title: Make fallback prompt useful"
     assert prompt =~ "Body:"
     assert prompt =~ "Include enough issue context to start working."
+    assert prompt =~ "Review re-entry:"
+    assert prompt =~ "Last processed human comment"
     assert Config.workflow_prompt() =~ "{{ issue.identifier }}"
     assert Config.workflow_prompt() =~ "{{ issue.title }}"
     assert Config.workflow_prompt() =~ "{{ issue.description }}"
@@ -963,8 +965,22 @@ defmodule CymphonyElixir.CoreTest do
     assert prompt =~ "Do not include \"next steps for user\""
     assert prompt =~ "open and follow `.claude/skills/land/SKILL.md`"
     assert prompt =~ "Do not call `gh pr merge` directly"
+    assert prompt =~ "Review re-entry and human comment intake"
+    assert prompt =~ "A Linear comment by itself is not the trigger"
+    assert prompt =~ "Last processed human comment: <comment id or timestamp>"
+    assert prompt =~ "please fix merge conflicts on PR"
     assert prompt =~ "Continuation context:"
     assert prompt =~ "retry attempt #2"
+  end
+
+  test "generated default workflow prompt includes review re-entry comment handling" do
+    prompt = CymphonyElixir.Cymphony.PromptTemplate.get()
+
+    assert prompt =~ "Review re-entry and human comment intake"
+    assert prompt =~ "Human Review"
+    assert prompt =~ "In Progress"
+    assert prompt =~ "Last processed human comment: <comment id or timestamp>"
+    assert prompt =~ "please fix merge conflicts on PR"
   end
 
   test "prompt builder adds continuation guidance for retries" do

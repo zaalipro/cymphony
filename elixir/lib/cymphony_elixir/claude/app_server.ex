@@ -13,6 +13,7 @@ defmodule CymphonyElixir.Claude.AppServer do
 
   @port_line_bytes 1_048_576
   @max_stream_log_bytes 1_000
+  @shell_env_name_pattern ~r/^[A-Za-z_][A-Za-z0-9_]*$/
 
   @type session :: %{
           port: port() | nil,
@@ -211,17 +212,13 @@ defmodule CymphonyElixir.Claude.AppServer do
     end
   end
 
-  defp start_port_for_command(command, workspace, worker_host, _config) when is_binary(worker_host) do
-    remote_command = remote_launch_command(workspace, command)
+  defp start_port_for_command(command, workspace, worker_host, config) when is_binary(worker_host) do
+    remote_command = remote_launch_command(workspace, command, config)
     SSH.start_port(worker_host, remote_command, line: @port_line_bytes)
   end
 
-  defp remote_launch_command(workspace, command) when is_binary(workspace) do
-    [
-      "cd #{shell_escape(workspace)}",
-      "export ANTHROPIC_API_KEY=#{shell_escape(System.get_env("ANTHROPIC_API_KEY") || "")}",
-      "exec #{command}"
-    ]
+  defp remote_launch_command(workspace, command, config) when is_binary(workspace) do
+    (["cd #{shell_escape(workspace)}"] ++ remote_env_exports(config) ++ ["exec #{command}"])
     |> Enum.join(" && ")
   end
 
@@ -230,49 +227,102 @@ defmodule CymphonyElixir.Claude.AppServer do
   end
 
   defp claude_env(config) do
-    base_env = [
-      {~c"PATH", String.to_charlist(System.get_env("PATH") || "")},
-      {~c"HOME", String.to_charlist(System.get_env("HOME") || "")}
-    ]
+    config
+    |> claude_process_env(include_base?: true)
+    |> Enum.map(fn {key, value} ->
+      {String.to_charlist(key), String.to_charlist(value)}
+    end)
+  end
 
-    provider_env =
-      if config do
-        provider_name = config.claude.provider
+  defp remote_env_exports(config) do
+    config
+    |> claude_process_env(include_base?: false)
+    |> Enum.map(fn {key, value} ->
+      "export #{key}=#{shell_escape(value)}"
+    end)
+  end
 
-        case provider_name do
-          name when is_binary(name) and name != "" ->
-            case ShellProvider.load_env(name) do
-              {:ok, env_map} ->
-                Enum.map(env_map, fn {k, v} ->
-                  {String.to_charlist(to_string(k)), String.to_charlist(to_string(v))}
-                end)
+  defp claude_process_env(config, opts) do
+    config = config || Config.settings!()
 
-              {:error, :not_found} ->
-                []
-            end
-
-          _ ->
-            []
-        end
+    base_env =
+      if Keyword.get(opts, :include_base?, false) do
+        %{
+          "PATH" => System.get_env("PATH") || "",
+          "HOME" => System.get_env("HOME") || ""
+        }
       else
-        []
+        %{}
       end
 
-    if provider_env == [] do
-      # No provider — inherit ANTHROPIC_API_KEY from parent process env
-      parent_key =
-        case System.get_env("ANTHROPIC_API_KEY") do
-          key when is_binary(key) and key != "" ->
-            [{~c"ANTHROPIC_API_KEY", String.to_charlist(key)}]
+    base_env
+    |> Map.merge(claude_auth_env(config))
+    |> Map.merge(integration_auth_env(config))
+    |> valid_env_map()
+  end
 
-          _ ->
-            []
-        end
+  defp claude_auth_env(config) do
+    config
+    |> provider_env()
+    |> case do
+      provider_env when map_size(provider_env) > 0 ->
+        provider_env
 
-      base_env ++ parent_key
-    else
-      base_env ++ provider_env
+      _ ->
+        inherited_env(["ANTHROPIC_API_KEY"])
     end
+  end
+
+  defp provider_env(%{claude: %{provider: provider_name}})
+       when is_binary(provider_name) and provider_name != "" do
+    case ShellProvider.load_env(provider_name) do
+      {:ok, env_map} when is_map(env_map) ->
+        normalize_env_map(env_map)
+
+      {:error, :not_found} ->
+        %{}
+    end
+  end
+
+  defp provider_env(_config), do: %{}
+
+  defp integration_auth_env(config) do
+    %{}
+    |> maybe_put_env("LINEAR_API_KEY", linear_api_key(config))
+    |> Map.merge(inherited_env(["GH_TOKEN", "GITHUB_TOKEN"]))
+  end
+
+  defp linear_api_key(%{tracker: %{kind: "linear", api_key: api_key}})
+       when is_binary(api_key) and api_key != "",
+       do: api_key
+
+  defp linear_api_key(_config), do: nil
+
+  defp inherited_env(names) when is_list(names) do
+    Enum.reduce(names, %{}, fn name, env ->
+      maybe_put_env(env, name, System.get_env(name))
+    end)
+  end
+
+  defp normalize_env_map(env_map) when is_map(env_map) do
+    Enum.reduce(env_map, %{}, fn {key, value}, env ->
+      maybe_put_env(env, to_string(key), value)
+    end)
+  end
+
+  defp maybe_put_env(env, name, value)
+       when is_map(env) and is_binary(name) and is_binary(value) and value != "" do
+    Map.put(env, name, value)
+  end
+
+  defp maybe_put_env(env, _name, _value), do: env
+
+  defp valid_env_map(env) when is_map(env) do
+    env
+    |> Enum.filter(fn {key, value} ->
+      is_binary(key) and is_binary(value) and Regex.match?(@shell_env_name_pattern, key)
+    end)
+    |> Map.new()
   end
 
   defp await_process_completion(port, on_message, metadata) do

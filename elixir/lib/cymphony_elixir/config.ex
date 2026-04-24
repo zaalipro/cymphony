@@ -11,6 +11,8 @@ defmodule CymphonyElixir.Config do
 
   Identifier: {{ issue.identifier }}
   Title: {{ issue.title }}
+  Current status: {{ issue.state }}
+  URL: {{ issue.url }}
 
   Body:
   {% if issue.description %}
@@ -18,6 +20,12 @@ defmodule CymphonyElixir.Config do
   {% else %}
   No description provided.
   {% endif %}
+
+  Review re-entry:
+  - A Linear comment alone is not the trigger. When a human moves an issue from Human Review back to In Progress, treat new human comments as the work request.
+  - If an attached PR already exists, read issue comments and PR comments before changing code.
+  - Ignore agent workpad/progress comments and maintain this workpad checkpoint: Last processed human comment: <comment id or timestamp>
+  - For merge-conflict requests, update the existing PR branch with latest origin/main, resolve conflicts, rerun validation, push, and move back to Human Review only after checks are green.
   """
 
   @type claude_runtime_settings :: %{

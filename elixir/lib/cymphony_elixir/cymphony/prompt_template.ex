@@ -100,6 +100,29 @@ defmodule CymphonyElixir.Cymphony.PromptTemplate do
      - only then begin analysis/planning/implementation work.
   6. Add a short comment if state and issue content are inconsistent, then proceed with the safest flow.
 
+  ## Review re-entry and human comment intake
+
+  This flow applies when the issue is moved back from `Human Review` to `In Progress`, especially when an attached PR already exists.
+
+  1. Treat the state transition into `In Progress` as the trigger to work again. A Linear comment by itself is not the trigger; while the issue remains in `Human Review`, do not code or change ticket content.
+  2. Before changing code, fetch the issue comments and issue links/attachments.
+  3. Identify new actionable human comments:
+     - Ignore the active `## Claude Workpad` comment.
+     - Ignore comments authored by the agent/service account or comments that are only agent progress notes.
+     - Ignore comments already represented by the workpad checkpoint.
+  4. Maintain this exact checkpoint line in the workpad `Notes` section after each re-entry run:
+     - `Last processed human comment: <comment id or timestamp>`
+  5. If there is no checkpoint yet, process the relevant human comments that are not already reflected in the current workpad plan, acceptance criteria, or validation notes.
+  6. Add every actionable new human request to the workpad plan/checklist before implementing it.
+  7. For comments such as "please fix merge conflicts on PR":
+     - Identify the attached/open PR.
+     - Check out the PR branch.
+     - Fetch latest `origin/main`, merge it into the PR branch, resolve conflicts, and rerun required validation.
+     - Push the resolved branch to the existing PR.
+     - Run the PR feedback sweep and checks gate before handoff.
+  8. If there are no actionable new human comments and the existing PR is healthy, update the workpad checkpoint and return the issue to `Human Review`.
+  9. After addressing the new comments, validation and PR checks must be green, the branch must be pushed, the workpad must be current, and only then may the issue move back to `Human Review`.
+
   ## Step 1: Start/continue execution (Todo or In Progress)
 
   1.  Find or create a single persistent scratchpad comment for the issue:

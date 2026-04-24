@@ -538,6 +538,31 @@ defmodule CymphonyElixir.WorkspaceAndConfigTest do
     refute Orchestrator.should_dispatch_issue_for_test(issue, state)
   end
 
+  test "human review is a waiting state while in progress is the re-entry dispatch trigger" do
+    write_workflow_file!(Workflow.workflow_file_path(),
+      tracker_active_states: ["Todo", "In Progress"],
+      tracker_terminal_states: ["Done", "Canceled"]
+    )
+
+    state = %Orchestrator.State{
+      max_concurrent_agents: 3,
+      running: %{},
+      claimed: MapSet.new(),
+      claude_totals: %{input_tokens: 0, output_tokens: 0, total_tokens: 0, seconds_running: 0},
+      retry_attempts: %{}
+    }
+
+    review_issue = %Issue{
+      id: "review-1",
+      identifier: "MT-1008",
+      title: "Waiting on human review",
+      state: "Human Review"
+    }
+
+    refute Orchestrator.should_dispatch_issue_for_test(review_issue, state)
+    assert Orchestrator.should_dispatch_issue_for_test(%{review_issue | state: "In Progress"}, state)
+  end
+
   test "todo issue with terminal blockers remains dispatch-eligible" do
     state = %Orchestrator.State{
       max_concurrent_agents: 3,

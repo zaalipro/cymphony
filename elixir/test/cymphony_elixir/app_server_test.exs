@@ -225,6 +225,150 @@ defmodule CymphonyElixir.AppServerTest do
     end
   end
 
+  test "app server exposes Linear and GitHub auth env to local Claude process" do
+    test_root =
+      Path.join(
+        System.tmp_dir!(),
+        "cymphony-elixir-app-server-local-env-#{System.unique_integer([:positive])}"
+      )
+
+    previous_gh_token = System.get_env("GH_TOKEN")
+    previous_github_token = System.get_env("GITHUB_TOKEN")
+
+    on_exit(fn ->
+      restore_env("GH_TOKEN", previous_gh_token)
+      restore_env("GITHUB_TOKEN", previous_github_token)
+    end)
+
+    try do
+      workspace_root = Path.join(test_root, "workspaces")
+      workspace = Path.join(workspace_root, "MT-2004")
+      claude_binary = Path.join(test_root, "fake-claude")
+      trace_file = Path.join(test_root, "claude-env.trace")
+
+      File.mkdir_p!(workspace)
+      System.put_env("GH_TOKEN", "gh-test-token")
+      System.put_env("GITHUB_TOKEN", "github-test-token")
+
+      File.write!(claude_binary, """
+      #!/bin/sh
+      {
+        printf 'LINEAR_API_KEY=%s\\n' "$LINEAR_API_KEY"
+        printf 'GH_TOKEN=%s\\n' "$GH_TOKEN"
+        printf 'GITHUB_TOKEN=%s\\n' "$GITHUB_TOKEN"
+      } > "#{trace_file}"
+      echo '{"result":"done","session_id":"sess-env"}'
+      """)
+
+      File.chmod!(claude_binary, 0o755)
+
+      write_workflow_file!(Workflow.workflow_file_path(),
+        workspace_root: workspace_root,
+        tracker_api_token: "linear-config-token",
+        claude_command: claude_binary
+      )
+
+      issue = %Issue{
+        id: "issue-env",
+        identifier: "MT-2004",
+        title: "Environment passing",
+        description: "Ensure app server passes auth env",
+        state: "In Progress",
+        url: "https://example.org/issues/MT-2004",
+        labels: ["backend"]
+      }
+
+      assert {:ok, %{session_id: "sess-env"}} =
+               AppServer.run(workspace, "do the thing", issue)
+
+      trace = File.read!(trace_file)
+      assert trace =~ "LINEAR_API_KEY=linear-config-token"
+      assert trace =~ "GH_TOKEN=gh-test-token"
+      assert trace =~ "GITHUB_TOKEN=github-test-token"
+    after
+      File.rm_rf(test_root)
+    end
+  end
+
+  test "app server exports Linear and GitHub auth env to ssh Claude process" do
+    test_root =
+      Path.join(
+        System.tmp_dir!(),
+        "cymphony-elixir-app-server-remote-env-#{System.unique_integer([:positive])}"
+      )
+
+    previous_path = System.get_env("PATH")
+    previous_anthropic_api_key = System.get_env("ANTHROPIC_API_KEY")
+    previous_gh_token = System.get_env("GH_TOKEN")
+    previous_github_token = System.get_env("GITHUB_TOKEN")
+
+    on_exit(fn ->
+      restore_env("PATH", previous_path)
+      restore_env("ANTHROPIC_API_KEY", previous_anthropic_api_key)
+      restore_env("GH_TOKEN", previous_gh_token)
+      restore_env("GITHUB_TOKEN", previous_github_token)
+    end)
+
+    try do
+      workspace_root = Path.join(test_root, "workspaces")
+      workspace = "/remote/workspaces/MT-2005"
+      fake_ssh = Path.join(test_root, "ssh")
+      claude_binary = Path.join(test_root, "fake-claude")
+      trace_file = Path.join(test_root, "ssh-env.trace")
+
+      File.mkdir_p!(test_root)
+      System.put_env("PATH", test_root <> ":" <> (previous_path || ""))
+      System.delete_env("ANTHROPIC_API_KEY")
+      System.put_env("GH_TOKEN", "gh-test-token")
+      System.put_env("GITHUB_TOKEN", "github-test-token")
+
+      File.write!(fake_ssh, """
+      #!/bin/sh
+      printf '%s\\n' "$@" > "#{trace_file}"
+      echo '{"result":"done","session_id":"sess-remote-env"}'
+      """)
+
+      File.write!(claude_binary, """
+      #!/bin/sh
+      echo '{"result":"done","session_id":"unused"}'
+      """)
+
+      File.chmod!(fake_ssh, 0o755)
+      File.chmod!(claude_binary, 0o755)
+
+      write_workflow_file!(Workflow.workflow_file_path(),
+        workspace_root: workspace_root,
+        tracker_api_token: "linear-config-token",
+        claude_command: claude_binary
+      )
+
+      issue = %Issue{
+        id: "issue-remote-env",
+        identifier: "MT-2005",
+        title: "Remote environment passing",
+        description: "Ensure app server exports auth env for SSH workers",
+        state: "In Progress",
+        url: "https://example.org/issues/MT-2005",
+        labels: ["backend"]
+      }
+
+      assert {:ok, %{session_id: "sess-remote-env"}} =
+               AppServer.run(workspace, "do the thing", issue, worker_host: "worker.example")
+
+      trace = File.read!(trace_file)
+      assert trace =~ "export LINEAR_API_KEY="
+      assert trace =~ "linear-config-token"
+      assert trace =~ "export GH_TOKEN="
+      assert trace =~ "gh-test-token"
+      assert trace =~ "export GITHUB_TOKEN="
+      assert trace =~ "github-test-token"
+      refute trace =~ "export PATH="
+      refute trace =~ "export HOME="
+    after
+      File.rm_rf(test_root)
+    end
+  end
+
   test "app server resumes session with --resume flag" do
     test_root =
       Path.join(
