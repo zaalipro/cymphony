@@ -11,6 +11,7 @@ defmodule CymphonyElixirWeb.DashboardLive do
 
   @version Mix.Project.config()[:version]
   @runtime_tick_ms 1_000
+  @min_refresh_interval_ms 3_000
 
   @impl true
   def mount(_params, _session, socket) do
@@ -24,6 +25,8 @@ defmodule CymphonyElixirWeb.DashboardLive do
       |> assign(:token_samples, [])
       |> assign(:drawer_issue_id, nil)
       |> assign(:version, @version)
+      |> assign(:last_payload_refresh, nil)
+      |> assign(:refresh_timer, nil)
 
     if connected?(socket) do
       :ok = ObservabilityPubSub.subscribe()
@@ -123,13 +126,34 @@ defmodule CymphonyElixirWeb.DashboardLive do
 
   @impl true
   def handle_info(:observability_updated, socket) do
-    pid = self()
+    now = System.monotonic_time(:millisecond)
+    last = socket.assigns[:last_payload_refresh] || 0
+    elapsed = now - last
 
-    Task.Supervisor.start_child(CymphonyElixir.TaskSupervisor, fn ->
-      send(pid, {:payload_loaded, load_payload()})
-    end)
+    cond do
+      elapsed >= @min_refresh_interval_ms ->
+        spawn_payload_load()
+        {:noreply, assign(socket, :last_payload_refresh, now)}
 
-    {:noreply, socket}
+      is_nil(socket.assigns[:refresh_timer]) ->
+        delay = @min_refresh_interval_ms - elapsed
+        timer = Process.send_after(self(), :do_refresh_payload, delay)
+        {:noreply, assign(socket, :refresh_timer, timer)}
+
+      true ->
+        {:noreply, socket}
+    end
+  end
+
+  @impl true
+  def handle_info(:do_refresh_payload, socket) do
+    spawn_payload_load()
+
+    {:noreply,
+     assign(socket,
+     refresh_timer: nil,
+     last_payload_refresh: System.monotonic_time(:millisecond)
+   )}
   end
 
   @impl true
@@ -716,6 +740,13 @@ defmodule CymphonyElixirWeb.DashboardLive do
 
   defp load_payload do
     Presenter.state_payload(orchestrator(), snapshot_timeout_ms())
+  end
+
+  defp spawn_payload_load do
+    pid = self()
+    Task.Supervisor.start_child(CymphonyElixir.TaskSupervisor, fn ->
+      send(pid, {:payload_loaded, load_payload()})
+    end)
   end
 
   defp safe_subscribe_issue(issue_id) do
