@@ -1,6 +1,6 @@
 # Cymphony Elixir
 
-This directory contains the Elixir agent orchestration service that polls Linear, creates per-issue workspaces, and runs Claude Code in headless mode.
+The Elixir agent orchestration service that polls Linear, creates per-issue workspaces, and runs Claude Code in headless mode.
 
 ## Environment
 
@@ -12,7 +12,7 @@ This directory contains the Elixir agent orchestration service that polls Linear
 ## Codebase-Specific Conventions
 
 - Runtime config is loaded from `WORKFLOW.md` front matter via `CymphonyElixir.Workflow` and `CymphonyElixir.Config`.
-- Keep the implementation aligned with [`../SPEC.md`](../SPEC.md) where practical.
+- Keep the implementation aligned with [`SPEC.md`](SPEC.md) where practical.
   - The implementation may be a superset of the spec.
   - The implementation must not conflict with the spec.
   - If implementation changes meaningfully alter the intended behavior, update the spec in the same
@@ -48,7 +48,7 @@ mix specs.check
 
 ## PR Requirements
 
-- PR body must follow `../.github/pull_request_template.md` exactly.
+- PR body must follow `.github/pull_request_template.md` exactly.
 - Validate PR body locally when needed:
 
 ```bash
@@ -59,6 +59,6 @@ mix pr_body.check --file /path/to/pr_body.md
 
 If behavior/config changes, update docs in the same PR:
 
-- `../README.md` for project concept and goals.
+- `README.md` for project concept and goals.
 - `README.md` for Elixir implementation and run instructions.
 - `WORKFLOW.md` for workflow/config contract changes.

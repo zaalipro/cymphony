@@ -8,11 +8,11 @@ Cymphony is an Elixir-based orchestrator that polls Linear for issues and dispat
 
 ## Build & Development Commands
 
-All commands run from the `elixir/` directory:
+All commands run from the project root:
 
 ```bash
 mix setup              # Install deps
-make build             # Build the escript binary (elixir/bin/cymphony)
+make build             # Build the escript binary (bin/cymphony)
 make test              # Run tests
 mix test test/path/to_test.exs  # Run a single test file
 make coverage          # Run tests with coverage (100% threshold on tracked modules)
@@ -75,7 +75,7 @@ Each project gets its own `ProjectSupervisor` with a `WorkflowStore` and `Orches
 
 ## Release Process
 
-1. Bump version in `elixir/mix.exs`
+1. Bump version in `mix.exs`
 2. Commit and push to `main`
 3. Create and push a `vX.Y.Z` tag — this triggers `.github/workflows/release.yml` which builds binaries (macOS, Linux), packages a .deb, and creates a GitHub release
 4. Update the Homebrew tap at `zaalipro/homebrew-cymphony`:

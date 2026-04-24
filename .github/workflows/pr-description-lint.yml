@@ -7,10 +7,6 @@ on:
 jobs:
   validate-pr-description:
     runs-on: ubuntu-latest
-    defaults:
-      run:
-        working-directory: elixir
-
     steps:
       - name: Checkout
         uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
@@ -20,7 +16,7 @@ jobs:
         with:
           install: true
           cache: true
-          working_directory: elixir
+          working_directory: .
 
       - name: Validate PR description format
         env:
