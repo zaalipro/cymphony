@@ -5,16 +5,16 @@ defmodule CymphonyElixir.CLITest do
 
   @ack_flag "--i-understand-that-this-will-be-running-without-the-usual-guardrails"
 
-  test "returns the guardrails acknowledgement banner when the flag is missing" do
+  test "auto-accepts guardrails without requiring the flag" do
     parent = self()
 
     deps = %{
-      file_regular?: fn _path ->
-        send(parent, :file_checked)
+      file_regular?: fn path ->
+        send(parent, {:file_checked, path})
         true
       end,
-      set_workflow_file_path: fn _path ->
-        send(parent, :workflow_set)
+      set_workflow_file_path: fn path ->
+        send(parent, {:workflow_set, path})
         :ok
       end,
       set_logs_root: fn _path ->
@@ -31,16 +31,10 @@ defmodule CymphonyElixir.CLITest do
       end
     }
 
-    assert {:error, banner} = CLI.evaluate(["WORKFLOW.md"], deps)
-    assert banner =~ "This Cymphony implementation is a low key engineering preview."
-    assert banner =~ "Claude Code will run without any guardrails."
-    assert banner =~ "CymphonyElixir is not a supported product and is presented as-is."
-    assert banner =~ @ack_flag
-    refute_received :file_checked
-    refute_received :workflow_set
-    refute_received :logs_root_set
-    refute_received :port_set
-    refute_received :started
+    assert :ok = CLI.evaluate(["WORKFLOW.md"], deps)
+    assert_received {:file_checked, _}
+    assert_received {:workflow_set, _}
+    assert_received :started
   end
 
   test "defaults to WORKFLOW.md when workflow path is missing" do
@@ -225,10 +219,8 @@ defmodule CymphonyElixir.CLITest do
     end
 
     test "c expands to --claude-command", %{deps: deps} do
-      # c triggers --claude-command; without config it falls back to setup/onboarding
-      # We test that 'c' is expanded correctly by checking evaluate doesn't crash
       result = CLI.evaluate(["c", "cz"], deps)
-      assert match?({:ok, _}, result) or match?({:error, _}, result)
+      assert result in [:ok, :done] or match?({:error, _}, result)
     end
 
     test "--provider <name> sets provider override", %{deps: deps} do
@@ -241,7 +233,7 @@ defmodule CymphonyElixir.CLITest do
         end)
 
       result = CLI.evaluate(["--provider", "cz"], provider_deps)
-      assert match?({:ok, _}, result) or match?({:error, _}, result)
+      assert result in [:ok, :done] or match?({:error, _}, result)
     end
   end
 end

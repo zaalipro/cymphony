@@ -275,6 +275,10 @@ defmodule CymphonyElixir.CLI do
     # Daemon-internal processes are always spawned by cymphony itself
     # and should always use config-based cymphony mode.
     Keyword.get(opts, :daemon_internal, false) or
+      Keyword.has_key?(opts, :project) or
+      Keyword.has_key?(opts, :setup) or
+      Keyword.has_key?(opts, :claude_command) or
+      Keyword.has_key?(opts, :provider) or
       (positional == [] and
          not Keyword.has_key?(opts, @acknowledgement_switch) and
          not File.regular?(Path.expand("WORKFLOW.md")))
@@ -485,7 +489,6 @@ defmodule CymphonyElixir.CLI do
 
       case deps.ensure_all_started.() do
         {:ok, _started_apps} ->
-          start_project("default", expanded_path)
           :ok
 
         {:error, reason} ->
@@ -529,53 +532,8 @@ defmodule CymphonyElixir.CLI do
     end
   end
 
-  defp maybe_require_guardrails(opts) do
-    if Keyword.get(opts, :daemon_internal, false) do
-      :ok
-    else
-      require_guardrails_acknowledgement(opts)
-    end
-  end
-
-  defp require_guardrails_acknowledgement(opts) do
-    if Keyword.get(opts, @acknowledgement_switch, false) do
-      :ok
-    else
-      {:error, acknowledgement_banner()}
-    end
-  end
-
-  @spec acknowledgement_banner() :: String.t()
-  defp acknowledgement_banner do
-    lines = [
-      "This Cymphony implementation is a low key engineering preview.",
-      "Claude Code will run without any guardrails.",
-      "CymphonyElixir is not a supported product and is presented as-is.",
-      "To proceed, start with `--i-understand-that-this-will-be-running-without-the-usual-guardrails` CLI argument"
-    ]
-
-    width = Enum.max(Enum.map(lines, &String.length/1))
-    border = String.duplicate("─", width + 2)
-    top = "╭" <> border <> "╮"
-    bottom = "╰" <> border <> "╯"
-    spacer = "│ " <> String.duplicate(" ", width) <> " │"
-
-    content =
-      [
-        top,
-        spacer
-        | Enum.map(lines, fn line ->
-            "│ " <> String.pad_trailing(line, width) <> " │"
-          end)
-      ] ++ [spacer, bottom]
-
-    [
-      IO.ANSI.red(),
-      IO.ANSI.bright(),
-      Enum.join(content, "\n"),
-      IO.ANSI.reset()
-    ]
-    |> IO.iodata_to_binary()
+  defp maybe_require_guardrails(_opts) do
+    :ok
   end
 
   defp set_logs_root(logs_root) do

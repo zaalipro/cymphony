@@ -22,9 +22,11 @@ defmodule CymphonyElixir.TestSupport do
       alias CymphonyElixir.Workspace
 
       import CymphonyElixir.TestSupport,
-        only: [write_workflow_file!: 1, write_workflow_file!: 2, restore_env: 2, stop_default_http_server: 0]
+        only: [write_workflow_file!: 1, write_workflow_file!: 2, restore_env: 2, stop_default_http_server: 0, stop_all_projects: 0]
 
       setup do
+        stop_all_projects()
+
         workflow_root =
           Path.join(
             System.tmp_dir!(),
@@ -86,6 +88,19 @@ defmodule CymphonyElixir.TestSupport do
       _ ->
         :ok
     end
+  end
+
+  def stop_all_projects do
+    for name <- CymphonyElixir.ProjectSupervisor.list_project_names() do
+      case CymphonyElixir.ProjectSupervisor.lookup(name, :supervisor) do
+        nil -> :ok
+        pid -> Supervisor.stop(pid, :normal)
+      end
+    end
+  rescue
+    _ -> :ok
+  catch
+    :exit, _ -> :ok
   end
 
   defp workflow_content(overrides) do
