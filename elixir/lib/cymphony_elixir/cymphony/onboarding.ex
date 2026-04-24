@@ -18,8 +18,7 @@ defmodule CymphonyElixir.Cymphony.Onboarding do
     case collect_project(nil) do
       {:ok, first_project} ->
         projects = collect_additional_projects([first_project])
-        providers = collect_providers()
-        config = %{"projects" => projects, "providers" => providers}
+        config = %{"projects" => projects}
 
         case Config.save(config) do
           :ok ->
@@ -55,15 +54,6 @@ defmodule CymphonyElixir.Cymphony.Onboarding do
           {:ok, project} ->
             updated_projects = Config.projects(config) ++ [project]
             updated_config = Map.put(config, "projects", updated_projects)
-
-            # If no providers exist yet, offer to add some
-            updated_config =
-              if map_size(Config.providers(config)) == 0 do
-                providers = collect_providers()
-                Map.put(updated_config, "providers", providers)
-              else
-                updated_config
-              end
 
             case Config.save(updated_config) do
               :ok ->
@@ -269,77 +259,6 @@ defmodule CymphonyElixir.Cymphony.Onboarding do
             end
           end
       end
-    end
-  end
-
-  defp collect_providers do
-    IO.puts("\n--- Providers ---")
-    IO.puts("Providers let you set environment variables (API keys, model names, etc.)")
-    IO.puts("for different Claude backends. Leave empty to skip.\n")
-    do_collect_providers(%{})
-  end
-
-  defp do_collect_providers(providers) do
-    case IO.gets("Add a provider? [y/N]: ") do
-      :eof ->
-        providers
-
-      {:error, _} ->
-        providers
-
-      input ->
-        if String.trim(String.downcase(input)) == "y" do
-          case collect_single_provider() do
-            {:ok, {name, env}} ->
-              do_collect_providers(Map.put(providers, name, env))
-
-            {:error, _} ->
-              providers
-          end
-        else
-          providers
-        end
-    end
-  end
-
-  defp collect_single_provider do
-    with {:ok, name} <- ask_required("Provider name (e.g. cz, ck, cm): "),
-         {:ok, env_vars} <- collect_env_vars() do
-      {:ok, {name, env_vars}}
-    end
-  end
-
-  defp collect_env_vars do
-    IO.puts("Enter environment variables (empty key to finish):")
-    do_collect_env_vars(%{})
-  end
-
-  defp do_collect_env_vars(acc) do
-    case IO.gets("  Key: ") do
-      :eof ->
-        {:ok, acc}
-
-      {:error, _} ->
-        {:ok, acc}
-
-      input ->
-        key = String.trim(input)
-
-        if key == "" do
-          {:ok, acc}
-        else
-          case IO.gets("  Value: ") do
-            :eof ->
-              {:ok, Map.put(acc, key, "")}
-
-            {:error, _} ->
-              {:ok, Map.put(acc, key, "")}
-
-            val_input ->
-              value = String.trim(val_input)
-              do_collect_env_vars(Map.put(acc, key, value))
-          end
-        end
     end
   end
 end

@@ -9,6 +9,8 @@ defmodule CymphonyElixir.Claude.AppServer do
   require Logger
   alias CymphonyElixir.{Config, PathSafety, SSH}
 
+  alias CymphonyElixir.Cymphony.ShellProvider
+
   @port_line_bytes 1_048_576
   @max_stream_log_bytes 1_000
 
@@ -183,7 +185,7 @@ defmodule CymphonyElixir.Claude.AppServer do
   defp maybe_add_resume_flag(args, ""), do: args
   defp maybe_add_resume_flag(args, session_id) when is_binary(session_id), do: args ++ ["--resume", shell_escape(session_id)]
 
-  defp start_port_for_command(command, workspace, worker_host, config \\ nil)
+  defp start_port_for_command(command, workspace, worker_host, config)
 
   defp start_port_for_command(command, workspace, nil, config) do
     executable = System.find_executable("bash")
@@ -228,35 +230,24 @@ defmodule CymphonyElixir.Claude.AppServer do
   end
 
   defp claude_env(config) do
-    base_env =
-      [
-        {~c"PATH", String.to_charlist(System.get_env("PATH") || "")},
-        {~c"HOME", String.to_charlist(System.get_env("HOME") || "")}
-        | case System.get_env("ANTHROPIC_API_KEY") do
-            key when is_binary(key) and key != "" ->
-              [{~c"ANTHROPIC_API_KEY", String.to_charlist(key)}]
-
-            _ ->
-              []
-          end
-      ]
+    base_env = [
+      {~c"PATH", String.to_charlist(System.get_env("PATH") || "")},
+      {~c"HOME", String.to_charlist(System.get_env("HOME") || "")}
+    ]
 
     provider_env =
       if config do
         provider_name = config.claude.provider
-        providers = config.providers || %{}
 
         case provider_name do
           name when is_binary(name) and name != "" ->
-            provider_config = Map.get(providers, name) || Map.get(providers, String.to_atom(name))
-
-            case provider_config do
-              env_map when is_map(env_map) ->
+            case ShellProvider.load_env(name) do
+              {:ok, env_map} ->
                 Enum.map(env_map, fn {k, v} ->
                   {String.to_charlist(to_string(k)), String.to_charlist(to_string(v))}
                 end)
 
-              _ ->
+              {:error, :not_found} ->
                 []
             end
 
@@ -267,7 +258,21 @@ defmodule CymphonyElixir.Claude.AppServer do
         []
       end
 
-    provider_env ++ base_env
+    if provider_env == [] do
+      # No provider — inherit ANTHROPIC_API_KEY from parent process env
+      parent_key =
+        case System.get_env("ANTHROPIC_API_KEY") do
+          key when is_binary(key) and key != "" ->
+            [{~c"ANTHROPIC_API_KEY", String.to_charlist(key)}]
+
+          _ ->
+            []
+        end
+
+      base_env ++ parent_key
+    else
+      base_env ++ provider_env
+    end
   end
 
   defp await_process_completion(port, on_message, metadata) do

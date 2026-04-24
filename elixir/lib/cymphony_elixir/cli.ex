@@ -7,6 +7,7 @@ defmodule CymphonyElixir.CLI do
 
   alias CymphonyElixir.Cymphony.Config, as: CymphonyConfig
   alias CymphonyElixir.Cymphony.Onboarding
+  alias CymphonyElixir.Cymphony.ShellProvider
   alias CymphonyElixir.Cymphony.WorkflowGenerator
 
   @acknowledgement_switch :i_understand_that_this_will_be_running_without_the_usual_guardrails
@@ -336,13 +337,12 @@ defmodule CymphonyElixir.CLI do
     case config do
       {:ok, cfg} ->
         projects = CymphonyConfig.projects(cfg)
-        providers = CymphonyConfig.providers(cfg)
         filtered_projects = filter_projects(projects, project_filter)
 
         filtered_projects =
           case Keyword.get(opts, :claude_command) do
             nil -> filtered_projects
-            cmd -> Enum.map(filtered_projects, &resolve_command_override(&1, cmd, providers))
+            cmd -> Enum.map(filtered_projects, &resolve_command_override(&1, cmd))
           end
 
         filtered_projects =
@@ -361,9 +361,7 @@ defmodule CymphonyElixir.CLI do
              end}
 
           projects ->
-            projects_with_providers = Enum.map(projects, &Map.put(&1, "providers", providers))
-
-            case generate_workflow_files(projects_with_providers) do
+            case generate_workflow_files(projects) do
               {:ok, project_workflow_pairs} ->
                 with :ok <- maybe_set_logs_root(opts, deps),
                      :ok <- maybe_set_server_port(opts, deps) do
@@ -380,11 +378,10 @@ defmodule CymphonyElixir.CLI do
     end
   end
 
-  defp resolve_command_override(project, cmd, providers) do
-    if Map.has_key?(providers, cmd) or Map.has_key?(providers, String.to_atom(cmd)) do
-      Map.put(project, "provider", cmd)
-    else
-      Map.put(project, "claude_command", cmd)
+  defp resolve_command_override(project, cmd) do
+    case ShellProvider.load_env(cmd) do
+      {:ok, _env} -> Map.put(project, "provider", cmd)
+      {:error, :not_found} -> Map.put(project, "claude_command", cmd)
     end
   end
 
