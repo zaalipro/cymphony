@@ -5,6 +5,8 @@ defmodule CymphonyElixirWeb.DashboardLive do
 
   use Phoenix.LiveView, layout: {CymphonyElixirWeb.Layouts, :app}
 
+  require Logger
+
   alias CymphonyElixirWeb.{Endpoint, ObservabilityPubSub, Presenter}
 
   @version Mix.Project.config()[:version]
@@ -40,7 +42,7 @@ defmodule CymphonyElixirWeb.DashboardLive do
       cond do
         expanded != nil and currently_expanded != expanded ->
           if currently_expanded, do: ObservabilityPubSub.unsubscribe_issue(currently_expanded)
-          ObservabilityPubSub.subscribe_issue(expanded)
+          safe_subscribe_issue(expanded)
 
         expanded == nil and currently_expanded != nil ->
           ObservabilityPubSub.unsubscribe_issue(currently_expanded)
@@ -71,7 +73,7 @@ defmodule CymphonyElixirWeb.DashboardLive do
         ObservabilityPubSub.unsubscribe_issue(socket.assigns.drawer_issue_id)
       end
 
-      :ok = ObservabilityPubSub.subscribe_issue(issue_id)
+      safe_subscribe_issue(issue_id)
     end
 
     {:noreply, assign(socket, :drawer_issue_id, issue_id)}
@@ -121,7 +123,17 @@ defmodule CymphonyElixirWeb.DashboardLive do
 
   @impl true
   def handle_info(:observability_updated, socket) do
-    payload = load_payload()
+    pid = self()
+
+    Task.Supervisor.start_child(CymphonyElixir.TaskSupervisor, fn ->
+      send(pid, {:payload_loaded, load_payload()})
+    end)
+
+    {:noreply, socket}
+  end
+
+  @impl true
+  def handle_info({:payload_loaded, payload}, socket) do
     token_samples = update_token_samples(socket.assigns.token_samples, payload)
 
     {:noreply,
@@ -130,6 +142,9 @@ defmodule CymphonyElixirWeb.DashboardLive do
      |> assign(:now, DateTime.utc_now())
      |> assign(:token_samples, token_samples)}
   end
+
+  @impl true
+  def handle_info(_msg, socket), do: {:noreply, socket}
 
   @impl true
   def render(assigns) do
@@ -701,6 +716,13 @@ defmodule CymphonyElixirWeb.DashboardLive do
 
   defp load_payload do
     Presenter.state_payload(orchestrator(), snapshot_timeout_ms())
+  end
+
+  defp safe_subscribe_issue(issue_id) do
+    case ObservabilityPubSub.subscribe_issue(issue_id) do
+      :ok -> :ok
+      {:error, reason} -> Logger.warning("PubSub subscribe failed for #{issue_id}: #{inspect(reason)}")
+    end
   end
 
   defp orchestrator do
