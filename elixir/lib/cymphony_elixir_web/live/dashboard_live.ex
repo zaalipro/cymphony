@@ -30,8 +30,22 @@ defmodule CymphonyElixirWeb.DashboardLive do
 
   @impl true
   def handle_event("toggle_logs", %{"issue" => issue_id}, socket) do
-    expanded =
-      if socket.assigns.expanded_issue_id == issue_id, do: nil, else: issue_id
+    currently_expanded = socket.assigns.expanded_issue_id
+    expanded = if currently_expanded == issue_id, do: nil, else: issue_id
+
+    if connected?(socket) do
+      cond do
+        expanded != nil and currently_expanded != expanded ->
+          if currently_expanded, do: ObservabilityPubSub.unsubscribe_issue(currently_expanded)
+          ObservabilityPubSub.subscribe_issue(expanded)
+
+        expanded == nil and currently_expanded != nil ->
+          ObservabilityPubSub.unsubscribe_issue(currently_expanded)
+
+        true ->
+          :ok
+      end
+    end
 
     {:noreply, assign(socket, :expanded_issue_id, expanded)}
   end
@@ -50,6 +64,10 @@ defmodule CymphonyElixirWeb.DashboardLive do
   @impl true
   def handle_event("open_drawer", %{"issue" => issue_id}, socket) do
     if connected?(socket) do
+      if socket.assigns.drawer_issue_id && socket.assigns.drawer_issue_id != issue_id do
+        ObservabilityPubSub.unsubscribe_issue(socket.assigns.drawer_issue_id)
+      end
+
       :ok = ObservabilityPubSub.subscribe_issue(issue_id)
     end
 
@@ -63,6 +81,11 @@ defmodule CymphonyElixirWeb.DashboardLive do
     end
 
     {:noreply, assign(socket, :drawer_issue_id, nil)}
+  end
+
+  @impl true
+  def handle_event("drawer_click", _params, socket) do
+    {:noreply, socket}
   end
 
   @impl true
@@ -526,7 +549,7 @@ defmodule CymphonyElixirWeb.DashboardLive do
       <%= if @drawer_issue_id do %>
         <% drawer_entry = find_drawer_entry(@payload, @drawer_issue_id) %>
         <div class="drawer-overlay" phx-click="close_drawer">
-          <div class="drawer-panel" phx-click="noop" phx-target="window">
+          <div class="drawer-panel" phx-click="drawer_click">
             <div class="drawer-header">
               <div>
                 <p class="drawer-id"><%= drawer_entry.issue_identifier %></p>
@@ -921,12 +944,23 @@ defmodule CymphonyElixirWeb.DashboardLive do
   defp find_drawer_entry(payload, issue_id) do
     running = Enum.find(payload.running, &(&1.issue_identifier == issue_id))
     retry = Enum.find(payload.retrying, &(&1.issue_identifier == issue_id))
+    base = running || retry || %{issue_identifier: issue_id, state: "unknown"}
 
-    cond do
-      running -> running
-      retry -> retry
-      true -> %{issue_identifier: issue_id, state: "unknown", tokens: %{}, log_events: [], turn_count: 0}
-    end
+    Map.merge(
+      %{
+        tokens: %{input_tokens: 0, output_tokens: 0, total_tokens: 0},
+        log_events: [],
+        turn_count: 0,
+        workspace_path: nil,
+        worker_host: nil,
+        session_id: nil,
+        started_at: nil,
+        last_event: nil,
+        last_message: nil,
+        error: nil
+      },
+      base
+    )
   end
 
   defp send_issue_command(socket, issue_id, command) do

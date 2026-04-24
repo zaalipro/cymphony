@@ -319,7 +319,14 @@ defmodule CymphonyElixirWeb.Presenter do
       due_at: due_at_iso8601(entry.due_in_ms),
       error: entry.error,
       worker_host: Map.get(entry, :worker_host),
-      workspace_path: Map.get(entry, :workspace_path)
+      workspace_path: Map.get(entry, :workspace_path),
+      tokens: %{input_tokens: 0, output_tokens: 0, total_tokens: 0},
+      turn_count: 0,
+      session_id: nil,
+      started_at: nil,
+      last_event: nil,
+      last_message: nil,
+      log_events: []
     }
   end
 
