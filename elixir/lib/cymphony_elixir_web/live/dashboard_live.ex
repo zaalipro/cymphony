@@ -5,19 +5,25 @@ defmodule CymphonyElixirWeb.DashboardLive do
 
   use Phoenix.LiveView, layout: {CymphonyElixirWeb.Layouts, :app}
 
-  require Logger
-
-  alias CymphonyElixirWeb.{Endpoint, ObservabilityPubSub, Presenter}
+  alias CymphonyElixirWeb.{Endpoint, Presenter}
 
   @version Mix.Project.config()[:version]
   @runtime_tick_ms 1_000
-  @min_refresh_interval_ms 3_000
+  @payload_refresh_ms 3_000
+  @default_payload %{
+    counts: %{running: 0, retrying: 0},
+    running: [],
+    retrying: [],
+    claude_totals: %{input_tokens: 0, output_tokens: 0, total_tokens: 0, seconds_running: 0},
+    rate_limits: nil,
+    polling: nil
+  }
 
   @impl true
   def mount(_params, _session, socket) do
     socket =
       socket
-      |> assign(:payload, load_payload())
+      |> assign(:payload, @default_payload)
       |> assign(:now, DateTime.utc_now())
       |> assign(:expanded_issue_id, nil)
       |> assign(:stalled_alert_dismissed, false)
@@ -26,11 +32,10 @@ defmodule CymphonyElixirWeb.DashboardLive do
       |> assign(:drawer_issue_id, nil)
       |> assign(:version, @version)
       |> assign(:last_payload_refresh, nil)
-      |> assign(:refresh_timer, nil)
 
     if connected?(socket) do
-      :ok = ObservabilityPubSub.subscribe()
       schedule_runtime_tick()
+      spawn_payload_load()
     end
 
     {:ok, socket}
@@ -40,21 +45,6 @@ defmodule CymphonyElixirWeb.DashboardLive do
   def handle_event("toggle_logs", %{"issue" => issue_id}, socket) do
     currently_expanded = socket.assigns.expanded_issue_id
     expanded = if currently_expanded == issue_id, do: nil, else: issue_id
-
-    if connected?(socket) do
-      cond do
-        expanded != nil and currently_expanded != expanded ->
-          if currently_expanded, do: ObservabilityPubSub.unsubscribe_issue(currently_expanded)
-          safe_subscribe_issue(expanded)
-
-        expanded == nil and currently_expanded != nil ->
-          ObservabilityPubSub.unsubscribe_issue(currently_expanded)
-
-        true ->
-          :ok
-      end
-    end
-
     {:noreply, assign(socket, :expanded_issue_id, expanded)}
   end
 
@@ -71,23 +61,11 @@ defmodule CymphonyElixirWeb.DashboardLive do
 
   @impl true
   def handle_event("open_drawer", %{"issue" => issue_id}, socket) do
-    if connected?(socket) do
-      if socket.assigns.drawer_issue_id && socket.assigns.drawer_issue_id != issue_id do
-        ObservabilityPubSub.unsubscribe_issue(socket.assigns.drawer_issue_id)
-      end
-
-      safe_subscribe_issue(issue_id)
-    end
-
     {:noreply, assign(socket, :drawer_issue_id, issue_id)}
   end
 
   @impl true
   def handle_event("close_drawer", _params, socket) do
-    if connected?(socket) and socket.assigns.drawer_issue_id do
-      :ok = ObservabilityPubSub.unsubscribe_issue(socket.assigns.drawer_issue_id)
-    end
-
     {:noreply, assign(socket, :drawer_issue_id, nil)}
   end
 
@@ -108,7 +86,9 @@ defmodule CymphonyElixirWeb.DashboardLive do
 
   @impl true
   def handle_event("refresh_now", _params, socket) do
-    _ = CymphonyElixir.Orchestrator.request_refresh(orchestrator())
+    Task.Supervisor.start_child(CymphonyElixir.TaskSupervisor, fn ->
+      _ = CymphonyElixir.Orchestrator.request_refresh(orchestrator())
+    end)
     Process.send_after(self(), :clear_flash, 3_000)
     {:noreply, put_flash(socket, :info, "Refresh requested — checking Linear now...")}
   end
@@ -121,39 +101,19 @@ defmodule CymphonyElixirWeb.DashboardLive do
   @impl true
   def handle_info(:runtime_tick, socket) do
     schedule_runtime_tick()
-    {:noreply, assign(socket, :now, DateTime.utc_now())}
-  end
 
-  @impl true
-  def handle_info(:observability_updated, socket) do
     now = System.monotonic_time(:millisecond)
     last = socket.assigns[:last_payload_refresh] || 0
-    elapsed = now - last
 
-    cond do
-      elapsed >= @min_refresh_interval_ms ->
+    socket =
+      if now - last >= @payload_refresh_ms do
         spawn_payload_load()
-        {:noreply, assign(socket, :last_payload_refresh, now)}
+        assign(socket, :last_payload_refresh, now)
+      else
+        socket
+      end
 
-      is_nil(socket.assigns[:refresh_timer]) ->
-        delay = @min_refresh_interval_ms - elapsed
-        timer = Process.send_after(self(), :do_refresh_payload, delay)
-        {:noreply, assign(socket, :refresh_timer, timer)}
-
-      true ->
-        {:noreply, socket}
-    end
-  end
-
-  @impl true
-  def handle_info(:do_refresh_payload, socket) do
-    spawn_payload_load()
-
-    {:noreply,
-     assign(socket,
-     refresh_timer: nil,
-     last_payload_refresh: System.monotonic_time(:millisecond)
-   )}
+    {:noreply, assign(socket, :now, DateTime.utc_now())}
   end
 
   @impl true
@@ -749,13 +709,6 @@ defmodule CymphonyElixirWeb.DashboardLive do
     end)
   end
 
-  defp safe_subscribe_issue(issue_id) do
-    case ObservabilityPubSub.subscribe_issue(issue_id) do
-      :ok -> :ok
-      {:error, reason} -> Logger.warning("PubSub subscribe failed for #{issue_id}: #{inspect(reason)}")
-    end
-  end
-
   defp orchestrator do
     Endpoint.config(:orchestrator) || CymphonyElixir.Orchestrator
   end
@@ -1044,11 +997,13 @@ defmodule CymphonyElixirWeb.DashboardLive do
       end
 
     if is_pid(orchestrator_pid) do
-      try do
-        GenServer.call(orchestrator_pid, {command, issue_id})
-      catch
-        :exit, _ -> {:error, :unavailable}
-      end
+      Task.Supervisor.start_child(CymphonyElixir.TaskSupervisor, fn ->
+        try do
+          GenServer.call(orchestrator_pid, {command, issue_id}, 10_000)
+        catch
+          :exit, _ -> {:error, :unavailable}
+        end
+      end)
     end
 
     socket
