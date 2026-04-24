@@ -29,7 +29,6 @@ defmodule CymphonyElixirWeb.DashboardLive do
       |> assign(:stalled_alert_dismissed, false)
       |> assign(:filter_project, nil)
       |> assign(:token_samples, [])
-      |> assign(:drawer_issue_id, nil)
       |> assign(:version, @version)
       |> assign(:last_payload_refresh, nil)
 
@@ -57,21 +56,6 @@ defmodule CymphonyElixirWeb.DashboardLive do
   def handle_event("filter_project", %{"project" => project}, socket) do
     filter = if project == "", do: nil, else: project
     {:noreply, assign(socket, :filter_project, filter)}
-  end
-
-  @impl true
-  def handle_event("open_drawer", %{"issue" => issue_id}, socket) do
-    {:noreply, assign(socket, :drawer_issue_id, issue_id)}
-  end
-
-  @impl true
-  def handle_event("close_drawer", _params, socket) do
-    {:noreply, assign(socket, :drawer_issue_id, nil)}
-  end
-
-  @impl true
-  def handle_event("drawer_click", _params, socket) do
-    {:noreply, socket}
   end
 
   @impl true
@@ -379,135 +363,144 @@ defmodule CymphonyElixirWeb.DashboardLive do
           <%= if filtered_running == [] do %>
             <p class="empty-state">No active sessions.</p>
           <% else %>
-            <div class="table-wrap">
-              <table class="data-table data-table-running">
-                <colgroup>
-                  <col style="width: 12rem;" />
-                  <col style="width: 8rem;" />
-                  <%= if @payload[:projects] do %>
-                    <col class="project-col" style="width: 8rem;" />
-                  <% end %>
-                  <col style="width: 6rem;" />
-                  <col style="width: 7.5rem;" />
-                  <col style="width: 8.5rem;" />
-                  <col />
-                  <col style="width: 10rem;" />
-                </colgroup>
-                <thead>
-                  <tr>
-                    <th>Issue</th>
-                    <th>State</th>
-                    <%= if @payload[:projects] do %>
-                      <th class="project-col">Project</th>
-                    <% end %>
-                    <th>Host</th>
-                    <th>Session</th>
-                    <th>Runtime / turns</th>
-                    <th>Claude update</th>
-                    <th>Tokens</th>
-                  </tr>
-                </thead>
-                <tbody>
-                  <%= for entry <- filtered_running do %>
-                    <tr>
-                      <td>
-                        <div class="issue-stack">
-                          <span class="issue-id"><%= entry.issue_identifier %></span>
-                          <button
-                            type="button"
-                            class="subtle-button"
-                            phx-click="open_drawer"
-                            phx-value-issue={entry.issue_identifier}
-                          >
-                            Details
-                          </button>
-                          <button
-                            type="button"
-                            class="subtle-button"
-                            phx-click="toggle_logs"
-                            phx-value-issue={entry.issue_identifier}
-                          >
-                            <%= if @expanded_issue_id == entry.issue_identifier do %>Hide<% else %>Logs<% end %>
-                          </button>
-                        </div>
-                      </td>
-                      <td>
-                        <div class="state-stack">
-                          <span class={state_badge_class(entry.state)}>
-                            <%= entry.state %>
-                          </span>
-                          <%= if entry.stalled do %>
-                            <span class="state-badge state-badge-stalled">Stalled</span>
-                          <% end %>
-                        </div>
-                      </td>
-                      <%= if @payload[:projects] do %>
-                        <td class="project-col"><%= entry.project_name %></td>
-                      <% end %>
-                      <td>
+            <div class="session-card-grid">
+              <%= for entry <- filtered_running do %>
+                <article class="session-card">
+                  <div class="session-card-header">
+                    <div class="session-card-identity">
+                      <span class="session-card-issue-id"><%= entry.issue_identifier %></span>
+                      <div class="session-card-badges">
+                        <span class={state_badge_class(entry.state)}><%= entry.state %></span>
+                        <%= if entry.stalled do %>
+                          <span class="state-badge state-badge-stalled">Stalled</span>
+                        <% end %>
                         <span class="host-badge"><%= entry.worker_host || "local" %></span>
-                      </td>
-                      <td>
-                        <div class="session-stack">
-                          <%= if entry.session_id do %>
-                            <button
-                              type="button"
-                              class="subtle-button"
-                              data-label="Copy ID"
-                              data-copy={entry.session_id}
-                              onclick="navigator.clipboard.writeText(this.dataset.copy); this.textContent = 'Copied'; clearTimeout(this._copyTimer); this._copyTimer = setTimeout(() => { this.textContent = this.dataset.label }, 1200);"
-                            >
-                              Copy ID
-                            </button>
-                          <% else %>
-                            <span class="muted">n/a</span>
-                          <% end %>
-                        </div>
-                      </td>
-                      <td class="numeric"><%= format_runtime_and_turns(entry.started_at, entry.turn_count, @now) %></td>
-                      <td>
-                        <div class="detail-stack">
-                          <span
-                            class="event-text"
-                            title={entry.last_message || to_string(entry.last_event || "n/a")}
-                          ><%= entry.last_message || to_string(entry.last_event || "n/a") %></span>
-                          <span class="muted event-meta">
-                            <%= entry.last_event || "n/a" %>
-                            <%= if entry.last_event_at do %>
-                              · <span class="mono numeric"><%= entry.last_event_at %></span>
-                            <% end %>
+                        <%= if entry.project_name do %>
+                          <span class="session-card-project-badge"><%= entry.project_name %></span>
+                        <% end %>
+                      </div>
+                    </div>
+                    <div class="session-card-actions">
+                      <button
+                        type="button"
+                        class="subtle-button danger"
+                        phx-click="kill_issue"
+                        phx-value-issue={entry.issue_identifier}
+                      >
+                        Kill
+                      </button>
+                    </div>
+                  </div>
+
+                  <div class="session-card-stats">
+                    <div class="session-stat">
+                      <span class="session-stat-label">Runtime</span>
+                      <span class="session-stat-value numeric">
+                        <%= format_runtime_seconds(runtime_seconds_from_started_at(entry.started_at, @now)) %>
+                      </span>
+                      <span class="session-stat-detail"><%= entry.turn_count %> turns</span>
+                    </div>
+                    <div class="session-stat">
+                      <span class="session-stat-label">Tokens</span>
+                      <span class="session-stat-value numeric"><%= format_int(entry.tokens.total_tokens) %></span>
+                      <span class="session-stat-detail numeric">
+                        In <%= format_int(entry.tokens.input_tokens) %> / Out <%= format_int(entry.tokens.output_tokens) %>
+                      </span>
+                    </div>
+                    <div class="session-stat">
+                      <span class="session-stat-label">Session</span>
+                      <span class="session-stat-value">
+                        <%= if entry.session_id do %>
+                          <button
+                            type="button"
+                            class="subtle-button"
+                            data-label="Copy ID"
+                            data-copy={entry.session_id}
+                            onclick="navigator.clipboard.writeText(this.dataset.copy); this.textContent = 'Copied'; clearTimeout(this._copyTimer); this._copyTimer = setTimeout(() => { this.textContent = this.dataset.label }, 1200);"
+                          >
+                            Copy ID
+                          </button>
+                        <% else %>
+                          <span class="muted">n/a</span>
+                        <% end %>
+                      </span>
+                    </div>
+                    <div class="session-stat">
+                      <span class="session-stat-label">Workspace</span>
+                      <span class="session-stat-value">
+                        <%= if entry.workspace_path do %>
+                          <span class="mono" style="font-size:0.78rem;word-break:break-all;">
+                            <%= entry.workspace_path %>
                           </span>
-                        </div>
-                      </td>
-                      <td>
-                        <div class="token-stack numeric">
-                          <span>Total: <%= format_int(entry.tokens.total_tokens) %></span>
-                          <span class="muted">In <%= format_int(entry.tokens.input_tokens) %> / Out <%= format_int(entry.tokens.output_tokens) %></span>
-                        </div>
-                      </td>
-                    </tr>
-                    <%= if @expanded_issue_id == entry.issue_identifier do %>
-                      <tr class="log-row">
-                        <td colspan={if @payload[:projects], do: 8, else: 7}>
-                          <%= if entry.log_events == [] do %>
-                            <p class="empty-state">No log events yet.</p>
-                          <% else %>
-                            <ul class="log-list">
-                              <%= for log <- entry.log_events do %>
-                                <li class="log-event">
-                                  <span class="log-event-at"><%= format_log_at(log.at) %></span>
-                                  <span class={log_event_badge_class(log.event)}><%= log.event %></span>
-                                  <span class="log-event-message"><%= format_log_message(log.message) %></span>
-                                </li>
-                              <% end %>
-                            </ul>
-                          <% end %>
-                        </td>
-                      </tr>
-                    <% end %>
+                          <button
+                            type="button"
+                            class="subtle-button"
+                            data-label="Copy"
+                            data-copy={entry.workspace_path}
+                            onclick="navigator.clipboard.writeText(this.dataset.copy); this.textContent = 'Copied'; clearTimeout(this._copyTimer); this._copyTimer = setTimeout(() => { this.textContent = this.dataset.label }, 1200);"
+                          >
+                            Copy
+                          </button>
+                        <% else %>
+                          <span class="muted">n/a</span>
+                        <% end %>
+                      </span>
+                    </div>
+                  </div>
+
+                  <%= if entry.last_event do %>
+                    <div class="session-card-activity">
+                      <div class="session-activity-header">
+                        <span class="session-stat-label">Last activity</span>
+                        <%= if entry.last_event_at do %>
+                          <span class="mono numeric" style="font-size:0.78rem;color:var(--muted);">
+                            <%= entry.last_event_at %>
+                          </span>
+                        <% end %>
+                      </div>
+                      <div class="session-activity-content">
+                        <span class={log_event_badge_class(to_string(entry.last_event))}>
+                          <%= entry.last_event %>
+                        </span>
+                        <span class="session-activity-message">
+                          <%= entry.last_message || "n/a" %>
+                        </span>
+                      </div>
+                    </div>
                   <% end %>
-                </tbody>
-              </table>
+
+                  <div class="session-card-log">
+                    <div class="session-log-header">
+                      <span class="session-log-title">Recent logs</span>
+                      <button
+                        type="button"
+                        class="subtle-button"
+                        phx-click="toggle_logs"
+                        phx-value-issue={entry.issue_identifier}
+                      >
+                        <%= if @expanded_issue_id == entry.issue_identifier do %>Hide<% else %>Show<% end %>
+                      </button>
+                    </div>
+                    <%= if @expanded_issue_id == entry.issue_identifier do %>
+                      <div class="session-log-terminal">
+                        <%= if entry.log_events == [] do %>
+                          <p class="empty-state">No log events yet.</p>
+                        <% else %>
+                          <ul class="log-list">
+                            <%= for log <- entry.log_events do %>
+                              <li class="log-event">
+                                <span class="log-event-at"><%= format_log_at(log.at) %></span>
+                                <span class={log_event_badge_class(log.event)}><%= log.event %></span>
+                                <span class="log-event-message"><%= format_log_message(log.message) %></span>
+                              </li>
+                            <% end %>
+                          </ul>
+                        <% end %>
+                      </div>
+                    <% end %>
+                  </div>
+                </article>
+              <% end %>
             </div>
           <% end %>
         </section>
@@ -525,174 +518,67 @@ defmodule CymphonyElixirWeb.DashboardLive do
           <%= if filtered_retrying == [] do %>
             <p class="empty-state">No issues are currently backing off.</p>
           <% else %>
-            <div class="table-wrap">
-              <table class="data-table" style="min-width: 680px;">
-                <thead>
-                  <tr>
-                    <th>Issue</th>
-                    <th>Attempt</th>
-                    <th>Due at</th>
-                    <th>Error</th>
-                  </tr>
-                </thead>
-                <tbody>
-                  <tr :for={entry <- filtered_retrying}>
-                    <td>
-                      <div class="issue-stack">
-                        <span class="issue-id"><%= entry.issue_identifier %></span>
-                        <button
-                          type="button"
-                          class="subtle-button"
-                          phx-click="open_drawer"
-                          phx-value-issue={entry.issue_identifier}
-                        >
-                          Details
-                        </button>
+            <div class="session-card-grid">
+              <%= for entry <- filtered_retrying do %>
+                <article class="retry-card">
+                  <div class="retry-card-header">
+                    <div class="retry-card-identity">
+                      <span class="retry-card-issue-id"><%= entry.issue_identifier %></span>
+                      <div class="retry-card-badges">
+                        <span class="state-badge state-badge-warning">Retry</span>
+                        <span class="host-badge"><%= entry.worker_host || "local" %></span>
+                        <%= if Map.get(entry, :project_name) do %>
+                          <span class="session-card-project-badge"><%= entry.project_name %></span>
+                        <% end %>
                       </div>
-                    </td>
-                    <td><%= entry.attempt %></td>
-                    <td class="mono"><%= entry.due_at || "n/a" %></td>
-                    <td><%= entry.error || "n/a" %></td>
-                  </tr>
-                </tbody>
-              </table>
-            </div>
-          <% end %>
-        </section>
-      <% end %>
-
-      <%= if @drawer_issue_id do %>
-        <% drawer_entry = find_drawer_entry(@payload, @drawer_issue_id) %>
-        <div class="drawer-overlay" phx-click="close_drawer">
-          <div class="drawer-panel" phx-click="drawer_click">
-            <div class="drawer-header">
-              <div>
-                <p class="drawer-id"><%= drawer_entry.issue_identifier %></p>
-                <span class={state_badge_class(drawer_entry.state)}><%= drawer_entry.state %></span>
-              </div>
-              <div class="drawer-actions">
-                <%= if drawer_entry[:claude_app_server_pid] || Map.get(drawer_entry, :session_id) do %>
-                  <button
-                    type="button"
-                    class="subtle-button danger"
-                    phx-click="kill_issue"
-                    phx-value-issue={drawer_entry.issue_identifier}
-                  >
-                    Kill
-                  </button>
-                <% end %>
-                <%= if drawer_entry[:attempt] do %>
-                  <button
-                    type="button"
-                    class="subtle-button"
-                    phx-click="retry_issue"
-                    phx-value-issue={drawer_entry.issue_identifier}
-                  >
-                    Retry now
-                  </button>
-                <% end %>
-                <button
-                  type="button"
-                  class="subtle-button"
-                  phx-click="close_drawer"
-                >
-                  Close
-                </button>
-              </div>
-            </div>
-
-            <div class="drawer-body">
-              <%= if drawer_entry.workspace_path do %>
-                <div class="drawer-row">
-                  <span class="drawer-row-label">Workspace</span>
-                  <div class="drawer-row-value">
-                    <span class="drawer-path"><%= drawer_entry.workspace_path %></span>
+                    </div>
+                    <div class="retry-card-countdown">
+                      <span class="retry-countdown-value numeric">Attempt <%= entry.attempt %></span>
+                      <span class="retry-countdown-label">
+                        <%= if entry.due_at do %>
+                          Due <%= format_retry_countdown(entry.due_at, @now) %>
+                        <% else %>
+                          Pending
+                        <% end %>
+                      </span>
+                    </div>
+                  </div>
+                  <div class="retry-card-body">
+                    <div class="retry-card-meta">
+                      <%= if entry.workspace_path do %>
+                        <span class="retry-meta-item">
+                          <span class="mono" style="font-size:0.82rem;"><%= entry.workspace_path %></span>
+                          <button
+                            type="button"
+                            class="subtle-button"
+                            data-label="Copy"
+                            data-copy={entry.workspace_path}
+                            onclick="navigator.clipboard.writeText(this.dataset.copy); this.textContent = 'Copied'; clearTimeout(this._copyTimer); this._copyTimer = setTimeout(() => { this.textContent = this.dataset.label }, 1200);"
+                          >
+                            Copy
+                          </button>
+                        </span>
+                      <% end %>
+                    </div>
+                    <%= if entry.error do %>
+                      <pre class="drawer-error"><%= entry.error %></pre>
+                    <% end %>
+                  </div>
+                  <div class="retry-card-actions">
                     <button
                       type="button"
                       class="subtle-button"
-                      data-label="Copy"
-                      data-copy={drawer_entry.workspace_path}
-                      onclick="navigator.clipboard.writeText(this.dataset.copy); this.textContent = 'Copied'; clearTimeout(this._copyTimer); this._copyTimer = setTimeout(() => { this.textContent = this.dataset.label }, 1200);"
+                      phx-click="retry_issue"
+                      phx-value-issue={entry.issue_identifier}
                     >
-                      Copy
+                      Retry now
                     </button>
                   </div>
-                </div>
-              <% end %>
-
-              <%= if drawer_entry.worker_host do %>
-                <div class="drawer-row">
-                  <span class="drawer-row-label">Host</span>
-                  <span class="drawer-row-value"><%= drawer_entry.worker_host %></span>
-                </div>
-              <% end %>
-
-              <%= if drawer_entry.session_id do %>
-                <div class="drawer-row">
-                  <span class="drawer-row-label">Session</span>
-                  <span class="drawer-row-value mono"><%= drawer_entry.session_id %></span>
-                </div>
-              <% end %>
-
-              <div class="drawer-row">
-                <span class="drawer-row-label">Tokens</span>
-                <div class="drawer-row-value">
-                  <span class="token-pill">Total <strong><%= format_int(drawer_entry.tokens.total_tokens) %></strong></span>
-                  <span class="token-pill">In <strong><%= format_int(drawer_entry.tokens.input_tokens) %></strong></span>
-                  <span class="token-pill">Out <strong><%= format_int(drawer_entry.tokens.output_tokens) %></strong></span>
-                </div>
-              </div>
-
-              <%= if drawer_entry.started_at do %>
-                <div class="drawer-row">
-                  <span class="drawer-row-label">Started</span>
-                  <span class="drawer-row-value"><%= drawer_entry.started_at %></span>
-                </div>
-              <% end %>
-
-              <%= if drawer_entry.turn_count > 0 do %>
-                <div class="drawer-row">
-                  <span class="drawer-row-label">Turns</span>
-                  <span class="drawer-row-value"><%= drawer_entry.turn_count %></span>
-                </div>
-              <% end %>
-
-              <%= if drawer_entry.last_event do %>
-                <div class="drawer-row">
-                  <span class="drawer-row-label">Last event</span>
-                  <div class="drawer-row-value">
-                    <span class="log-event-name"><%= drawer_entry.last_event %></span>
-                    <%= if drawer_entry.last_message do %>
-                      <span class="drawer-event-message"><%= drawer_entry.last_message %></span>
-                    <% end %>
-                  </div>
-                </div>
-              <% end %>
-
-              <%= if drawer_entry.log_events != [] do %>
-                <div class="drawer-row">
-                  <span class="drawer-row-label">Recent logs</span>
-                  <ul class="log-list">
-                    <%= for log <- drawer_entry.log_events do %>
-                      <li class="log-event">
-                        <span class="log-event-at"><%= format_log_at(log.at) %></span>
-                        <span class={log_event_badge_class(log.event)}><%= log.event %></span>
-                        <span class="log-event-message"><%= format_log_message(log.message) %></span>
-                      </li>
-                    <% end %>
-                  </ul>
-                </div>
-              <% end %>
-
-              <%= if drawer_entry.error do %>
-                <div class="drawer-row">
-                  <span class="drawer-row-label">Error</span>
-                  <pre class="drawer-error"><%= drawer_entry.error %></pre>
-                </div>
+                </article>
               <% end %>
             </div>
-          </div>
-        </div>
+          <% end %>
+        </section>
       <% end %>
     </section>
     """
@@ -727,14 +613,6 @@ defmodule CymphonyElixirWeb.DashboardLive do
         total + runtime_seconds_from_started_at(entry.started_at, now)
       end)
   end
-
-  defp format_runtime_and_turns(started_at, turn_count, now)
-       when is_integer(turn_count) and turn_count > 0 do
-    "#{format_runtime_seconds(runtime_seconds_from_started_at(started_at, now))} / #{turn_count}"
-  end
-
-  defp format_runtime_and_turns(started_at, _turn_count, now),
-    do: format_runtime_seconds(runtime_seconds_from_started_at(started_at, now))
 
   defp format_runtime_seconds(seconds) when is_number(seconds) do
     whole_seconds = max(trunc(seconds), 0)
@@ -817,12 +695,9 @@ defmodule CymphonyElixirWeb.DashboardLive do
     end
   end
 
-  defp pretty_value(nil), do: "n/a"
-  defp pretty_value(value), do: inspect(value, pretty: true, limit: :infinity)
-
   defp format_poll_countdown(nil, _now), do: "n/a"
 
-  defp format_poll_countdown(ms, %DateTime{} = now) when is_integer(ms) do
+  defp format_poll_countdown(ms, %DateTime{}) when is_integer(ms) do
     seconds = max(div(ms, 1_000), 0)
     "#{seconds}s"
   end
@@ -861,6 +736,19 @@ defmodule CymphonyElixirWeb.DashboardLive do
 
   defp filter_button_class(true), do: "filter-button filter-button-active"
   defp filter_button_class(false), do: "filter-button"
+
+  defp format_retry_countdown(due_at, now) when is_binary(due_at) do
+    case DateTime.from_iso8601(due_at) do
+      {:ok, parsed, _offset} ->
+        diff = DateTime.diff(parsed, now, :second)
+        if diff > 0, do: format_runtime_seconds(diff), else: "now"
+
+      _ ->
+        "n/a"
+    end
+  end
+
+  defp format_retry_countdown(_, _), do: "n/a"
 
   defp update_token_samples(samples, payload) do
     now_ms = System.monotonic_time(:millisecond)
@@ -963,31 +851,13 @@ defmodule CymphonyElixirWeb.DashboardLive do
     end)
   end
 
-  defp find_drawer_entry(payload, issue_id) do
-    running = Enum.find(payload.running, &(&1.issue_identifier == issue_id))
-    retry = Enum.find(payload.retrying, &(&1.issue_identifier == issue_id))
-    base = running || retry || %{issue_identifier: issue_id, state: "unknown"}
-
-    Map.merge(
-      %{
-        tokens: %{input_tokens: 0, output_tokens: 0, total_tokens: 0},
-        log_events: [],
-        turn_count: 0,
-        workspace_path: nil,
-        worker_host: nil,
-        session_id: nil,
-        started_at: nil,
-        last_event: nil,
-        last_message: nil,
-        error: nil
-      },
-      base
-    )
-  end
-
   defp send_issue_command(socket, issue_id, command) do
-    drawer_entry = find_drawer_entry(socket.assigns.payload, issue_id)
-    project_name = Map.get(drawer_entry, :project_name)
+    entry =
+      Enum.find(socket.assigns.payload.running, &(&1.issue_identifier == issue_id)) ||
+        Enum.find(socket.assigns.payload.retrying, &(&1.issue_identifier == issue_id)) ||
+        %{}
+
+    project_name = Map.get(entry, :project_name)
 
     orchestrator_pid =
       if is_binary(project_name) do
