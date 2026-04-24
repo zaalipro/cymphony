@@ -229,13 +229,17 @@ defmodule CymphonyElixir.Claude.AppServer do
 
   defp claude_env(config) do
     base_env =
-      case System.get_env("ANTHROPIC_API_KEY") do
-        key when is_binary(key) and key != "" ->
-          [{~c"ANTHROPIC_API_KEY", String.to_charlist(key)}]
+      [
+        {~c"PATH", String.to_charlist(System.get_env("PATH") || "")},
+        {~c"HOME", String.to_charlist(System.get_env("HOME") || "")}
+        | case System.get_env("ANTHROPIC_API_KEY") do
+            key when is_binary(key) and key != "" ->
+              [{~c"ANTHROPIC_API_KEY", String.to_charlist(key)}]
 
-        _ ->
-          []
-      end
+            _ ->
+              []
+          end
+      ]
 
     provider_env =
       if config do

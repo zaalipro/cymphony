@@ -6,7 +6,7 @@ on:
       - 'v*'
 
 jobs:
-  build-linux:
+  build:
     runs-on: ubuntu-latest
     defaults:
       run:
@@ -49,14 +49,26 @@ jobs:
           MIX_ENV: prod
         run: mix release --overwrite
 
-      - name: Upload binary artifact
+      - name: Upload Linux binary
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
         with:
           name: cymphony-linux
-          path: elixir/burrito_out/*
+          path: elixir/burrito_out/cymphony_linux_*
+
+      - name: Upload macOS Intel binary
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: cymphony-macos-intel
+          path: elixir/burrito_out/cymphony_darwin_x86_64
+
+      - name: Upload macOS ARM binary
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: cymphony-macos-arm
+          path: elixir/burrito_out/cymphony_darwin_aarch64
 
   package-deb:
-    needs: build-linux
+    needs: build
     runs-on: ubuntu-latest
     steps:
       - name: Download binary artifact
@@ -99,7 +111,7 @@ jobs:
           path: ./*.deb
 
   release:
-    needs: package-deb
+    needs: [build, package-deb]
     runs-on: ubuntu-latest
     permissions:
       contents: write
@@ -113,6 +125,18 @@ jobs:
           name: cymphony-deb
           path: ./artifacts
 
+      - name: Download macOS Intel binary
+        uses: actions/download-artifact@95815c38cf2ff2164869cbab79da8d1f422bc89e # v4
+        with:
+          name: cymphony-macos-intel
+          path: ./artifacts
+
+      - name: Download macOS ARM binary
+        uses: actions/download-artifact@95815c38cf2ff2164869cbab79da8d1f422bc89e # v4
+        with:
+          name: cymphony-macos-arm
+          path: ./artifacts
+
       - name: Create GitHub Release
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
@@ -120,4 +144,4 @@ jobs:
           gh release create "${{ github.ref_name }}" \
             --title "Cymphony ${{ github.ref_name }}" \
             --generate-notes \
-            artifacts/*.deb
+            artifacts/*
