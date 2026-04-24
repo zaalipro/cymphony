@@ -26,6 +26,7 @@ defmodule CymphonyElixirWeb.DashboardLive do
       |> assign(:payload, @default_payload)
       |> assign(:now, DateTime.utc_now())
       |> assign(:stalled_alert_dismissed, false)
+      |> assign(:expanded_issue_ids, MapSet.new())
       |> assign(:filter_project, nil)
       |> assign(:token_samples, [])
       |> assign(:version, @version)
@@ -37,6 +38,20 @@ defmodule CymphonyElixirWeb.DashboardLive do
     end
 
     {:ok, socket}
+  end
+
+  @impl true
+  def handle_event("toggle_logs", %{"issue" => issue_id}, socket) do
+    expanded = socket.assigns.expanded_issue_ids
+
+    expanded =
+      if MapSet.member?(expanded, issue_id) do
+        MapSet.delete(expanded, issue_id)
+      else
+        MapSet.put(expanded, issue_id)
+      end
+
+    {:noreply, assign(socket, :expanded_issue_ids, expanded)}
   end
 
   @impl true
@@ -65,6 +80,7 @@ defmodule CymphonyElixirWeb.DashboardLive do
     Task.Supervisor.start_child(CymphonyElixir.TaskSupervisor, fn ->
       _ = CymphonyElixir.Orchestrator.request_refresh(orchestrator())
     end)
+
     Process.send_after(self(), :clear_flash, 3_000)
     {:noreply, put_flash(socket, :info, "Refresh requested — checking Linear now...")}
   end
@@ -462,21 +478,34 @@ defmodule CymphonyElixirWeb.DashboardLive do
                   <% end %>
 
                   <div class="session-card-log">
-                    <div class="session-log-terminal">
-                      <%= if entry.log_events == [] do %>
-                        <p class="empty-state">No log events yet.</p>
-                      <% else %>
-                        <ul class="log-list">
-                          <%= for log <- entry.log_events do %>
-                            <li class="log-event">
-                              <span class="log-event-at"><%= format_log_at(log.at) %></span>
-                              <span class={log_event_badge_class(log.event)}><%= log.event %></span>
-                              <span class="log-event-message"><%= format_log_message(log.message) %></span>
-                            </li>
-                          <% end %>
-                        </ul>
-                      <% end %>
+                    <div class="session-log-header">
+                      <span class="session-log-title">Recent logs</span>
+                      <button
+                        type="button"
+                        class="subtle-button"
+                        phx-click="toggle_logs"
+                        phx-value-issue={entry.issue_identifier}
+                      >
+                        <%= if MapSet.member?(@expanded_issue_ids, entry.issue_identifier) do %>Hide logs<% else %>Show logs<% end %>
+                      </button>
                     </div>
+                    <%= if MapSet.member?(@expanded_issue_ids, entry.issue_identifier) do %>
+                      <div class="session-log-terminal">
+                        <%= if entry.log_events == [] do %>
+                          <p class="empty-state">No log events yet.</p>
+                        <% else %>
+                          <ul class="log-list">
+                            <%= for log <- entry.log_events do %>
+                              <li class="log-event">
+                                <span class="log-event-at"><%= format_log_at(log.at) %></span>
+                                <span class={log_event_badge_class(log.event)}><%= log.event %></span>
+                                <span class="log-event-message"><%= format_log_message(log.message) %></span>
+                              </li>
+                            <% end %>
+                          </ul>
+                        <% end %>
+                      </div>
+                    <% end %>
                   </div>
                 </article>
               <% end %>
@@ -569,6 +598,7 @@ defmodule CymphonyElixirWeb.DashboardLive do
 
   defp spawn_payload_load do
     pid = self()
+
     Task.Supervisor.start_child(CymphonyElixir.TaskSupervisor, fn ->
       send(pid, {:payload_loaded, load_payload()})
     end)

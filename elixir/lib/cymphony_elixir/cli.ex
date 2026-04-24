@@ -485,6 +485,7 @@ defmodule CymphonyElixir.CLI do
 
       case deps.ensure_all_started.() do
         {:ok, _started_apps} ->
+          start_project("default", expanded_path)
           :ok
 
         {:error, reason} ->
