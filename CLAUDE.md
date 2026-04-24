@@ -41,7 +41,8 @@ CLI → WorkflowStore → Orchestrator (GenServer, per-project) → AgentRunner 
 3. **Config** (`config.ex` + `config/schema.ex`) — Validates workflow config via Ecto embedded schemas. Resolves `$ENV_VAR` references and provides typed access to all settings (tracker, polling, workspace, claude, hooks, etc.).
 4. **Orchestrator** (`orchestrator.ex`) — Central GenServer. Poll tick loop dispatches issues, reconciles running state, handles retries with exponential backoff, tracks token usage, and detects stalled agents.
 5. **AgentRunner** (`agent_runner.ex`) — Spawns a Task per issue. Creates workspace, runs lifecycle hooks, then calls `Claude.AppServer` for multi-turn execution.
-6. **Claude.AppServer** (`claude/app_server.ex`) — Spawns `claude` CLI as a Port process. Manages session start/turn/resume lifecycle. Parses JSON and stream-json output.
+6. **ShellProvider** (`cymphony/shell_provider.ex`) — Reads provider env vars (API keys, model config) from shell functions in `~/.cld`, `~/.zshrc`, or `~/.bashrc`. Sources the rc files in a zsh subprocess with `claude` noop'd, calls the provider function, and captures the resulting `ANTHROPIC_*`/`CLAUDE_CODE_*` env vars. Results are cached via `persistent_term`.
+7. **Claude.AppServer** (`claude/app_server.ex`) — Spawns `claude` CLI as a Port process. Manages session start/turn/resume lifecycle. Parses JSON and stream-json output. Uses `ShellProvider` to inject provider env vars into the spawned process.
 7. **Workspace** (`workspace.ex`) — Isolated per-issue directories with path safety validation, lifecycle hooks (after_create, before_run, after_run, before_remove), and SSH worker support.
 8. **Tracker** (`tracker.ex`) — Behaviour-based adapter for issue trackers. `Linear.Adapter` is the production implementation; `Tracker.Memory` is for testing.
 
@@ -71,3 +72,22 @@ Each project gets its own `ProjectSupervisor` with a `WorkflowStore` and `Orches
 - Regexes must be compiled at runtime with `Regex.compile!/1` (not sigils) for OTP 28 compat
 - Keep implementation aligned with `SPEC.md`; update spec when behavior changes meaningfully
 - PR body must follow `.github/pull_request_template.md` exactly (validate with `mix pr_body.check`)
+
+## Release Process
+
+1. Bump version in `elixir/mix.exs`
+2. Commit and push to `main`
+3. Create and push a `vX.Y.Z` tag — this triggers `.github/workflows/release.yml` which builds binaries (macOS, Linux), packages a .deb, and creates a GitHub release
+4. Update the Homebrew tap at `zaalipro/homebrew-cymphony`:
+   - Download the new tarball: `curl -sL https://github.com/zaalipro/cymphony/archive/refs/tags/vX.Y.Z.tar.gz | shasum -a 256`
+   - Update `Formula/cymphony.rb` with the new `url` and `sha256`
+   - Commit and push to the tap repo
+5. Users install/upgrade via `brew update && brew upgrade zaalipro/cymphony/cymphony`
+
+## Provider System
+
+Providers are shell functions (e.g., `ck`, `ck1`, `cz`) defined in `~/.cld` (sourced by `.zshrc`). Each function calls `_unset` to clear `ANTHROPIC_*` vars, then sets new exports and calls `claude`.
+
+Cymphony resolves providers via `ShellProvider`: when the user runs `cymphony p ProjectName c ck1`, it shells out to zsh, sources the rc files, noop's `claude`, calls the provider function, and captures the resulting env vars. These are injected into the spawned Claude subprocess via the Port env.
+
+No provider config is stored in `~/.cymphony/config.json` — the shell functions are the single source of truth.
