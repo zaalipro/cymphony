@@ -6,6 +6,8 @@ defmodule CymphonyElixirWeb.DashboardLive do
   use Phoenix.LiveView, layout: {CymphonyElixirWeb.Layouts, :app}
 
   alias CymphonyElixirWeb.{Endpoint, ObservabilityPubSub, Presenter}
+
+  @version Mix.Project.config()[:version]
   @runtime_tick_ms 1_000
 
   @impl true
@@ -19,6 +21,7 @@ defmodule CymphonyElixirWeb.DashboardLive do
       |> assign(:filter_project, nil)
       |> assign(:token_samples, [])
       |> assign(:drawer_issue_id, nil)
+      |> assign(:version, @version)
 
     if connected?(socket) do
       :ok = ObservabilityPubSub.subscribe()
@@ -101,7 +104,13 @@ defmodule CymphonyElixirWeb.DashboardLive do
   @impl true
   def handle_event("refresh_now", _params, socket) do
     _ = CymphonyElixir.Orchestrator.request_refresh(orchestrator())
-    {:noreply, socket}
+    Process.send_after(self(), :clear_flash, 3_000)
+    {:noreply, put_flash(socket, :info, "Refresh requested — checking Linear now...")}
+  end
+
+  @impl true
+  def handle_info(:clear_flash, socket) do
+    {:noreply, clear_flash(socket)}
   end
 
   @impl true
@@ -149,6 +158,7 @@ defmodule CymphonyElixirWeb.DashboardLive do
               <span class="status-badge-dot"></span>
               Offline
             </span>
+            <span class="version-badge">v<%= @version %></span>
             <button
               type="button"
               class="subtle-button"
@@ -159,6 +169,12 @@ defmodule CymphonyElixirWeb.DashboardLive do
           </div>
         </div>
       </header>
+
+      <%= if info = @flash["info"] do %>
+        <div class="alert-banner alert-info">
+          <%= info %>
+        </div>
+      <% end %>
 
       <%= if @payload[:error] do %>
         <section class="error-card">

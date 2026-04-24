@@ -5,9 +5,14 @@ defmodule CymphonyElixirWeb.Layouts do
 
   use Phoenix.Component
 
+  @version Mix.Project.config()[:version]
+
   @spec root(map()) :: Phoenix.LiveView.Rendered.t()
   def root(assigns) do
-    assigns = assign(assigns, :csrf_token, Plug.CSRFProtection.get_csrf_token())
+    assigns =
+      assigns
+      |> assign(:csrf_token, Plug.CSRFProtection.get_csrf_token())
+      |> assign(:version, @version)
 
     ~H"""
     <!DOCTYPE html>
@@ -17,9 +22,14 @@ defmodule CymphonyElixirWeb.Layouts do
         <meta name="viewport" content="width=device-width, initial-scale=1" />
         <meta name="csrf-token" content={@csrf_token} />
         <title>Cymphony Observability</title>
-        <script src="/vendor/phoenix_html/phoenix_html.js"></script>
-        <script src="/vendor/phoenix/phoenix.js"></script>
-        <script src="/vendor/phoenix_live_view/phoenix_live_view.js"></script>
+        <script src={"/vendor/phoenix_html/phoenix_html.js?v=#{@version}"}></script>
+        <script src={"/vendor/phoenix/phoenix.js?v=#{@version}"}></script>
+        <script src={"/vendor/phoenix_live_view/phoenix_live_view.js?v=#{@version}"}></script>
+        <link rel="stylesheet" href={"/dashboard.css?v=#{@version}"} />
+      </head>
+      <body>
+        {@inner_content}
+
         <script>
           (function() {
             var meta = document.querySelector("meta[name='csrf-token']");
@@ -38,10 +48,6 @@ defmodule CymphonyElixirWeb.Layouts do
             window.liveSocket = liveSocket;
           })();
         </script>
-        <link rel="stylesheet" href="/dashboard.css" />
-      </head>
-      <body>
-        {@inner_content}
       </body>
     </html>
     """

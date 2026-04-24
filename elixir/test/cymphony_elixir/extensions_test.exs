@@ -373,7 +373,14 @@ defmodule CymphonyElixir.ExtensionsTest do
                  "due_at" => state_payload["retrying"] |> List.first() |> Map.fetch!("due_at"),
                  "error" => "boom",
                  "worker_host" => nil,
-                 "workspace_path" => nil
+                 "workspace_path" => nil,
+                 "tokens" => %{"input_tokens" => 0, "output_tokens" => 0, "total_tokens" => 0},
+                 "turn_count" => 0,
+                 "session_id" => nil,
+                 "started_at" => nil,
+                 "last_event" => nil,
+                 "last_message" => nil,
+                 "log_events" => []
                }
              ],
              "claude_totals" => %{
@@ -382,6 +389,7 @@ defmodule CymphonyElixir.ExtensionsTest do
                "total_tokens" => 12,
                "seconds_running" => 42.5
              },
+             "polling" => nil,
              "rate_limits" => %{"primary" => %{"remaining" => 11}}
            }
 
