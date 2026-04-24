@@ -24,7 +24,7 @@ defmodule CymphonyElixirWeb.Presenter do
               },
               running: Enum.map(snapshot.running, &running_entry_payload/1),
               retrying: Enum.map(snapshot.retrying, &retry_entry_payload/1),
-              claude_totals: snapshot.claude_totals,
+              claude_totals: normalize_claude_totals(snapshot.claude_totals),
               rate_limits: snapshot.rate_limits,
               polling: Map.get(snapshot, :polling)
             }
@@ -462,6 +462,19 @@ defmodule CymphonyElixirWeb.Presenter do
       claude_totals: merged_totals,
       rate_limits: Map.get(first_snap, :rate_limits),
       polling: Map.get(first_snap, :polling)
+    }
+  end
+
+  defp normalize_claude_totals(nil) do
+    %{input_tokens: 0, output_tokens: 0, total_tokens: 0, seconds_running: 0}
+  end
+
+  defp normalize_claude_totals(totals) when is_map(totals) do
+    %{
+      input_tokens: Map.get(totals, :input_tokens, 0),
+      output_tokens: Map.get(totals, :output_tokens, 0),
+      total_tokens: Map.get(totals, :total_tokens, 0),
+      seconds_running: Map.get(totals, :seconds_running, 0)
     }
   end
 end

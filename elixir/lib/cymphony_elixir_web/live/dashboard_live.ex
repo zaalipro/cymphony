@@ -291,7 +291,7 @@ defmodule CymphonyElixirWeb.DashboardLive do
             </div>
           </div>
 
-          <%= stalled_entries = stalled_running_entries(@payload.running) %>
+          <% stalled_entries = stalled_running_entries(@payload.running) %>
           <%= if stalled_entries != [] and not @stalled_alert_dismissed do %>
             <div class="alert-banner">
               <div class="alert-content">
@@ -336,7 +336,7 @@ defmodule CymphonyElixirWeb.DashboardLive do
             </div>
           <% end %>
 
-          <%= filtered_running = filter_running_by_project(@payload.running, @filter_project) %>
+          <% filtered_running = filter_running_by_project(@payload.running, @filter_project) %>
 
           <%= if filtered_running == [] do %>
             <p class="empty-state">No active sessions.</p>
@@ -482,7 +482,7 @@ defmodule CymphonyElixirWeb.DashboardLive do
             </div>
           </div>
 
-          <%= filtered_retrying = filter_retrying_by_project(@payload.retrying, @filter_project) %>
+          <% filtered_retrying = filter_retrying_by_project(@payload.retrying, @filter_project) %>
 
           <%= if filtered_retrying == [] do %>
             <p class="empty-state">No issues are currently backing off.</p>
@@ -524,7 +524,7 @@ defmodule CymphonyElixirWeb.DashboardLive do
       <% end %>
 
       <%= if @drawer_issue_id do %>
-        <%= drawer_entry = find_drawer_entry(@payload, @drawer_issue_id) %>
+        <% drawer_entry = find_drawer_entry(@payload, @drawer_issue_id) %>
         <div class="drawer-overlay" phx-click="close_drawer">
           <div class="drawer-panel" phx-click="noop" phx-target="window">
             <div class="drawer-header">
@@ -533,7 +533,7 @@ defmodule CymphonyElixirWeb.DashboardLive do
                 <span class={state_badge_class(drawer_entry.state)}><%= drawer_entry.state %></span>
               </div>
               <div class="drawer-actions">
-                <%= if drawer_entry[:pid] or Map.get(drawer_entry, :session_id) do %>
+                <%= if drawer_entry[:claude_app_server_pid] || Map.get(drawer_entry, :session_id) do %>
                   <button
                     type="button"
                     class="subtle-button danger"
@@ -673,7 +673,7 @@ defmodule CymphonyElixirWeb.DashboardLive do
   end
 
   defp completed_runtime_seconds(payload) do
-    payload.claude_totals.seconds_running || 0
+    get_in(payload, [:claude_totals, :seconds_running]) || 0
   end
 
   defp total_runtime_seconds(payload, now) do
@@ -819,7 +819,7 @@ defmodule CymphonyElixirWeb.DashboardLive do
 
   defp update_token_samples(samples, payload) do
     now_ms = System.monotonic_time(:millisecond)
-    total_tokens = payload.claude_totals.total_tokens
+    total_tokens = get_in(payload, [:claude_totals, :total_tokens]) || 0
 
     samples =
       [{now_ms, total_tokens} | samples]
@@ -925,7 +925,7 @@ defmodule CymphonyElixirWeb.DashboardLive do
     cond do
       running -> running
       retry -> retry
-      true -> %{issue_identifier: issue_id, state: "unknown", tokens: %{}, log_events: []}
+      true -> %{issue_identifier: issue_id, state: "unknown", tokens: %{}, log_events: [], turn_count: 0}
     end
   end
 
