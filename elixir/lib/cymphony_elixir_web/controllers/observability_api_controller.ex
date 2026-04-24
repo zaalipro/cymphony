@@ -20,7 +20,9 @@ defmodule CymphonyElixirWeb.ObservabilityApiController do
 
   @spec issue(Conn.t(), map()) :: Conn.t()
   def issue(conn, %{"issue_identifier" => issue_identifier}) do
-    case Presenter.issue_payload(issue_identifier, orchestrator(), snapshot_timeout_ms()) do
+    project = conn.query_params["project"]
+
+    case Presenter.issue_payload(issue_identifier, orchestrator(), snapshot_timeout_ms(), project) do
       {:ok, payload} ->
         json(conn, payload)
 

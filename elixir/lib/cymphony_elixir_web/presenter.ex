@@ -25,7 +25,8 @@ defmodule CymphonyElixirWeb.Presenter do
               running: Enum.map(snapshot.running, &running_entry_payload/1),
               retrying: Enum.map(snapshot.retrying, &retry_entry_payload/1),
               claude_totals: snapshot.claude_totals,
-              rate_limits: snapshot.rate_limits
+              rate_limits: snapshot.rate_limits,
+              polling: Map.get(snapshot, :polling)
             }
 
           :timeout ->
@@ -48,6 +49,7 @@ defmodule CymphonyElixirWeb.Presenter do
           retrying: Enum.map(merged.retrying, &retry_entry_payload/1),
           claude_totals: merged.claude_totals,
           rate_limits: merged.rate_limits,
+          polling: merged.polling,
           projects:
             Enum.map(snapshots, fn %{project_name: name, snapshot: snap} ->
               %{name: name, running: length(snap.running), retrying: length(snap.retrying)}
@@ -74,22 +76,85 @@ defmodule CymphonyElixirWeb.Presenter do
     end)
   end
 
-  @spec issue_payload(String.t(), GenServer.name(), timeout()) :: {:ok, map()} | {:error, :issue_not_found}
-  def issue_payload(issue_identifier, orchestrator, snapshot_timeout_ms) when is_binary(issue_identifier) do
-    case Orchestrator.snapshot(orchestrator, snapshot_timeout_ms) do
-      %{} = snapshot ->
-        running = Enum.find(snapshot.running, &(&1.identifier == issue_identifier))
-        retry = Enum.find(snapshot.retrying, &(&1.identifier == issue_identifier))
+  @spec issue_payload(String.t(), GenServer.name(), timeout(), String.t() | nil) ::
+          {:ok, map()} | {:error, :issue_not_found}
+  def issue_payload(issue_identifier, orchestrator, snapshot_timeout_ms, project_name \\ nil)
 
-        if is_nil(running) and is_nil(retry) do
-          {:error, :issue_not_found}
-        else
-          {:ok, issue_payload_body(issue_identifier, running, retry)}
-        end
-
-      _ ->
+  def issue_payload(issue_identifier, _orchestrator, snapshot_timeout_ms, project_name)
+      when is_binary(issue_identifier) and is_binary(project_name) do
+    case ProjectSupervisor.lookup(project_name, :orchestrator) do
+      nil ->
         {:error, :issue_not_found}
+
+      pid ->
+        case Orchestrator.snapshot(pid, snapshot_timeout_ms) do
+          %{} = snapshot ->
+            running = Enum.find(snapshot.running, &(&1.identifier == issue_identifier))
+            retry = Enum.find(snapshot.retrying, &(&1.identifier == issue_identifier))
+
+            if is_nil(running) and is_nil(retry) do
+              {:error, :issue_not_found}
+            else
+              {:ok, issue_payload_body(issue_identifier, running, retry)}
+            end
+
+          _ ->
+            {:error, :issue_not_found}
+        end
     end
+  end
+
+  def issue_payload(issue_identifier, orchestrator, snapshot_timeout_ms, nil)
+      when is_binary(issue_identifier) do
+    # Search primary orchestrator first (legacy single-project mode)
+    primary_result =
+      case Orchestrator.snapshot(orchestrator, snapshot_timeout_ms) do
+        %{} = snapshot ->
+          running = Enum.find(snapshot.running, &(&1.identifier == issue_identifier))
+          retry = Enum.find(snapshot.retrying, &(&1.identifier == issue_identifier))
+
+          if is_nil(running) and is_nil(retry) do
+            nil
+          else
+            {:ok, issue_payload_body(issue_identifier, running, retry)}
+          end
+
+        _ ->
+          nil
+      end
+
+    # If found in primary, return immediately
+    if primary_result do
+      primary_result
+    else
+      # Multi-project fallback: search across all project orchestrators
+      find_issue_in_projects(issue_identifier, snapshot_timeout_ms)
+    end
+  end
+
+  defp find_issue_in_projects(issue_identifier, snapshot_timeout_ms) do
+    ProjectSupervisor.list_orchestrators()
+    |> Enum.find_value(fn {_project_name, pid} ->
+      try do
+        case Orchestrator.snapshot(pid, snapshot_timeout_ms) do
+          %{} = snapshot ->
+            running = Enum.find(snapshot.running, &(&1.identifier == issue_identifier))
+            retry = Enum.find(snapshot.retrying, &(&1.identifier == issue_identifier))
+
+            if is_nil(running) and is_nil(retry) do
+              nil
+            else
+              {:ok, issue_payload_body(issue_identifier, running, retry)}
+            end
+
+          _ ->
+            nil
+        end
+      catch
+        :exit, _ -> nil
+      end
+    end) ||
+      {:error, :issue_not_found}
   end
 
   @spec refresh_payload(GenServer.name()) :: {:ok, map()} | {:error, :unavailable}
@@ -102,6 +167,90 @@ defmodule CymphonyElixirWeb.Presenter do
         {:ok, Map.update!(payload, :requested_at, &DateTime.to_iso8601/1)}
     end
   end
+
+  @spec format_rate_limits_for_web(map() | nil) :: map()
+  def format_rate_limits_for_web(nil), do: nil
+
+  def format_rate_limits_for_web(rate_limits) when is_map(rate_limits) do
+    limit_id =
+      map_value(rate_limits, ["limit_id", :limit_id, "limit_name", :limit_name]) ||
+        "unknown"
+
+    %{
+      limit_id: limit_id,
+      primary: format_rate_limit_bucket_web(map_value(rate_limits, ["primary", :primary])),
+      secondary: format_rate_limit_bucket_web(map_value(rate_limits, ["secondary", :secondary])),
+      credits: format_rate_limit_credits_web(map_value(rate_limits, ["credits", :credits]))
+    }
+  end
+
+  def format_rate_limits_for_web(_), do: nil
+
+  defp format_rate_limit_bucket_web(nil), do: nil
+
+  defp format_rate_limit_bucket_web(bucket) when is_map(bucket) do
+    remaining = map_value(bucket, ["remaining", :remaining])
+    limit = map_value(bucket, ["limit", :limit])
+
+    reset_value =
+      map_value(bucket, [
+        "reset_in_seconds",
+        :reset_in_seconds,
+        "resetInSeconds",
+        :resetInSeconds,
+        "reset_at",
+        :reset_at,
+        "resetAt",
+        :resetAt,
+        "resets_at",
+        :resets_at,
+        "resetsAt",
+        :resetsAt
+      ])
+
+    %{
+      remaining: remaining,
+      limit: limit,
+      reset_in_seconds: reset_value,
+      summary:
+        cond do
+          is_integer(remaining) and is_integer(limit) ->
+            "#{remaining}/#{limit}"
+
+          is_integer(remaining) ->
+            "remaining #{remaining}"
+
+          is_integer(limit) ->
+            "limit #{limit}"
+
+          true ->
+            "n/a"
+        end
+    }
+  end
+
+  defp format_rate_limit_credits_web(nil), do: nil
+
+  defp format_rate_limit_credits_web(credits) when is_map(credits) do
+    unlimited = map_value(credits, ["unlimited", :unlimited]) == true
+    has_credits = map_value(credits, ["has_credits", :has_credits]) == true
+    balance = map_value(credits, ["balance", :balance])
+
+    cond do
+      unlimited -> %{status: "unlimited", summary: "unlimited"}
+      has_credits and is_number(balance) -> %{status: "available", summary: "#{balance}"}
+      has_credits -> %{status: "available", summary: "available"}
+      true -> %{status: "none", summary: "none"}
+    end
+  end
+
+  defp format_rate_limit_credits_web(_), do: nil
+
+  defp map_value(map, keys) when is_map(map) and is_list(keys) do
+    Enum.find_value(keys, &Map.get(map, &1))
+  end
+
+  defp map_value(_map, _keys), do: nil
 
   defp issue_payload_body(issue_identifier, running, retry) do
     %{
@@ -311,7 +460,8 @@ defmodule CymphonyElixirWeb.Presenter do
       running: all_running,
       retrying: all_retrying,
       claude_totals: merged_totals,
-      rate_limits: Map.get(first_snap, :rate_limits)
+      rate_limits: Map.get(first_snap, :rate_limits),
+      polling: Map.get(first_snap, :polling)
     }
   end
 end

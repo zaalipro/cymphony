@@ -8,6 +8,7 @@ defmodule CymphonyElixir.Orchestrator do
   import Bitwise, only: [<<<: 2]
 
   alias CymphonyElixir.{AgentRunner, Config, ProjectSupervisor, StatusDashboard, Tracker, WorkflowStore, Workspace}
+  alias CymphonyElixirWeb.ObservabilityPubSub
   alias CymphonyElixir.Linear.Issue
 
   @continuation_retry_delay_ms 1_000
@@ -208,6 +209,7 @@ defmodule CymphonyElixir.Orchestrator do
           |> apply_claude_rate_limits(update)
 
         notify_dashboard()
+        ObservabilityPubSub.broadcast_issue_update(issue_id)
         {:noreply, %{state | running: Map.put(running, issue_id, updated_running_entry)}}
     end
   end
@@ -1294,6 +1296,45 @@ defmodule CymphonyElixir.Orchestrator do
        requested_at: DateTime.utc_now(),
        operations: ["poll", "reconcile"]
      }, state}
+  end
+
+  def handle_call({:kill_issue, issue_id}, _from, state) do
+    if Map.has_key?(state.running, issue_id) do
+      state = terminate_running_issue(state, issue_id, false)
+      notify_dashboard()
+      {:reply, :ok, state}
+    else
+      {:reply, {:error, :not_running}, state}
+    end
+  end
+
+  def handle_call({:retry_issue_now, issue_id}, _from, state) do
+    case Map.get(state.retry_attempts, issue_id) do
+      nil ->
+        {:reply, {:error, :not_retrying}, state}
+
+      %{attempt: attempt, timer_ref: timer_ref} = retry_entry ->
+        if is_reference(timer_ref) do
+          Process.cancel_timer(timer_ref)
+        end
+
+        metadata = %{
+          identifier: Map.get(retry_entry, :identifier),
+          error: Map.get(retry_entry, :error),
+          worker_host: Map.get(retry_entry, :worker_host),
+          workspace_path: Map.get(retry_entry, :workspace_path)
+        }
+
+        state = %{
+          state
+          | retry_attempts: Map.delete(state.retry_attempts, issue_id),
+            claimed: MapSet.delete(state.claimed, issue_id)
+        }
+
+        result = handle_retry_issue(state, issue_id, attempt, metadata)
+        notify_dashboard()
+        result
+    end
   end
 
   defp integrate_claude_update(running_entry, %{event: event, timestamp: timestamp} = update) do
