@@ -76,10 +76,10 @@ defmodule CymphonyElixirWeb.Presenter do
     end)
   end
 
-  @spec issue_payload(String.t(), GenServer.name(), timeout(), String.t() | nil) ::
-          {:ok, map()} | {:error, :issue_not_found}
   def issue_payload(issue_identifier, orchestrator, snapshot_timeout_ms, project_name \\ nil)
 
+  @spec issue_payload(String.t(), GenServer.name(), timeout(), String.t() | nil) ::
+          {:ok, map()} | {:error, :issue_not_found}
   def issue_payload(issue_identifier, _orchestrator, snapshot_timeout_ms, project_name)
       when is_binary(issue_identifier) and is_binary(project_name) do
     case ProjectSupervisor.lookup(project_name, :orchestrator) do
