@@ -80,6 +80,9 @@ sudo dpkg -r cymphony
 cymphony                       # Run with saved config
 cymphony p frontend            # Run only the "frontend" project
 cymphony c cz                  # Run with a different Claude provider (e.g. cz, ck, cm)
+cymphony cr 3                  # Limit to 3 concurrent sessions
+cymphony c cv1,cz2,ck1         # Rotate across multiple providers (round-robin random)
+cymphony p AgentFarm cr 5 c cv1,cz2 --port 4089  # Combine: project + concurrency + providers + dashboard
 cymphony s                     # Re-run setup
 cymphony a                     # Add a project
 cymphony l                     # List projects
@@ -91,12 +94,51 @@ Flags (long form):
 
 - `--setup` — force onboarding wizard
 - `--project <name>` — run a specific project
+- `--concurrency <n>` — limit concurrent Claude sessions
 - `--provider <name>` — override the Claude provider for this run
 - `--claude-command <cmd>` — override the Claude command for this run
 - `--logs-root <path>` — override log directory
 - `--port <port>` — override HTTP server port
 - `--help`, `-h` — show help
 - `--version` — show version
+
+### Concurrency Control
+
+By default Cymphony runs up to 10 concurrent Claude sessions. Use `cr N` to change this:
+
+```bash
+cymphony cr 3          # Only 3 sessions at a time
+cymphony cr 1          # Run one at a time (sequential)
+cymphony p backend cr 5  # 5 sessions for the "backend" project
+```
+
+How it works:
+
+- Cymphony polls Linear for candidate issues and dispatches up to N concurrent sessions
+- When a session finishes, the next waiting issue is automatically dispatched
+- You can change concurrency at runtime via the dashboard or by restarting with a new `cr` value
+
+### Provider Rotation
+
+When running multiple concurrent sessions against the same Claude backend, you can hit rate limits. Provider rotation distributes sessions across multiple backends:
+
+```bash
+cymphony c cv1,cz2,ck1    # Use three different providers
+```
+
+How it works:
+
+- Comma-separated provider names are parsed from the `c` command
+- Each new session is randomly assigned a provider from the list
+- Providers must be configured in `~/.cymphony/config.json` (see Provider Configuration below)
+- Example: with `cr 6 c cv1,cz2,ck1`, you get 6 sessions randomly split across 3 providers (~2 each)
+
+You can also change a session's provider live from the web dashboard:
+
+1. Open the dashboard (enable with `--port 4089`)
+2. Find the running session card
+3. Type a new provider name in the provider input field
+4. Click **Set** — the session is killed and restarted with the new provider
 
 ### Provider Configuration
 
@@ -343,7 +385,8 @@ Cymphony is composed of several key layers:
 
 ### Key Features
 
-- **Poll-based dispatch** with bounded concurrency and exponential backoff retries
+- **Poll-based dispatch** with configurable concurrency (`cr N`) and exponential backoff retries
+- **Provider rotation** (`c cv1,cz2,ck1`) to distribute sessions across multiple Claude backends and avoid rate limits
 - **Per-issue workspaces** that persist across runs for deterministic behavior
 - **In-repo workflow control** via `WORKFLOW.md` — version your agent prompt with your code
 - **Tracker reconciliation** — stops runs when issues transition to terminal states
