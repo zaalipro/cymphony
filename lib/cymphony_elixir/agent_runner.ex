@@ -30,7 +30,16 @@ defmodule CymphonyElixir.AgentRunner do
 
   defp run_on_worker_host(issue, claude_update_recipient, opts, worker_host) do
     config = Keyword.get(opts, :config)
-    Logger.info("Starting worker attempt for #{issue_context(issue)} worker_host=#{worker_host_for_log(worker_host)}")
+    provider_override = Keyword.get(opts, :provider_override)
+
+    config =
+      if provider_override && config do
+        %{config | claude: %{config.claude | provider: provider_override}}
+      else
+        config
+      end
+
+    Logger.info("Starting worker attempt for #{issue_context(issue)} worker_host=#{worker_host_for_log(worker_host)} provider=#{provider_override || "default"}")
 
     case Workspace.create_for_issue(issue, worker_host, config: config) do
       {:ok, workspace} ->
@@ -38,7 +47,7 @@ defmodule CymphonyElixir.AgentRunner do
 
         try do
           with :ok <- Workspace.run_before_run_hook(workspace, issue, worker_host, config: config) do
-            run_claude_turns(workspace, issue, claude_update_recipient, opts, worker_host)
+            run_claude_turns(workspace, issue, claude_update_recipient, Keyword.put(opts, :config, config), worker_host)
           end
         after
           Workspace.run_after_run_hook(workspace, issue, worker_host, config: config)

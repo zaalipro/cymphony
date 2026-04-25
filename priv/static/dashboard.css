@@ -379,6 +379,37 @@ pre,
   line-height: 1;
 }
 
+.provider-badge {
+  display: inline-flex;
+  align-items: center;
+  min-height: 1.6rem;
+  padding: 0.2rem 0.55rem;
+  border-radius: 999px;
+  border: 1px solid #c4b5fd;
+  background: #ede9fe;
+  color: #6d28d9;
+  font-size: 0.78rem;
+  font-weight: 600;
+  line-height: 1;
+}
+
+.provider-form {
+  display: inline-flex;
+  gap: 4px;
+  align-items: center;
+}
+
+.provider-input {
+  width: 72px;
+  padding: 0.2rem 0.4rem;
+  font-size: 0.75rem;
+  font-family: var(--mono, monospace);
+  border: 1px solid var(--line);
+  border-radius: 4px;
+  background: var(--bg);
+  color: var(--text);
+}
+
 .log-list {
   list-style: none;
   margin: 0;

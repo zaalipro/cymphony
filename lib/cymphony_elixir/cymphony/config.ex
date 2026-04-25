@@ -103,12 +103,26 @@ defmodule CymphonyElixir.Cymphony.Config do
         ""
       end
 
+    providers = Map.get(config, "providers", [])
+
     provider_section =
-      if provider != nil and provider != "" do
-        "  provider: #{provider}\n"
-      else
-        ""
+      cond do
+        is_list(providers) and providers != [] ->
+          provider_lines = Enum.map(providers, &"    - #{&1}")
+
+          "  providers:\n" <>
+            Enum.join(provider_lines, "\n") <>
+            "\n" <>
+            "  provider: #{hd(providers)}\n"
+
+        provider != nil and provider != "" ->
+          "  provider: #{provider}\n"
+
+        true ->
+          ""
       end
+
+    max_concurrent_agents = Map.get(config, "max_concurrent_agents", 10)
 
     "tracker:\n" <>
       "  kind: linear\n" <>
@@ -131,7 +145,7 @@ defmodule CymphonyElixir.Cymphony.Config do
       "  root: #{workspace_root}\n" <>
       "#{hooks_section}" <>
       "agent:\n" <>
-      "  max_concurrent_agents: 10\n" <>
+      "  max_concurrent_agents: #{max_concurrent_agents}\n" <>
       "  max_turns: 20\n" <>
       "claude:\n" <>
       "  command: #{claude_command}\n" <>

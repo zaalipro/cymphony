@@ -352,6 +352,7 @@ defmodule CymphonyElixir.ExtensionsTest do
                  "issue_identifier" => "MT-HTTP",
                  "state" => "In Progress",
                  "worker_host" => nil,
+                 "provider" => nil,
                  "workspace_path" => nil,
                  "session_id" => "thread-http",
                  "turn_count" => 7,

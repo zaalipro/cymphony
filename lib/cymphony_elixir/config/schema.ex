@@ -159,6 +159,7 @@ defmodule CymphonyElixir.Config.Schema do
     embedded_schema do
       field(:command, :string, default: "claude")
       field(:provider, :string)
+      field(:providers, {:array, :string}, default: [])
 
       field(:approval_policy, StringOrMap,
         default: %{
@@ -193,6 +194,7 @@ defmodule CymphonyElixir.Config.Schema do
         [
           :command,
           :provider,
+          :providers,
           :approval_policy,
           :permission_mode,
           :allowed_tools,

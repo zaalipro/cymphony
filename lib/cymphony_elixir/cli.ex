@@ -16,6 +16,7 @@ defmodule CymphonyElixir.CLI do
     background: :boolean,
     background_stop: :boolean,
     claude_command: :string,
+    concurrency: :integer,
     daemon_internal: :boolean,
     help: :boolean,
     logs_root: :string,
@@ -105,6 +106,8 @@ defmodule CymphonyElixir.CLI do
   defp expand_shorthands(["p" | _]), do: ["--help"]
   defp expand_shorthands(["c", value | rest]), do: ["--claude-command", value | expand_shorthands(rest)]
   defp expand_shorthands(["c" | _]), do: ["--help"]
+  defp expand_shorthands(["cr", value | rest]), do: ["--concurrency", value | expand_shorthands(rest)]
+  defp expand_shorthands(["cr" | _]), do: ["--help"]
   defp expand_shorthands([arg | rest]), do: [arg | expand_shorthands(rest)]
 
   defp background_requested?(args) do
@@ -243,6 +246,9 @@ defmodule CymphonyElixir.CLI do
       cymphony                       Run with saved config (all projects)
       cymphony p frontend            Run only the "frontend" project
       cymphony c cz                  Run with a different Claude provider (e.g. cz, ck, cm)
+      cymphony c cv1,cz2,cz1         Run with provider rotation (random per session)
+      cymphony cr 3                  Set max concurrent agents to 3
+      cymphony cr 3 c cv1,cz2        Set concurrency and provider rotation together
       cymphony b                     Run in background
       cymphony bs                    Stop background process
       cymphony r                     Restart background process
@@ -259,6 +265,7 @@ defmodule CymphonyElixir.CLI do
       --project <name>         Run a specific project
       --provider <name>        Override the Claude provider for this run
       --claude-command <cmd>   Override the Claude command for this run
+      --concurrency <n>        Set max concurrent agents
       --logs-root <path>       Override log directory
       --port <port>            Override HTTP server port
       --help, -h               Show this help
@@ -279,6 +286,7 @@ defmodule CymphonyElixir.CLI do
       Keyword.has_key?(opts, :setup) or
       Keyword.has_key?(opts, :claude_command) or
       Keyword.has_key?(opts, :provider) or
+      Keyword.has_key?(opts, :concurrency) or
       (positional == [] and
          not Keyword.has_key?(opts, @acknowledgement_switch) and
          not File.regular?(Path.expand("WORKFLOW.md")))
@@ -355,6 +363,15 @@ defmodule CymphonyElixir.CLI do
             provider -> Enum.map(filtered_projects, &Map.put(&1, "provider", provider))
           end
 
+        filtered_projects =
+          case Keyword.get(opts, :concurrency) do
+            n when is_integer(n) and n > 0 ->
+              Enum.map(filtered_projects, &Map.put(&1, "max_concurrent_agents", n))
+
+            _ ->
+              filtered_projects
+          end
+
         case filtered_projects do
           [] ->
             {:error,
@@ -383,9 +400,32 @@ defmodule CymphonyElixir.CLI do
   end
 
   defp resolve_command_override(project, cmd) do
-    case ShellProvider.load_env(cmd) do
-      {:ok, _env} -> Map.put(project, "provider", cmd)
-      {:error, :not_found} -> Map.put(project, "claude_command", cmd)
+    providers = parse_provider_list(cmd)
+
+    case providers do
+      [single] ->
+        case ShellProvider.load_env(single) do
+          {:ok, _env} -> Map.put(project, "provider", single)
+          {:error, :not_found} -> Map.put(project, "claude_command", cmd)
+        end
+
+      multiple ->
+        case ShellProvider.load_env(hd(multiple)) do
+          {:ok, _env} ->
+            project
+            |> Map.put("provider", hd(multiple))
+            |> Map.put("providers", multiple)
+
+          {:error, :not_found} ->
+            Map.put(project, "claude_command", cmd)
+        end
+    end
+  end
+
+  defp parse_provider_list(value) when is_binary(value) do
+    case String.split(value, ",", trim: true) do
+      [] -> [value]
+      list -> Enum.map(list, &String.trim/1)
     end
   end
 

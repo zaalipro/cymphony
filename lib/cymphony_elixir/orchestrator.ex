@@ -33,6 +33,7 @@ defmodule CymphonyElixir.Orchestrator do
       :prompt_template,
       :poll_interval_ms,
       :max_concurrent_agents,
+      :providers,
       :next_poll_due_at_ms,
       :poll_check_in_progress,
       :tick_timer_ref,
@@ -64,6 +65,7 @@ defmodule CymphonyElixir.Orchestrator do
       prompt_template: prompt_template,
       poll_interval_ms: config.polling.interval_ms,
       max_concurrent_agents: config.agent.max_concurrent_agents,
+      providers: extract_providers(config),
       next_poll_due_at_ms: now_ms,
       poll_check_in_progress: false,
       tick_timer_ref: nil,
@@ -757,7 +759,7 @@ defmodule CymphonyElixir.Orchestrator do
     end
   end
 
-  defp do_dispatch_issue(%State{} = state, issue, attempt, preferred_worker_host) do
+  defp do_dispatch_issue(%State{} = state, issue, attempt, preferred_worker_host, opts \\ []) do
     recipient = self()
 
     case select_worker_host(state, preferred_worker_host) do
@@ -766,17 +768,20 @@ defmodule CymphonyElixir.Orchestrator do
         state
 
       worker_host ->
-        spawn_issue_on_worker_host(state, issue, attempt, recipient, worker_host)
+        spawn_issue_on_worker_host(state, issue, attempt, recipient, worker_host, opts)
     end
   end
 
-  defp spawn_issue_on_worker_host(%State{} = state, issue, attempt, recipient, worker_host) do
+  defp spawn_issue_on_worker_host(%State{} = state, issue, attempt, recipient, worker_host, opts) do
+    selected_provider = Keyword.get(opts, :provider_override) || select_provider(state)
+
     case Task.Supervisor.start_child(CymphonyElixir.TaskSupervisor, fn ->
            AgentRunner.run(issue, recipient,
              attempt: attempt,
              worker_host: worker_host,
              config: state.config,
-             prompt_template: state.prompt_template
+             prompt_template: state.prompt_template,
+             provider_override: selected_provider
            )
          end) do
       {:ok, pid} ->
@@ -795,6 +800,7 @@ defmodule CymphonyElixir.Orchestrator do
                 identifier: issue.identifier,
                 issue: issue,
                 worker_host: worker_host,
+                provider: selected_provider,
                 workspace_path: nil,
                 session_id: nil,
                 last_claude_message: nil,
@@ -813,7 +819,7 @@ defmodule CymphonyElixir.Orchestrator do
                 log_events: []
               },
               :agent_dispatched,
-              "worker_host=#{worker_host || "local"} attempt=#{inspect(attempt)}"
+              "worker_host=#{worker_host || "local"} provider=#{selected_provider || "default"} attempt=#{inspect(attempt)}"
             )
           )
 
@@ -1197,6 +1203,21 @@ defmodule CymphonyElixir.Orchestrator do
     )
   end
 
+  defp extract_providers(%{claude: %{providers: [_ | _] = providers}}), do: providers
+  defp extract_providers(%{claude: %{provider: provider}}) when is_binary(provider) and provider != "", do: [provider]
+  defp extract_providers(_), do: []
+
+  defp select_provider(%State{providers: [_ | _] = providers}) do
+    Enum.random(providers)
+  end
+
+  defp select_provider(%State{config: %{claude: %{provider: provider}}})
+       when is_binary(provider) and provider != "" do
+    provider
+  end
+
+  defp select_provider(_state), do: nil
+
   @spec request_refresh() :: map() | :unavailable
   def request_refresh do
     request_refresh(__MODULE__)
@@ -1238,6 +1259,7 @@ defmodule CymphonyElixir.Orchestrator do
           identifier: metadata.identifier,
           state: metadata.issue.state,
           worker_host: Map.get(metadata, :worker_host),
+          provider: Map.get(metadata, :provider),
           workspace_path: Map.get(metadata, :workspace_path),
           session_id: metadata.session_id,
           claude_app_server_pid: metadata.claude_app_server_pid,
@@ -1334,6 +1356,35 @@ defmodule CymphonyElixir.Orchestrator do
         result = handle_retry_issue(state, issue_id, attempt, metadata)
         notify_dashboard()
         result
+    end
+  end
+
+  def handle_call({:set_concurrency, n}, _from, state) when is_integer(n) and n > 0 do
+    Logger.info("Concurrency updated: max_concurrent_agents=#{n}")
+    notify_dashboard()
+    {:reply, :ok, %{state | max_concurrent_agents: n}}
+  end
+
+  def handle_call({:set_concurrency, _n}, _from, state) do
+    {:reply, {:error, :invalid_concurrency}, state}
+  end
+
+  def handle_call({:set_issue_provider, issue_id, new_provider}, _from, state) do
+    case Map.get(state.running, issue_id) do
+      nil ->
+        {:reply, {:error, :not_running}, state}
+
+      running_entry ->
+        issue = running_entry.issue
+        worker_host = Map.get(running_entry, :worker_host)
+
+        state = terminate_running_issue(state, issue_id, false)
+
+        Logger.info("Provider override for #{issue_context(issue)}: new_provider=#{new_provider}")
+
+        new_state = do_dispatch_issue(state, issue, nil, worker_host, provider_override: new_provider)
+        notify_dashboard()
+        {:reply, :ok, new_state}
     end
   end
 
@@ -1536,7 +1587,8 @@ defmodule CymphonyElixir.Orchestrator do
           state
           | config: config,
             poll_interval_ms: config.polling.interval_ms,
-            max_concurrent_agents: config.agent.max_concurrent_agents
+            max_concurrent_agents: config.agent.max_concurrent_agents,
+            providers: extract_providers(config)
         }
 
       {:error, _} ->
@@ -1555,7 +1607,8 @@ defmodule CymphonyElixir.Orchestrator do
       state
       | config: config,
         poll_interval_ms: config.polling.interval_ms,
-        max_concurrent_agents: config.agent.max_concurrent_agents
+        max_concurrent_agents: config.agent.max_concurrent_agents,
+        providers: extract_providers(config)
     }
   end
 

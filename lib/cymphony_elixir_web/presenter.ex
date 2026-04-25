@@ -293,6 +293,7 @@ defmodule CymphonyElixirWeb.Presenter do
       issue_identifier: entry.identifier,
       state: entry.state,
       worker_host: Map.get(entry, :worker_host),
+      provider: Map.get(entry, :provider),
       workspace_path: Map.get(entry, :workspace_path),
       session_id: entry.session_id,
       turn_count: Map.get(entry, :turn_count, 0),

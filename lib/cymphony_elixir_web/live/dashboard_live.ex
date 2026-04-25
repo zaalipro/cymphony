@@ -86,6 +86,22 @@ defmodule CymphonyElixirWeb.DashboardLive do
   end
 
   @impl true
+  def handle_event("set_provider", %{"issue" => issue_identifier, "provider" => provider}, socket) do
+    provider = String.trim(provider)
+
+    entry =
+      Enum.find(socket.assigns.payload.running, &(&1.issue_identifier == issue_identifier)) || %{}
+
+    issue_id = Map.get(entry, :issue_id)
+
+    if is_binary(issue_id) and provider != "" do
+      send_set_provider(socket, entry, issue_id, provider)
+    end
+
+    {:noreply, socket}
+  end
+
+  @impl true
   def handle_info(:clear_flash, socket) do
     {:noreply, clear_flash(socket)}
   end
@@ -383,12 +399,26 @@ defmodule CymphonyElixirWeb.DashboardLive do
                           <span class="state-badge state-badge-stalled">Stalled</span>
                         <% end %>
                         <span class="host-badge"><%= entry.worker_host || "local" %></span>
+                        <%= if entry.provider do %>
+                          <span class="provider-badge"><%= entry.provider %></span>
+                        <% end %>
                         <%= if entry.project_name do %>
                           <span class="session-card-project-badge"><%= entry.project_name %></span>
                         <% end %>
                       </div>
                     </div>
                     <div class="session-card-actions">
+                      <form phx-submit="set_provider" class="provider-form">
+                        <input type="hidden" name="issue" value={entry.issue_identifier} />
+                        <input
+                          type="text"
+                          name="provider"
+                          value={entry.provider || ""}
+                          placeholder="provider"
+                          class="provider-input"
+                        />
+                        <button type="submit" class="subtle-button">Set</button>
+                      </form>
                       <button
                         type="button"
                         class="subtle-button danger"
@@ -879,6 +909,29 @@ defmodule CymphonyElixirWeb.DashboardLive do
       Task.Supervisor.start_child(CymphonyElixir.TaskSupervisor, fn ->
         try do
           GenServer.call(orchestrator_pid, {command, issue_id}, 10_000)
+        catch
+          :exit, _ -> {:error, :unavailable}
+        end
+      end)
+    end
+
+    socket
+  end
+
+  defp send_set_provider(socket, entry, issue_id, provider) do
+    project_name = Map.get(entry, :project_name)
+
+    orchestrator_pid =
+      if is_binary(project_name) do
+        CymphonyElixir.ProjectSupervisor.lookup(project_name, :orchestrator)
+      else
+        orchestrator()
+      end
+
+    if is_pid(orchestrator_pid) do
+      Task.Supervisor.start_child(CymphonyElixir.TaskSupervisor, fn ->
+        try do
+          GenServer.call(orchestrator_pid, {:set_issue_provider, issue_id, provider}, 10_000)
         catch
           :exit, _ -> {:error, :unavailable}
         end
