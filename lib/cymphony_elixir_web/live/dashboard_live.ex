@@ -34,7 +34,6 @@ defmodule CymphonyElixirWeb.DashboardLive do
       |> assign(:now, DateTime.utc_now())
       |> assign(:stalled_alert_dismissed, false)
       |> assign(:expanded_issue_ids, MapSet.new())
-      |> assign(:filter_project, nil)
       |> assign(:token_samples, update_token_samples([], initial_payload))
       |> assign(:version, @version)
       |> assign(:last_payload_refresh, last_refresh)
@@ -64,12 +63,6 @@ defmodule CymphonyElixirWeb.DashboardLive do
   @impl true
   def handle_event("dismiss_stalled_alert", _params, socket) do
     {:noreply, assign(socket, :stalled_alert_dismissed, true)}
-  end
-
-  @impl true
-  def handle_event("filter_project", %{"project" => project}, socket) do
-    filter = if project == "", do: nil, else: project
-    {:noreply, assign(socket, :filter_project, filter)}
   end
 
   @impl true
@@ -117,6 +110,50 @@ defmodule CymphonyElixirWeb.DashboardLive do
 
       :error ->
         {:noreply, put_flash(socket, :error, "Concurrency must be a positive integer")}
+    end
+  end
+
+  @impl true
+  def handle_event(
+        "set_project_concurrency",
+        %{"project" => project_name, "value" => raw_value},
+        socket
+      ) do
+    case parse_concurrency(raw_value) do
+      {:ok, n} ->
+        case apply_project_concurrency(project_name, n) do
+          :ok ->
+            spawn_payload_load()
+            {:noreply, put_flash(socket, :info, "#{project_name}: concurrency set to #{n}")}
+
+          {:error, :not_found} ->
+            {:noreply, put_flash(socket, :error, "Project not found: #{project_name}")}
+        end
+
+      :error ->
+        {:noreply, put_flash(socket, :error, "Concurrency must be a positive integer")}
+    end
+  end
+
+  @impl true
+  def handle_event(
+        "set_project_providers",
+        %{"project" => project_name, "value" => raw_value},
+        socket
+      ) do
+    case CymphonyConfig.parse_providers_csv(raw_value) do
+      {:ok, list} ->
+        case apply_project_providers(project_name, list) do
+          :ok ->
+            spawn_payload_load()
+            {:noreply, put_flash(socket, :info, "#{project_name}: providers set to #{Enum.join(list, ", ")}")}
+
+          {:error, :not_found} ->
+            {:noreply, put_flash(socket, :error, "Project not found: #{project_name}")}
+        end
+
+      {:error, :empty} ->
+        {:noreply, put_flash(socket, :error, "Providers must be a non-empty comma-separated list")}
     end
   end
 
@@ -198,14 +235,10 @@ defmodule CymphonyElixirWeb.DashboardLive do
       <header class="hero-card">
         <div class="hero-grid">
           <div>
-            <p class="eyebrow">
-              Cymphony Observability
-            </p>
-            <h1 class="hero-title">
-              Operations Dashboard
-            </h1>
+            <p class="eyebrow">Cymphony Observability</p>
+            <h1 class="hero-title">Operations Dashboard</h1>
             <p class="hero-copy">
-              Current state, retry pressure, token usage, and orchestration health for the active Cymphony runtime.
+              Live view of orchestration: dispatch state, retry pressure, token usage, and per-project controls.
             </p>
           </div>
 
@@ -219,68 +252,33 @@ defmodule CymphonyElixirWeb.DashboardLive do
               Offline
             </span>
             <span class="version-badge">v<%= @version %></span>
-            <button
-              type="button"
-              class="subtle-button"
-              phx-click="refresh_now"
-            >
-              Refresh
-            </button>
+
+            <div class="theme-toggle" role="group" aria-label="Theme">
+              <button type="button" class="theme-toggle-button" data-theme-set="light" title="Light theme" aria-label="Light theme">☀</button>
+              <button type="button" class="theme-toggle-button" data-theme-set="dark" title="Dark theme" aria-label="Dark theme">☾</button>
+              <button type="button" class="theme-toggle-button" data-theme-set="system" title="Follow system" aria-label="Follow system">⌂</button>
+            </div>
+
+            <button type="button" class="subtle-button" phx-click="refresh_now">Refresh</button>
           </div>
         </div>
       </header>
 
       <%= if info = @flash["info"] do %>
-        <div class="alert-banner alert-info">
-          <%= info %>
-        </div>
+        <div class="alert-banner alert-info"><%= info %></div>
+      <% end %>
+      <%= if err = @flash["error"] do %>
+        <div class="alert-banner alert-error"><%= err %></div>
       <% end %>
 
       <%= if @payload[:error] do %>
         <section class="error-card">
-          <h2 class="error-title">
-            Snapshot unavailable
-          </h2>
+          <h2 class="error-title">Snapshot unavailable</h2>
           <p class="error-copy">
             <strong><%= @payload.error.code %>:</strong> <%= @payload.error.message %>
           </p>
         </section>
       <% else %>
-        <%= if @payload[:projects] do %>
-          <section class="project-grid">
-            <%= for project <- @payload.projects do %>
-              <article class={"project-mini-card" <> if(Map.get(project, :paused, false), do: " project-mini-card-paused", else: "")}>
-                <div class="project-mini-header">
-                  <p class="project-mini-name"><%= project.name %></p>
-                  <%= if Map.get(project, :paused, false) do %>
-                    <span class="state-badge state-badge-warning">Paused</span>
-                  <% end %>
-                </div>
-                <div class="project-mini-stats">
-                  <span class="project-mini-stat">
-                    <span class="project-mini-value numeric"><%= project.running %></span>
-                    <span class="project-mini-label">running</span>
-                  </span>
-                  <span class="project-mini-stat">
-                    <span class="project-mini-value numeric"><%= project.retrying %></span>
-                    <span class="project-mini-label">retrying</span>
-                  </span>
-                </div>
-                <div class="project-mini-actions">
-                  <button
-                    type="button"
-                    class="subtle-button"
-                    phx-click="toggle_project_pause"
-                    phx-value-project={project.name}
-                  >
-                    <%= if Map.get(project, :paused, false), do: "Resume", else: "Pause" %>
-                  </button>
-                </div>
-              </article>
-            <% end %>
-          </section>
-        <% end %>
-
         <section class="metric-grid">
           <article class="metric-card">
             <p class="metric-label">Running</p>
@@ -319,30 +317,14 @@ defmodule CymphonyElixirWeb.DashboardLive do
           <div class="section-header">
             <div>
               <h2 class="section-title">Polling</h2>
-              <p class="section-copy">Linear issue tracker refresh schedule.</p>
+              <p class="section-copy">Linear refresh cadence and global dispatch control.</p>
             </div>
             <div class="polling-controls">
               <%= if @payload.polling do %>
-                <form phx-submit="set_concurrency" class="concurrency-form">
-                  <label class="concurrency-label" for="concurrency-input">Concurrency</label>
-                  <input
-                    id="concurrency-input"
-                    type="number"
-                    name="value"
-                    min="1"
-                    value={Map.get(@payload.polling, :max_concurrent_agents) || ""}
-                    class="concurrency-input"
-                  />
-                  <button type="submit" class="subtle-button">Set</button>
-                </form>
                 <%= if Map.get(@payload.polling, :paused, false) do %>
-                  <button type="button" class="subtle-button" phx-click="resume_dispatch">
-                    Resume
-                  </button>
+                  <button type="button" class="subtle-button" phx-click="resume_dispatch">Resume all</button>
                 <% else %>
-                  <button type="button" class="subtle-button" phx-click="pause_dispatch">
-                    Pause
-                  </button>
+                  <button type="button" class="subtle-button" phx-click="pause_dispatch">Pause all</button>
                 <% end %>
               <% end %>
             </div>
@@ -367,14 +349,6 @@ defmodule CymphonyElixirWeb.DashboardLive do
                 <div class="polling-item">
                   <span class="polling-label">Interval</span>
                   <span class="polling-value"><%= div(@payload.polling.poll_interval_ms, 1_000) %>s</span>
-                </div>
-              <% end %>
-              <%= if Map.get(@payload.polling, :max_concurrent_agents) do %>
-                <div class="polling-item">
-                  <span class="polling-label">Concurrency</span>
-                  <span class="polling-value numeric">
-                    <%= Map.get(@payload.polling, :max_concurrent_agents) %>
-                  </span>
                 </div>
               <% end %>
             </div>
@@ -433,110 +407,139 @@ defmodule CymphonyElixirWeb.DashboardLive do
           <% end %>
         </section>
 
-        <section class="section-card">
-          <div class="section-header">
-            <div>
-              <h2 class="section-title">Running sessions</h2>
-              <p class="section-copy">Active issues, last known agent activity, and token usage.</p>
-            </div>
-          </div>
-
-          <% stalled_entries = stalled_running_entries(@payload.running) %>
-          <%= if stalled_entries != [] and not @stalled_alert_dismissed do %>
-            <div class="alert-banner">
-              <div class="alert-content">
-                <strong>Stalled agents detected:</strong>
-                <%= stalled_entries |> Enum.map(& &1.issue_identifier) |> Enum.join(", ") %>
-                <%= if length(stalled_entries) == 1 do %>
-                  has been stalled for <%= format_stall_duration(hd(stalled_entries).last_event_at, @now) %>.
-                <% else %>
-                  have been stalled.
-                <% end %>
-              </div>
-              <button
-                type="button"
-                class="subtle-button"
-                phx-click="dismiss_stalled_alert"
-              >
-                Dismiss
-              </button>
-            </div>
-          <% end %>
-
-          <%= if @payload[:projects] do %>
-            <div class="filter-bar">
-              <button
-                type="button"
-                class={filter_button_class(@filter_project == nil)}
-                phx-click="filter_project"
-                phx-value-project=""
-              >
-                All
-              </button>
-              <%= for project <- @payload.projects do %>
-                <button
-                  type="button"
-                  class={filter_button_class(@filter_project == project.name)}
-                  phx-click="filter_project"
-                  phx-value-project={project.name}
-                >
-                  <%= project.name %>
-                </button>
+        <% stalled_entries = stalled_running_entries(@payload.running) %>
+        <%= if stalled_entries != [] and not @stalled_alert_dismissed do %>
+          <div class="alert-banner">
+            <div class="alert-content">
+              <strong>Stalled agents detected:</strong>
+              <%= stalled_entries |> Enum.map(& &1.issue_identifier) |> Enum.join(", ") %>
+              <%= if length(stalled_entries) == 1 do %>
+                has been stalled for <%= format_stall_duration(hd(stalled_entries).last_event_at, @now) %>.
+              <% else %>
+                have been stalled.
               <% end %>
             </div>
-          <% end %>
+            <button type="button" class="subtle-button" phx-click="dismiss_stalled_alert">Dismiss</button>
+          </div>
+        <% end %>
 
-          <% filtered_running = filter_running_by_project(@payload.running, @filter_project) %>
+        <%= for project <- (@payload[:projects] || []) do %>
+          <article class={"project-section" <> if(Map.get(project, :paused, false), do: " project-section--paused", else: "")}>
+            <header class="project-section-header">
+              <div class="project-section-title-block">
+                <h2 class="project-section-name">
+                  <%= project.name %>
+                  <%= if Map.get(project, :paused, false) do %>
+                    <span class="chip chip--warn">Paused</span>
+                  <% end %>
+                </h2>
+                <p class="project-section-counts">
+                  <span class="numeric"><%= Map.get(project, :running_count, length(project.running)) %></span>
+                  <%= if max = Map.get(project, :max_concurrent_agents) do %>
+                    <span class="muted">/<%= max %></span>
+                  <% end %>
+                  <span class="muted">running</span>
+                  <%= if (Map.get(project, :retrying_count, length(project.retrying)) || 0) > 0 do %>
+                    · <span class="numeric"><%= Map.get(project, :retrying_count, length(project.retrying)) %></span>
+                    <span class="muted">retrying</span>
+                  <% end %>
+                </p>
+              </div>
 
-          <%= if filtered_running == [] do %>
-            <p class="empty-state">No active sessions.</p>
-          <% else %>
-            <div class="session-card-grid">
-              <%= for entry <- filtered_running do %>
-                <article class="session-card">
-                  <div class="session-card-header">
-                    <div class="session-card-identity">
-                      <span class="session-card-issue-id">
+              <div class="project-section-controls">
+                <form phx-submit="set_project_concurrency" class="inline-form">
+                  <input type="hidden" name="project" value={project.name} />
+                  <label class="inline-label" for={"concurrency-#{project.name}"}>cr</label>
+                  <input
+                    id={"concurrency-#{project.name}"}
+                    type="number"
+                    name="value"
+                    min="1"
+                    value={Map.get(project, :max_concurrent_agents) || ""}
+                    class="inline-input inline-input--narrow"
+                    title="Max concurrent agents"
+                  />
+                </form>
+
+                <form phx-submit="set_project_providers" class="inline-form inline-form--wide">
+                  <input type="hidden" name="project" value={project.name} />
+                  <label class="inline-label" for={"providers-#{project.name}"}>c</label>
+                  <input
+                    id={"providers-#{project.name}"}
+                    type="text"
+                    name="value"
+                    value={Enum.join(Map.get(project, :providers, []), ",")}
+                    placeholder="cv1,cz2,ck1"
+                    class="inline-input"
+                    title="Comma-separated provider aliases"
+                  />
+                </form>
+
+                <button
+                  type="button"
+                  class="subtle-button"
+                  phx-click="toggle_project_pause"
+                  phx-value-project={project.name}
+                >
+                  <%= if Map.get(project, :paused, false), do: "Resume", else: "Pause" %>
+                </button>
+              </div>
+            </header>
+
+            <%= if project.running == [] and project.retrying == [] do %>
+              <p class="empty-state">No active sessions.</p>
+            <% end %>
+
+            <%= if project.running != [] do %>
+              <div class="session-row-list">
+                <%= for entry <- project.running do %>
+                  <% expanded? = MapSet.member?(@expanded_issue_ids, entry.issue_identifier) %>
+                  <article class={"session-row" <> if(expanded?, do: " session-row--expanded", else: "")}>
+                    <div class="session-row-summary">
+                      <button
+                        type="button"
+                        class="session-row-disclosure"
+                        phx-click="toggle_logs"
+                        phx-value-issue={entry.issue_identifier}
+                        aria-label={if expanded?, do: "Collapse", else: "Expand"}
+                      >
+                        <%= if expanded?, do: "▾", else: "▸" %>
+                      </button>
+
+                      <div class="session-row-id">
                         <%= if entry.issue_url do %>
-                          <a href={entry.issue_url} target="_blank" rel="noopener" class="session-card-issue-link">
-                            <%= entry.issue_identifier %>
-                          </a>
+                          <a href={entry.issue_url} target="_blank" rel="noopener" class="session-row-link"><%= entry.issue_identifier %></a>
                         <% else %>
                           <%= entry.issue_identifier %>
                         <% end %>
-                      </span>
-                      <%= if entry.issue_title do %>
-                        <span class="session-card-issue-title"><%= entry.issue_title %></span>
-                      <% end %>
-                      <div class="session-card-badges">
-                        <span class={state_badge_class(entry.state)}><%= entry.state %></span>
-                        <%= if priority_label = priority_label(entry.priority) do %>
-                          <span class={priority_badge_class(entry.priority)}><%= priority_label %></span>
-                        <% end %>
-                        <%= if entry.stalled do %>
-                          <span class="state-badge state-badge-stalled">Stalled</span>
-                        <% end %>
-                        <span class="host-badge"><%= entry.worker_host || "local" %></span>
-                        <%= if entry.provider do %>
-                          <span class="provider-badge"><%= entry.provider %></span>
-                        <% end %>
-                        <%= if entry.project_name do %>
-                          <span class="session-card-project-badge"><%= entry.project_name %></span>
-                        <% end %>
                       </div>
-                    </div>
-                    <div class="session-card-actions">
-                      <form phx-submit="set_provider" class="provider-form">
-                        <input type="hidden" name="issue" value={entry.issue_identifier} />
-                        <input
-                          type="text"
-                          name="provider"
-                          value={entry.provider || ""}
-                          placeholder="provider"
-                          class="provider-input"
-                        />
-                        <button type="submit" class="subtle-button">Set</button>
-                      </form>
+
+                      <div class="session-row-title" title={entry.issue_title || entry.last_message || ""}>
+                        <%= entry.issue_title || entry.last_message || "" %>
+                      </div>
+
+                      <div class="session-row-chips">
+                        <span class={chip_state_class(entry.state)}><%= entry.state %></span>
+                        <%= if entry.stalled do %>
+                          <span class="chip chip--danger">Stalled</span>
+                        <% end %>
+                        <%= if priority_label = priority_label(entry.priority) do %>
+                          <span class={chip_priority_class(entry.priority)}><%= priority_label %></span>
+                        <% end %>
+                        <%= if entry.provider do %>
+                          <span class="chip chip--accent"><%= entry.provider %></span>
+                        <% end %>
+                        <span class="chip chip--muted"><%= entry.worker_host || "local" %></span>
+                      </div>
+
+                      <div class="session-row-runtime numeric">
+                        <%= format_runtime_seconds(runtime_seconds_from_started_at(entry.started_at, @now)) %>
+                      </div>
+
+                      <div class="session-row-tokens numeric" title={"In #{format_int(entry.tokens.input_tokens)} / Out #{format_int(entry.tokens.output_tokens)}"}>
+                        <%= format_int(entry.tokens.total_tokens) %>
+                      </div>
+
                       <button
                         type="button"
                         class="subtle-button danger"
@@ -546,99 +549,73 @@ defmodule CymphonyElixirWeb.DashboardLive do
                         Kill
                       </button>
                     </div>
-                  </div>
 
-                  <div class="session-card-stats">
-                    <div class="session-stat">
-                      <span class="session-stat-label">Runtime</span>
-                      <span class="session-stat-value numeric">
-                        <%= format_runtime_seconds(runtime_seconds_from_started_at(entry.started_at, @now)) %>
-                      </span>
-                      <span class="session-stat-detail">Turn <%= entry.turn_count %></span>
-                    </div>
-                    <div class="session-stat">
-                      <span class="session-stat-label">Tokens</span>
-                      <span class="session-stat-value numeric"><%= format_int(entry.tokens.total_tokens) %></span>
-                      <span class="session-stat-detail numeric">
-                        In <%= format_int(entry.tokens.input_tokens) %> / Out <%= format_int(entry.tokens.output_tokens) %>
-                      </span>
-                    </div>
-                    <div class="session-stat">
-                      <span class="session-stat-label">Session</span>
-                      <span class="session-stat-value">
-                        <%= if entry.session_id do %>
-                          <button
-                            type="button"
-                            class="subtle-button"
-                            data-label="Copy ID"
-                            data-copy={entry.session_id}
-                            onclick="navigator.clipboard.writeText(this.dataset.copy); this.textContent = 'Copied'; clearTimeout(this._copyTimer); this._copyTimer = setTimeout(() => { this.textContent = this.dataset.label }, 1200);"
-                          >
-                            Copy ID
-                          </button>
-                        <% else %>
-                          <span class="muted">n/a</span>
-                        <% end %>
-                      </span>
-                    </div>
-                    <div class="session-stat">
-                      <span class="session-stat-label">Workspace</span>
-                      <span class="session-stat-value">
-                        <%= if entry.workspace_path do %>
-                          <span class="mono" style="font-size:0.78rem;word-break:break-all;">
-                            <%= entry.workspace_path %>
-                          </span>
-                          <button
-                            type="button"
-                            class="subtle-button"
-                            data-label="Copy"
-                            data-copy={entry.workspace_path}
-                            onclick="navigator.clipboard.writeText(this.dataset.copy); this.textContent = 'Copied'; clearTimeout(this._copyTimer); this._copyTimer = setTimeout(() => { this.textContent = this.dataset.label }, 1200);"
-                          >
-                            Copy
-                          </button>
-                        <% else %>
-                          <span class="muted">n/a</span>
-                        <% end %>
-                      </span>
-                    </div>
-                  </div>
+                    <%= if expanded? do %>
+                      <div class="session-row-detail">
+                        <div class="session-row-detail-grid">
+                          <div class="session-stat">
+                            <span class="session-stat-label">Turn</span>
+                            <span class="session-stat-value numeric"><%= entry.turn_count %></span>
+                          </div>
+                          <div class="session-stat">
+                            <span class="session-stat-label">Session</span>
+                            <span class="session-stat-value">
+                              <%= if entry.session_id do %>
+                                <button
+                                  type="button"
+                                  class="subtle-button"
+                                  data-label="Copy ID"
+                                  data-copy={entry.session_id}
+                                  onclick="navigator.clipboard.writeText(this.dataset.copy); this.textContent = 'Copied'; clearTimeout(this._copyTimer); this._copyTimer = setTimeout(() => { this.textContent = this.dataset.label }, 1200);"
+                                >Copy ID</button>
+                              <% else %>
+                                <span class="muted">n/a</span>
+                              <% end %>
+                            </span>
+                          </div>
+                          <div class="session-stat session-stat--wide">
+                            <span class="session-stat-label">Workspace</span>
+                            <span class="session-stat-value">
+                              <%= if entry.workspace_path do %>
+                                <span class="mono workspace-path"><%= entry.workspace_path %></span>
+                                <button
+                                  type="button"
+                                  class="subtle-button"
+                                  data-label="Copy"
+                                  data-copy={entry.workspace_path}
+                                  onclick="navigator.clipboard.writeText(this.dataset.copy); this.textContent = 'Copied'; clearTimeout(this._copyTimer); this._copyTimer = setTimeout(() => { this.textContent = this.dataset.label }, 1200);"
+                                >Copy</button>
+                              <% else %>
+                                <span class="muted">n/a</span>
+                              <% end %>
+                            </span>
+                          </div>
+                          <div class="session-stat">
+                            <span class="session-stat-label">Provider</span>
+                            <form phx-submit="set_provider" class="inline-form">
+                              <input type="hidden" name="issue" value={entry.issue_identifier} />
+                              <input
+                                type="text"
+                                name="provider"
+                                value={entry.provider || ""}
+                                placeholder="provider"
+                                class="inline-input inline-input--narrow"
+                              />
+                              <button type="submit" class="subtle-button">Set</button>
+                            </form>
+                          </div>
+                        </div>
 
-                  <%= if entry.last_event do %>
-                    <div class="session-card-activity">
-                      <div class="session-activity-header">
-                        <span class="session-stat-label">Last activity</span>
-                        <%= if entry.last_event_at do %>
-                          <span class="mono numeric" style="font-size:0.78rem;color:var(--muted);">
-                            <%= entry.last_event_at %>
-                          </span>
+                        <%= if entry.last_event do %>
+                          <div class="session-row-activity">
+                            <span class={log_event_badge_class(entry.last_event)}><%= entry.last_event %></span>
+                            <span class="session-activity-message"><%= entry.last_message || "n/a" %></span>
+                            <%= if entry.last_event_at do %>
+                              <span class="mono numeric muted small">@ <%= entry.last_event_at %></span>
+                            <% end %>
+                          </div>
                         <% end %>
-                      </div>
-                      <div class="session-activity-content">
-                        <span class={log_event_badge_class(entry.last_event)}>
-                          <%= entry.last_event %>
-                        </span>
-                        <span class="session-activity-message">
-                          <%= entry.last_message || "n/a" %>
-                        </span>
-                      </div>
-                    </div>
-                  <% end %>
 
-                  <div class="session-card-log">
-                    <div class="session-log-header">
-                      <span class="session-log-title">Recent logs</span>
-                      <button
-                        type="button"
-                        class="subtle-button"
-                        phx-click="toggle_logs"
-                        phx-value-issue={entry.issue_identifier}
-                      >
-                        <%= if MapSet.member?(@expanded_issue_ids, entry.issue_identifier) do %>Hide logs<% else %>Show logs<% end %>
-                      </button>
-                    </div>
-                    <%= if MapSet.member?(@expanded_issue_ids, entry.issue_identifier) do %>
-                      <div class="session-log-terminal">
                         <%= if entry.log_events == [] do %>
                           <p class="empty-state">No log events yet.</p>
                         <% else %>
@@ -654,73 +631,34 @@ defmodule CymphonyElixirWeb.DashboardLive do
                         <% end %>
                       </div>
                     <% end %>
-                  </div>
-                </article>
-              <% end %>
-            </div>
-          <% end %>
-        </section>
+                  </article>
+                <% end %>
+              </div>
+            <% end %>
 
-        <section class="section-card">
-          <div class="section-header">
-            <div>
-              <h2 class="section-title">Retry queue</h2>
-              <p class="section-copy">Issues waiting for the next retry window.</p>
-            </div>
-          </div>
-
-          <% filtered_retrying = filter_retrying_by_project(@payload.retrying, @filter_project) %>
-
-          <%= if filtered_retrying == [] do %>
-            <p class="empty-state">No issues are currently backing off.</p>
-          <% else %>
-            <div class="session-card-grid">
-              <%= for entry <- filtered_retrying do %>
-                <article class="retry-card">
-                  <div class="retry-card-header">
-                    <div class="retry-card-identity">
-                      <span class="retry-card-issue-id"><%= entry.issue_identifier %></span>
-                      <div class="retry-card-badges">
-                        <span class="state-badge state-badge-warning">Retry</span>
-                        <span class="host-badge"><%= entry.worker_host || "local" %></span>
-                        <%= if Map.get(entry, :project_name) do %>
-                          <span class="session-card-project-badge"><%= entry.project_name %></span>
-                        <% end %>
-                      </div>
-                    </div>
-                    <div class="retry-card-countdown">
-                      <span class="retry-countdown-value numeric">Attempt <%= entry.attempt %></span>
-                      <span class="retry-countdown-label">
-                        <%= if entry.due_at do %>
-                          Due <%= format_retry_countdown(entry.due_at, @now) %>
-                        <% else %>
-                          Pending
-                        <% end %>
-                      </span>
-                    </div>
-                  </div>
-                  <div class="retry-card-body">
-                    <div class="retry-card-meta">
-                      <%= if entry.workspace_path do %>
-                        <span class="retry-meta-item">
-                          <span class="mono" style="font-size:0.82rem;"><%= entry.workspace_path %></span>
-                          <button
-                            type="button"
-                            class="subtle-button"
-                            data-label="Copy"
-                            data-copy={entry.workspace_path}
-                            onclick="navigator.clipboard.writeText(this.dataset.copy); this.textContent = 'Copied'; clearTimeout(this._copyTimer); this._copyTimer = setTimeout(() => { this.textContent = this.dataset.label }, 1200);"
-                          >
-                            Copy
-                          </button>
-                        </span>
+            <%= if project.retrying != [] do %>
+              <div class="retry-row-list">
+                <p class="subsection-label">Retry queue</p>
+                <%= for entry <- project.retrying do %>
+                  <article class="retry-row">
+                    <div class="retry-row-id">
+                      <%= if entry.issue_url do %>
+                        <a href={entry.issue_url} target="_blank" rel="noopener" class="session-row-link"><%= entry.issue_identifier %></a>
+                      <% else %>
+                        <%= entry.issue_identifier %>
                       <% end %>
                     </div>
-                    <%= if entry.error do %>
-                      <pre class="drawer-error"><%= entry.error %></pre>
-                    <% end %>
-                  </div>
-                  <div class="retry-card-actions">
+                    <div class="retry-row-attempt">
+                      <span class="chip chip--warn">Attempt <%= entry.attempt %></span>
+                      <%= if entry.due_at do %>
+                        <span class="muted">due <%= format_retry_countdown(entry.due_at, @now) %></span>
+                      <% end %>
+                    </div>
+                    <div class="retry-row-error">
+                      <%= if entry.error do %>
+                        <span class="muted small mono"><%= String.slice(to_string(entry.error), 0, 120) %></span>
+                      <% end %>
+                    </div>
                     <button
                       type="button"
                       class="subtle-button"
@@ -729,58 +667,44 @@ defmodule CymphonyElixirWeb.DashboardLive do
                     >
                       Retry now
                     </button>
-                  </div>
-                </article>
-              <% end %>
-            </div>
-          <% end %>
-        </section>
+                  </article>
+                <% end %>
+              </div>
+            <% end %>
+          </article>
+        <% end %>
 
         <%= if @payload[:recent_completed] && @payload.recent_completed != [] do %>
           <section class="section-card">
             <div class="section-header">
               <div>
                 <h2 class="section-title">Recent completions</h2>
-                <p class="section-copy">Last <%= length(@payload.recent_completed) %> agent runs that wrapped up. Cleared on daemon restart.</p>
+                <p class="section-copy">Last <%= length(@payload.recent_completed) %> agent runs. Cleared on daemon restart.</p>
               </div>
             </div>
 
-            <div class="session-card-grid">
+            <div class="session-row-list">
               <%= for entry <- @payload.recent_completed do %>
-                <article class="retry-card">
-                  <div class="retry-card-header">
-                    <div class="retry-card-identity">
-                      <span class="retry-card-issue-id"><%= entry.issue_identifier %></span>
-                      <div class="retry-card-badges">
-                        <span class="state-badge state-badge-success">Done</span>
-                        <span class="host-badge"><%= entry.worker_host || "local" %></span>
-                        <%= if Map.get(entry, :project_name) do %>
-                          <span class="session-card-project-badge"><%= entry.project_name %></span>
-                        <% end %>
-                      </div>
+                <article class="session-row session-row--completed">
+                  <div class="session-row-summary">
+                    <span class="session-row-disclosure" aria-hidden="true">✓</span>
+                    <div class="session-row-id"><%= entry.issue_identifier %></div>
+                    <div class="session-row-title muted small">
+                      <%= if Map.get(entry, :project_name), do: entry.project_name, else: "" %>
                     </div>
-                    <div class="retry-card-countdown">
-                      <span class="retry-countdown-value numeric">
-                        <%= format_runtime_seconds(entry.runtime_seconds || 0) %>
-                      </span>
-                      <span class="retry-countdown-label">
-                        <%= format_int(entry.claude_total_tokens) %> tokens
-                      </span>
+                    <div class="session-row-chips">
+                      <span class="chip chip--ok">Done</span>
+                      <span class="chip chip--muted"><%= entry.worker_host || "local" %></span>
                     </div>
-                  </div>
-                  <div class="retry-card-body">
-                    <div class="retry-card-meta">
-                      <%= if entry.workspace_path do %>
-                        <span class="retry-meta-item">
-                          <span class="mono" style="font-size:0.82rem;"><%= entry.workspace_path %></span>
-                        </span>
-                      <% end %>
-                      <%= if entry.ended_at do %>
-                        <span class="retry-meta-item">
-                          <span class="mono" style="font-size:0.78rem;color:var(--muted);">ended <%= entry.ended_at %></span>
-                        </span>
-                      <% end %>
+                    <div class="session-row-runtime numeric">
+                      <%= format_runtime_seconds(entry.runtime_seconds || 0) %>
                     </div>
+                    <div class="session-row-tokens numeric">
+                      <%= format_int(entry.claude_total_tokens) %>
+                    </div>
+                    <span class="muted small mono">
+                      <%= if entry.ended_at, do: entry.ended_at, else: "" %>
+                    </span>
                   </div>
                 </article>
               <% end %>
@@ -838,6 +762,46 @@ defmodule CymphonyElixirWeb.DashboardLive do
           CymphonyElixir.Orchestrator.set_concurrency(pid, n)
           _ = CymphonyConfig.update_concurrency(project, n)
         end)
+    end
+  end
+
+  defp apply_project_concurrency(project_name, n) do
+    case CymphonyElixir.ProjectSupervisor.lookup(project_name, :orchestrator) do
+      pid when is_pid(pid) ->
+        CymphonyElixir.Orchestrator.set_concurrency(pid, n)
+        _ = CymphonyConfig.update_concurrency(project_name, n)
+        :ok
+
+      _ ->
+        case CymphonyElixir.ProjectSupervisor.list_orchestrators() do
+          [] ->
+            CymphonyElixir.Orchestrator.set_concurrency(orchestrator(), n)
+            _ = CymphonyConfig.update_concurrency(nil, n)
+            :ok
+
+          _ ->
+            {:error, :not_found}
+        end
+    end
+  end
+
+  defp apply_project_providers(project_name, list) do
+    case CymphonyElixir.ProjectSupervisor.lookup(project_name, :orchestrator) do
+      pid when is_pid(pid) ->
+        CymphonyElixir.Orchestrator.set_providers(pid, list)
+        _ = CymphonyConfig.update_providers(project_name, list)
+        :ok
+
+      _ ->
+        case CymphonyElixir.ProjectSupervisor.list_orchestrators() do
+          [] ->
+            CymphonyElixir.Orchestrator.set_providers(orchestrator(), list)
+            _ = CymphonyConfig.update_providers(nil, list)
+            :ok
+
+          _ ->
+            {:error, :not_found}
+        end
     end
   end
 
@@ -923,29 +887,28 @@ defmodule CymphonyElixirWeb.DashboardLive do
 
   defp format_int(_value), do: "n/a"
 
-  defp state_badge_class(state) do
-    base = "state-badge"
-    normalized = state |> to_string() |> String.downcase()
-
-    cond do
-      String.contains?(normalized, ["progress", "running", "active"]) -> "#{base} state-badge-active"
-      String.contains?(normalized, ["blocked", "error", "failed"]) -> "#{base} state-badge-danger"
-      String.contains?(normalized, ["todo", "queued", "pending", "retry"]) -> "#{base} state-badge-warning"
-      true -> base
-    end
-  end
-
   defp priority_label(1), do: "Urgent"
   defp priority_label(2), do: "High"
   defp priority_label(3), do: "Medium"
   defp priority_label(4), do: "Low"
   defp priority_label(_), do: nil
 
-  defp priority_badge_class(1), do: "priority-badge priority-badge-urgent"
-  defp priority_badge_class(2), do: "priority-badge priority-badge-high"
-  defp priority_badge_class(3), do: "priority-badge priority-badge-medium"
-  defp priority_badge_class(4), do: "priority-badge priority-badge-low"
-  defp priority_badge_class(_), do: "priority-badge"
+  defp chip_priority_class(1), do: "chip chip--danger"
+  defp chip_priority_class(2), do: "chip chip--warn"
+  defp chip_priority_class(3), do: "chip chip--accent"
+  defp chip_priority_class(4), do: "chip chip--muted"
+  defp chip_priority_class(_), do: "chip"
+
+  defp chip_state_class(state) do
+    normalized = state |> to_string() |> String.downcase()
+
+    cond do
+      String.contains?(normalized, ["progress", "running", "active"]) -> "chip chip--ok"
+      String.contains?(normalized, ["blocked", "error", "failed"]) -> "chip chip--danger"
+      String.contains?(normalized, ["todo", "queued", "pending", "retry"]) -> "chip chip--warn"
+      true -> "chip"
+    end
+  end
 
   defp schedule_runtime_tick do
     Process.send_after(self(), :runtime_tick, @runtime_tick_ms)
@@ -1012,21 +975,6 @@ defmodule CymphonyElixirWeb.DashboardLive do
   end
 
   defp format_stall_duration(_, _), do: "unknown"
-
-  defp filter_running_by_project(running, nil), do: running
-
-  defp filter_running_by_project(running, project) when is_binary(project) do
-    Enum.filter(running, &(&1.project_name == project))
-  end
-
-  defp filter_retrying_by_project(retrying, nil), do: retrying
-
-  defp filter_retrying_by_project(retrying, project) when is_binary(project) do
-    Enum.filter(retrying, &(&1.project_name == project))
-  end
-
-  defp filter_button_class(true), do: "filter-button filter-button-active"
-  defp filter_button_class(false), do: "filter-button"
 
   defp format_retry_countdown(due_at, now) when is_binary(due_at) do
     case DateTime.from_iso8601(due_at) do
@@ -1150,13 +1098,7 @@ defmodule CymphonyElixirWeb.DashboardLive do
 
     issue_id = Map.get(entry, :issue_id)
     project_name = Map.get(entry, :project_name)
-
-    orchestrator_pid =
-      if is_binary(project_name) do
-        CymphonyElixir.ProjectSupervisor.lookup(project_name, :orchestrator)
-      else
-        orchestrator()
-      end
+    orchestrator_pid = lookup_orchestrator(project_name)
 
     if is_binary(issue_id) and orchestrator_addressable?(orchestrator_pid) do
       Task.Supervisor.start_child(CymphonyElixir.TaskSupervisor, fn ->
@@ -1177,15 +1119,18 @@ defmodule CymphonyElixirWeb.DashboardLive do
   defp orchestrator_addressable?({:global, _}), do: true
   defp orchestrator_addressable?(_), do: false
 
+  defp lookup_orchestrator(project_name) when is_binary(project_name) do
+    case CymphonyElixir.ProjectSupervisor.lookup(project_name, :orchestrator) do
+      pid when is_pid(pid) -> pid
+      _ -> orchestrator()
+    end
+  end
+
+  defp lookup_orchestrator(_), do: orchestrator()
+
   defp send_set_provider(socket, entry, issue_id, provider) do
     project_name = Map.get(entry, :project_name)
-
-    orchestrator_pid =
-      if is_binary(project_name) do
-        CymphonyElixir.ProjectSupervisor.lookup(project_name, :orchestrator)
-      else
-        orchestrator()
-      end
+    orchestrator_pid = lookup_orchestrator(project_name)
 
     if orchestrator_addressable?(orchestrator_pid) do
       Task.Supervisor.start_child(CymphonyElixir.TaskSupervisor, fn ->

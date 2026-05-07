@@ -107,6 +107,71 @@ defmodule CymphonyElixir.Cymphony.Config do
     {:ok, Map.put(config, "max_concurrent_agents", n)}
   end
 
+  @doc """
+  Updates `provider` (head) and `providers` (full list) for the named project
+  (or for all projects if `project_name` is `nil`) and persists to disk.
+  Returns `{:ok, updated_config}` or an error tuple.
+  """
+  @spec update_providers(String.t() | nil, [String.t()]) ::
+          {:ok, map()} | {:error, term()}
+  def update_providers(project_name, providers)
+      when is_list(providers) and providers != [] do
+    with {:ok, config} <- load(),
+         {:ok, updated} <- apply_providers(config, project_name, providers),
+         :ok <- save(updated) do
+      {:ok, updated}
+    end
+  end
+
+  def update_providers(_project_name, _providers), do: {:error, :invalid_providers}
+
+  defp apply_providers(%{"projects" => projects} = config, project_name, providers)
+       when is_list(projects) do
+    updated_projects =
+      Enum.map(projects, fn project ->
+        cond do
+          is_nil(project_name) ->
+            put_providers(project, providers)
+
+          project["name"] == project_name ->
+            put_providers(project, providers)
+
+          true ->
+            project
+        end
+      end)
+
+    {:ok, Map.put(config, "projects", updated_projects)}
+  end
+
+  defp apply_providers(config, _project_name, providers) when is_map(config) do
+    {:ok, put_providers(config, providers)}
+  end
+
+  defp put_providers(map, providers) do
+    map
+    |> Map.put("provider", hd(providers))
+    |> Map.put("providers", providers)
+  end
+
+  @doc """
+  Parses a comma-separated provider list into a normalized list of names.
+  Trims whitespace and drops empty segments. Returns `{:error, :empty}` if no
+  non-empty segments remain.
+  """
+  @spec parse_providers_csv(String.t()) :: {:ok, [String.t()]} | {:error, :empty}
+  def parse_providers_csv(value) when is_binary(value) do
+    list =
+      value
+      |> String.split(",")
+      |> Enum.map(&String.trim/1)
+      |> Enum.reject(&(&1 == ""))
+
+    if list == [], do: {:error, :empty}, else: {:ok, list}
+  end
+
+  def parse_providers_csv(_), do: {:error, :empty}
+
   @spec save(map()) :: :ok | {:error, term()}
   def save(config) do
     dir = config_dir()

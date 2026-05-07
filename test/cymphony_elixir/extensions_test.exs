@@ -374,7 +374,7 @@ defmodule CymphonyElixir.ExtensionsTest do
                  "last_event_at" => nil,
                  "stalled" => false,
                  "log_events" => [],
-                 "project_name" => nil,
+                 "project_name" => "default",
                  "tokens" => %{"input_tokens" => 4, "output_tokens" => 8, "total_tokens" => 12}
                }
              ],
@@ -411,9 +411,19 @@ defmodule CymphonyElixir.ExtensionsTest do
                "paused" => false,
                "checking?" => false
              },
+             "projects" => state_payload["projects"],
              "rate_limits" => %{"primary" => %{"remaining" => 11}},
              "recent_completed" => []
            }
+
+    assert [project] = state_payload["projects"]
+    assert project["name"] == "default"
+    assert project["running_count"] == 1
+    assert project["retrying_count"] == 1
+    assert project["paused"] == false
+    assert project["providers"] == []
+    assert is_list(project["running"])
+    assert is_list(project["retrying"])
 
     conn = get(build_conn(), "/api/v1/MT-HTTP")
     issue_payload = json_response(conn, 200)
@@ -583,14 +593,24 @@ defmodule CymphonyElixir.ExtensionsTest do
     assert html =~ "Runtime"
     assert html =~ "Live"
     assert html =~ "Offline"
-    assert html =~ "Copy ID"
-    assert html =~ "Last activity"
+    # Per-project section shows the project header and inline controls.
+    assert html =~ "set_project_concurrency"
+    assert html =~ "set_project_providers"
     refute html =~ "data-runtime-clock="
     refute html =~ "setInterval(refreshRuntimeClocks"
     refute html =~ "Refresh now"
     refute html =~ "Transport"
     assert html =~ "status-badge-live"
     assert html =~ "status-badge-offline"
+
+    # Expand the session row → "Copy ID" and "Workspace" labels become visible.
+    expanded =
+      view
+      |> element(~s|button[phx-click="toggle_logs"][phx-value-issue="MT-HTTP"]|)
+      |> render_click()
+
+    assert expanded =~ "Copy ID"
+    assert expanded =~ "Workspace"
 
     updated_snapshot =
       put_in(snapshot.running, [
@@ -769,8 +789,13 @@ defmodule CymphonyElixir.ExtensionsTest do
 
       {:ok, view, _html} = live(build_conn(), "/")
 
+      # Expand the row first so the per-session provider form is rendered.
       view
-      |> form(~s|form.provider-form|, %{issue: "MT-HTTP", provider: "cv2"})
+      |> element(~s|button[phx-click="toggle_logs"][phx-value-issue="MT-HTTP"]|)
+      |> render_click()
+
+      view
+      |> form(~s|form[phx-submit="set_provider"]|, %{issue: "MT-HTTP", provider: "cv2"})
       |> render_submit()
 
       assert_receive {:orchestrator_call, {:set_issue_provider, "issue-http", "cv2"}}, 1_000
@@ -794,7 +819,7 @@ defmodule CymphonyElixir.ExtensionsTest do
       assert_receive {:orchestrator_call, :pause}, 1_000
     end
 
-    test "set_concurrency event sends :set_concurrency with parsed integer to orchestrator" do
+    test "set_project_concurrency event sends :set_concurrency with parsed integer to orchestrator" do
       tmp = Path.join(System.tmp_dir!(), "cymphony-concurrency-#{System.unique_integer([:positive])}")
       File.mkdir_p!(tmp)
       File.write!(Path.join(tmp, "config.json"), "{\"projects\": []}")
@@ -819,10 +844,97 @@ defmodule CymphonyElixir.ExtensionsTest do
       {:ok, view, _html} = live(build_conn(), "/")
 
       view
-      |> form(~s|form.concurrency-form|, %{value: "5"})
+      |> form(~s|form[phx-submit="set_project_concurrency"]|, %{value: "5"})
       |> render_submit()
 
       assert_receive {:orchestrator_call, {:set_concurrency, 5}}, 1_000
+    end
+
+    test "set_project_providers event sends :set_providers list to orchestrator" do
+      tmp = Path.join(System.tmp_dir!(), "cymphony-providers-#{System.unique_integer([:positive])}")
+      File.mkdir_p!(tmp)
+      File.write!(Path.join(tmp, "config.json"), "{\"projects\": [{\"name\": \"default\"}]}")
+      Application.put_env(:cymphony_elixir, :config_dir_override, tmp)
+
+      on_exit(fn ->
+        Application.delete_env(:cymphony_elixir, :config_dir_override)
+        File.rm_rf!(tmp)
+      end)
+
+      orchestrator_name = Module.concat(__MODULE__, :ProvidersLiveOrchestrator)
+
+      {:ok, _pid} =
+        StaticOrchestrator.start_link(
+          name: orchestrator_name,
+          snapshot: static_snapshot(),
+          recipient: self()
+        )
+
+      start_test_endpoint(orchestrator: orchestrator_name, snapshot_timeout_ms: 50)
+
+      {:ok, view, _html} = live(build_conn(), "/")
+
+      view
+      |> form(~s|form[phx-submit="set_project_providers"]|, %{value: "cv1, cz2 ,ck1"})
+      |> render_submit()
+
+      assert_receive {:orchestrator_call, {:set_providers, ["cv1", "cz2", "ck1"]}}, 1_000
+
+      {:ok, persisted} = Jason.decode(File.read!(Path.join(tmp, "config.json")))
+      [project | _] = persisted["projects"]
+      assert project["provider"] == "cv1"
+      assert project["providers"] == ["cv1", "cz2", "ck1"]
+    end
+
+    test "POST /api/v1/providers calls orchestrator and persists value" do
+      tmp = Path.join(System.tmp_dir!(), "cymphony-providers-api-#{System.unique_integer([:positive])}")
+      File.mkdir_p!(tmp)
+      File.write!(Path.join(tmp, "config.json"), "{}")
+      Application.put_env(:cymphony_elixir, :config_dir_override, tmp)
+
+      on_exit(fn ->
+        Application.delete_env(:cymphony_elixir, :config_dir_override)
+        File.rm_rf!(tmp)
+      end)
+
+      orchestrator_name = Module.concat(__MODULE__, :ProvidersApiOrchestrator)
+
+      {:ok, _pid} =
+        StaticOrchestrator.start_link(
+          name: orchestrator_name,
+          snapshot: static_snapshot(),
+          recipient: self()
+        )
+
+      start_test_endpoint(orchestrator: orchestrator_name, snapshot_timeout_ms: 50)
+
+      conn = post(build_conn(), "/api/v1/providers", %{"value" => "cv1,cz2"})
+      assert %{status: 202, resp_body: body} = conn
+      assert body =~ ~s("providers":["cv1","cz2"])
+
+      assert_receive {:orchestrator_call, {:set_providers, ["cv1", "cz2"]}}, 1_000
+
+      {:ok, persisted} = Jason.decode(File.read!(Path.join(tmp, "config.json")))
+      [project | _] = persisted["projects"]
+      assert project["provider"] == "cv1"
+      assert project["providers"] == ["cv1", "cz2"]
+    end
+
+    test "POST /api/v1/providers rejects empty value with 422" do
+      orchestrator_name = Module.concat(__MODULE__, :ProvidersApiInvalidOrchestrator)
+
+      {:ok, _pid} =
+        StaticOrchestrator.start_link(name: orchestrator_name, snapshot: static_snapshot())
+
+      start_test_endpoint(orchestrator: orchestrator_name, snapshot_timeout_ms: 50)
+
+      assert json_response(post(build_conn(), "/api/v1/providers", %{"value" => "  ,, "}), 422) ==
+               %{
+                 "error" => %{
+                   "code" => "invalid_providers",
+                   "message" => "providers 'value' must be a non-empty comma-separated list"
+                 }
+               }
     end
 
     test "POST /api/v1/concurrency calls orchestrator and persists value" do

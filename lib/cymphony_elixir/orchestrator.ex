@@ -1338,6 +1338,16 @@ defmodule CymphonyElixir.Orchestrator do
 
   def set_concurrency(_server, _n), do: {:error, :invalid_concurrency}
 
+  @spec set_providers(GenServer.server(), [String.t()]) ::
+          :ok | {:error, :invalid_providers} | :unavailable
+  def set_providers(server, providers) when is_list(providers) and providers != [] do
+    GenServer.call(server, {:set_providers, providers})
+  catch
+    :exit, _ -> :unavailable
+  end
+
+  def set_providers(_server, _providers), do: {:error, :invalid_providers}
+
   @spec snapshot() :: map() | :timeout | :unavailable
   def snapshot, do: snapshot(__MODULE__, 15_000)
 
@@ -1405,6 +1415,7 @@ defmodule CymphonyElixir.Orchestrator do
        recent_completed: state.recent_completed,
        claude_totals: state.claude_totals,
        rate_limits: Map.get(state, :claude_rate_limits),
+       providers: state.providers || [],
        polling: %{
          checking?: state.poll_check_in_progress == true,
          next_poll_in_ms: next_poll_in_ms(state.next_poll_due_at_ms, now_ms),
@@ -1489,6 +1500,28 @@ defmodule CymphonyElixir.Orchestrator do
 
   def handle_call({:set_concurrency, _n}, _from, state) do
     {:reply, {:error, :invalid_concurrency}, state}
+  end
+
+  def handle_call({:set_providers, providers}, _from, state)
+      when is_list(providers) and providers != [] do
+    Logger.info("Providers updated: providers=#{Enum.join(providers, ",")}")
+
+    new_config =
+      case state.config do
+        nil ->
+          state.config
+
+        config ->
+          updated_claude = %{config.claude | provider: hd(providers), providers: providers}
+          %{config | claude: updated_claude}
+      end
+
+    notify_dashboard()
+    {:reply, :ok, %{state | providers: providers, config: new_config}}
+  end
+
+  def handle_call({:set_providers, _providers}, _from, state) do
+    {:reply, {:error, :invalid_providers}, state}
   end
 
   def handle_call({:set_issue_provider, issue_id, new_provider}, _from, state) do

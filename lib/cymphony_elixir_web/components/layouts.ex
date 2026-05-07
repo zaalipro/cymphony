@@ -22,6 +22,17 @@ defmodule CymphonyElixirWeb.Layouts do
         <meta name="viewport" content="width=device-width, initial-scale=1" />
         <meta name="csrf-token" content={@csrf_token} />
         <title>Cymphony Observability</title>
+        <script>
+          // Apply persisted theme before paint to avoid FOUC.
+          (function() {
+            try {
+              var t = localStorage.getItem('cymphony-theme');
+              if (t === 'dark' || t === 'light') {
+                document.documentElement.setAttribute('data-theme', t);
+              }
+            } catch (e) {}
+          })();
+        </script>
         <script src={"/vendor/phoenix_html/phoenix_html.js?v=#{@version}"}></script>
         <script src={"/vendor/phoenix/phoenix.js?v=#{@version}"}></script>
         <script src={"/vendor/phoenix_live_view/phoenix_live_view.js?v=#{@version}"}></script>
@@ -46,6 +57,23 @@ defmodule CymphonyElixirWeb.Layouts do
 
             liveSocket.connect();
             window.liveSocket = liveSocket;
+
+            // Theme toggle wiring (delegated, so it survives LiveView re-renders).
+            function applyTheme(value) {
+              if (value === 'system') {
+                document.documentElement.removeAttribute('data-theme');
+                try { localStorage.removeItem('cymphony-theme'); } catch (e) {}
+              } else if (value === 'dark' || value === 'light') {
+                document.documentElement.setAttribute('data-theme', value);
+                try { localStorage.setItem('cymphony-theme', value); } catch (e) {}
+              }
+            }
+
+            document.addEventListener('click', function(e) {
+              var target = e.target.closest('[data-theme-set]');
+              if (!target) return;
+              applyTheme(target.getAttribute('data-theme-set'));
+            });
           })();
         </script>
       </body>

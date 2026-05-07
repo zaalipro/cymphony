@@ -16,21 +16,46 @@ defmodule CymphonyElixirWeb.Presenter do
         # Legacy single-orchestrator fallback
         case Orchestrator.snapshot(orchestrator, snapshot_timeout_ms) do
           %{} = snapshot ->
+            project_name = Map.get(snapshot, :project_name) || "default"
+            polling = Map.get(snapshot, :polling) || %{}
+
+            running =
+              snapshot.running
+              |> Enum.map(&Map.put(&1, :project_name, project_name))
+              |> Enum.map(&running_entry_payload/1)
+
+            retrying =
+              snapshot.retrying
+              |> Enum.map(&Map.put(&1, :project_name, project_name))
+              |> Enum.map(&retry_entry_payload/1)
+
+            project = %{
+              name: project_name,
+              running: running,
+              retrying: retrying,
+              running_count: length(running),
+              retrying_count: length(retrying),
+              providers: Map.get(snapshot, :providers, []),
+              paused: Map.get(polling, :paused, false),
+              max_concurrent_agents: Map.get(polling, :max_concurrent_agents)
+            }
+
             %{
               generated_at: generated_at,
               counts: %{
-                running: length(snapshot.running),
-                retrying: length(snapshot.retrying)
+                running: length(running),
+                retrying: length(retrying)
               },
-              running: Enum.map(snapshot.running, &running_entry_payload/1),
-              retrying: Enum.map(snapshot.retrying, &retry_entry_payload/1),
+              running: running,
+              retrying: retrying,
               recent_completed:
                 snapshot
                 |> Map.get(:recent_completed, [])
                 |> Enum.map(&completed_entry_payload/1),
               claude_totals: normalize_claude_totals(snapshot.claude_totals),
               rate_limits: snapshot.rate_limits,
-              polling: Map.get(snapshot, :polling)
+              polling: Map.get(snapshot, :polling),
+              projects: [project]
             }
 
           :timeout ->
@@ -43,30 +68,48 @@ defmodule CymphonyElixirWeb.Presenter do
       snapshots ->
         merged = merge_project_snapshots(snapshots)
 
+        projects =
+          Enum.map(snapshots, fn %{project_name: name, snapshot: snap} ->
+            polling = Map.get(snap, :polling) || %{}
+
+            running =
+              snap.running
+              |> Enum.map(&Map.put(&1, :project_name, name))
+              |> Enum.map(&running_entry_payload/1)
+
+            retrying =
+              snap.retrying
+              |> Enum.map(&Map.put(&1, :project_name, name))
+              |> Enum.map(&retry_entry_payload/1)
+
+            %{
+              name: name,
+              running: running,
+              retrying: retrying,
+              running_count: length(running),
+              retrying_count: length(retrying),
+              providers: Map.get(snap, :providers, []),
+              paused: Map.get(polling, :paused, false),
+              max_concurrent_agents: Map.get(polling, :max_concurrent_agents)
+            }
+          end)
+
+        flat_running = Enum.flat_map(projects, & &1.running)
+        flat_retrying = Enum.flat_map(projects, & &1.retrying)
+
         %{
           generated_at: generated_at,
           counts: %{
-            running: length(merged.running),
-            retrying: length(merged.retrying)
+            running: length(flat_running),
+            retrying: length(flat_retrying)
           },
-          running: Enum.map(merged.running, &running_entry_payload/1),
-          retrying: Enum.map(merged.retrying, &retry_entry_payload/1),
+          running: flat_running,
+          retrying: flat_retrying,
           recent_completed: Enum.map(merged.recent_completed, &completed_entry_payload/1),
           claude_totals: merged.claude_totals,
           rate_limits: merged.rate_limits,
           polling: merged.polling,
-          projects:
-            Enum.map(snapshots, fn %{project_name: name, snapshot: snap} ->
-              polling = Map.get(snap, :polling) || %{}
-
-              %{
-                name: name,
-                running: length(snap.running),
-                retrying: length(snap.retrying),
-                paused: Map.get(polling, :paused, false),
-                max_concurrent_agents: Map.get(polling, :max_concurrent_agents)
-              }
-            end)
+          projects: projects
         }
     end
   end

@@ -139,31 +139,32 @@ The Phoenix LiveView dashboard (`lib/cymphony_elixir_web/live/dashboard_live.ex`
 
 ### Sections
 
-- **Header** — Status badge (Live/Offline), version, Refresh button
-- **Project grid** — Per-project mini-cards showing running/retrying counts
+- **Header** — Status badge (Live/Offline), version, theme toggle (☀ light / ☾ dark / ⌂ system), Refresh button
 - **Metrics** — Running count, retrying count, total tokens (input/output/total), runtime, throughput with sparkline chart (10-minute window)
-- **Polling** — Next poll countdown and interval
+- **Polling** — Next poll countdown, interval, global Pause all / Resume all button
 - **Rate limits** — Primary/Secondary/Credits buckets with remaining/limit and reset timers
-- **Running sessions** — Per-session cards with issue ID, state, stall badge, worker host, provider badge, project badge, runtime, tokens, session ID (copyable), workspace path (copyable), collapsible recent logs
-- **Retry queue** — Per-retry cards with attempt number, due-at countdown, error details, Retry Now button
-- **Recent completions** — Last 100 sessions that wrapped up: identifier, runtime, total tokens, ended-at timestamp. In-memory ring buffer; cleared on daemon restart.
+- **Per-project sections** — One section per project. Header shows project name, running count vs concurrency cap, paused state, and inline controls: concurrency input (`cr`), provider list input (`c`, comma-separated aliases), and Pause/Resume button. Each session is a compact one-line row with issue identifier (linked), title (or last activity), state/provider/host chips, runtime, tokens, and a Kill button. Click a row to expand and see session ID (copyable), workspace path (copyable), recent log events, and a per-session provider override form. The retry queue lives inline at the bottom of each project section.
+- **Recent completions** — Last 100 sessions that wrapped up (global ring buffer): identifier, runtime, total tokens, ended-at timestamp. Cleared on daemon restart.
 
 ### User actions
 
 | Event | Description |
 |-------|-------------|
-| `toggle_logs` | Expand/collapse log drawer for a session |
+| `toggle_logs` | Expand/collapse a session row to reveal session ID, workspace path, recent logs, per-session provider form |
 | `dismiss_stalled_alert` | Dismiss stalled-agent warning |
-| `filter_project` | Filter running/retrying sessions by project |
 | `kill_issue` | Terminate a running session |
 | `retry_issue` | Immediately retry a queued issue |
 | `refresh_now` | Trigger Linear refresh from dashboard |
-| `set_provider` | Change provider for a running session (kills and restarts with new provider) |
+| `set_provider` | Change provider for a single running session (kills and restarts with new provider) |
 | `pause_dispatch` / `resume_dispatch` | Stop/start dispatching new issues for **all** projects; running sessions complete normally |
-| `toggle_project_pause` | Pause or resume dispatching for a single project from its mini-card |
-| `set_concurrency` | Update `max_concurrent_agents` at runtime; persists to `~/.cymphony/config.json` |
+| `toggle_project_pause` | Pause or resume dispatching for a single project from its section header |
+| `set_concurrency` | Update `max_concurrent_agents` for **all** projects (legacy global form); persists to `~/.cymphony/config.json` |
+| `set_project_concurrency` | Update `max_concurrent_agents` for a single project from its section header; persists to config |
+| `set_project_providers` | Update the provider list (`provider` + `providers`) for a single project from its section header; persists to config and applies to next dispatch (running sessions unchanged) |
 
-Each running session card shows the Linear issue identifier (linked to the issue), title, priority badge (Urgent/High/Medium/Low), and turn count.
+Each running session row shows the Linear issue identifier (linked to the issue), title (or last activity message when no title), state, provider, host, runtime, and total tokens at a glance. Expanding the row reveals priority badge, session ID, workspace path, and recent log events.
+
+Theme toggle (☀ / ☾ / ⌂) is purely client-side — sets `data-theme` on `<html>` and persists to localStorage; ⌂ clears it to follow the OS `prefers-color-scheme` setting.
 
 ### Refresh behavior
 
@@ -195,6 +196,7 @@ Routes defined in `lib/cymphony_elixir_web/router.ex`:
 | `/api/v1/pause` | POST | Stop dispatching new issues; running sessions continue. Optional `?project=<name>` to scope to one project. Returns 202. |
 | `/api/v1/resume` | POST | Resume dispatching new issues. Optional `?project=<name>`. Returns 202. |
 | `/api/v1/concurrency` | POST | Update `max_concurrent_agents` at runtime. JSON body `{"value": <int>}`, optional `?project=<name>`. Persists to `~/.cymphony/config.json`. Returns 202. |
+| `/api/v1/providers` | POST | Update provider list at runtime. JSON body `{"value": "cv1,cz2,ck1"}` (comma-separated aliases), optional `?project=<name>`. Persists `provider` (head) + `providers` (full list) to `~/.cymphony/config.json`. Applies to next dispatch only — running sessions unchanged. Returns 202 with `{"providers": [...]}`. |
 | `/api/v1/completed` | GET | Recent completed sessions (last 100, in-memory ring buffer). Optional `?project=<name>` and `?limit=N`. |
 
 All other methods return 405; all other paths return 404.

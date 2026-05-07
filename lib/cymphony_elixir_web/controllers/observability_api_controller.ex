@@ -107,6 +107,28 @@ defmodule CymphonyElixirWeb.ObservabilityApiController do
     end
   end
 
+  @spec providers(Conn.t(), map()) :: Conn.t()
+  def providers(conn, params) do
+    project = params["project"]
+
+    case parse_providers(params["value"]) do
+      {:ok, list} ->
+        apply_providers(list, project)
+
+        conn
+        |> put_status(202)
+        |> json(%{providers: list, project: project})
+
+      :error ->
+        error_response(
+          conn,
+          422,
+          "invalid_providers",
+          "providers 'value' must be a non-empty comma-separated list"
+        )
+    end
+  end
+
   @spec method_not_allowed(Conn.t(), map()) :: Conn.t()
   def method_not_allowed(conn, _params) do
     error_response(conn, 405, "method_not_allowed", "Method not allowed")
@@ -206,4 +228,48 @@ defmodule CymphonyElixirWeb.ObservabilityApiController do
   end
 
   defp parse_concurrency(_), do: :error
+
+  defp apply_providers(providers, nil), do: apply_providers_to_all(providers)
+  defp apply_providers(providers, ""), do: apply_providers_to_all(providers)
+
+  defp apply_providers(providers, project_name) when is_binary(project_name) do
+    case ProjectSupervisor.lookup(project_name, :orchestrator) do
+      pid when is_pid(pid) ->
+        Orchestrator.set_providers(pid, providers)
+        _ = CymphonyConfig.update_providers(project_name, providers)
+        :ok
+
+      _ ->
+        :unavailable
+    end
+  end
+
+  defp apply_providers_to_all(providers) do
+    case ProjectSupervisor.list_orchestrators() do
+      [] ->
+        Orchestrator.set_providers(orchestrator(), providers)
+        _ = CymphonyConfig.update_providers(nil, providers)
+        :ok
+
+      orchestrators ->
+        Enum.each(orchestrators, fn {project, pid} ->
+          Orchestrator.set_providers(pid, providers)
+          _ = CymphonyConfig.update_providers(project, providers)
+        end)
+    end
+  end
+
+  defp parse_providers(value) when is_binary(value) do
+    case CymphonyConfig.parse_providers_csv(value) do
+      {:ok, list} -> {:ok, list}
+      {:error, :empty} -> :error
+    end
+  end
+
+  defp parse_providers(value) when is_list(value) do
+    list = value |> Enum.map(&to_string/1) |> Enum.map(&String.trim/1) |> Enum.reject(&(&1 == ""))
+    if list == [], do: :error, else: {:ok, list}
+  end
+
+  defp parse_providers(_), do: :error
 end
