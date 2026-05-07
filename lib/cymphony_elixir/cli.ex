@@ -94,20 +94,32 @@ defmodule CymphonyElixir.CLI do
   defp expand_shorthands([]), do: []
 
   defp expand_shorthands(["b" | rest]), do: ["--background" | expand_shorthands(rest)]
+  defp expand_shorthands(["start" | rest]), do: ["--background" | expand_shorthands(rest)]
   defp expand_shorthands(["bs" | rest]), do: ["--background-stop" | expand_shorthands(rest)]
+  defp expand_shorthands(["stop" | rest]), do: ["--background-stop" | expand_shorthands(rest)]
   defp expand_shorthands(["h" | rest]), do: ["--help" | expand_shorthands(rest)]
   defp expand_shorthands(["r" | rest]), do: ["--restart" | expand_shorthands(rest)]
+  defp expand_shorthands(["restart" | rest]), do: ["--restart" | expand_shorthands(rest)]
   defp expand_shorthands(["s" | rest]), do: ["--setup" | expand_shorthands(rest)]
+  defp expand_shorthands(["setup" | rest]), do: ["--setup" | expand_shorthands(rest)]
   defp expand_shorthands(["l" | rest]), do: ["list" | expand_shorthands(rest)]
   defp expand_shorthands(["a" | rest]), do: ["add-project" | expand_shorthands(rest)]
+  defp expand_shorthands(["add" | rest]), do: ["add-project" | expand_shorthands(rest)]
   defp expand_shorthands(["v" | rest]), do: ["--version" | expand_shorthands(rest)]
   defp expand_shorthands(["log" | rest]), do: ["log" | expand_shorthands(rest)]
+  defp expand_shorthands(["logs" | rest]), do: ["log" | expand_shorthands(rest)]
   defp expand_shorthands(["p", value | rest]), do: ["--project", value | expand_shorthands(rest)]
   defp expand_shorthands(["p" | _]), do: ["--help"]
+  defp expand_shorthands(["project", value | rest]), do: ["--project", value | expand_shorthands(rest)]
+  defp expand_shorthands(["project" | _]), do: ["--help"]
+  defp expand_shorthands(["projects", value | rest]), do: ["--project", value | expand_shorthands(rest)]
+  defp expand_shorthands(["projects" | _]), do: ["--help"]
   defp expand_shorthands(["c", value | rest]), do: ["--claude-command", value | expand_shorthands(rest)]
   defp expand_shorthands(["c" | _]), do: ["--help"]
   defp expand_shorthands(["cr", value | rest]), do: ["--concurrency", value | expand_shorthands(rest)]
   defp expand_shorthands(["cr" | _]), do: ["--help"]
+  defp expand_shorthands(["port", value | rest]), do: ["--port", value | expand_shorthands(rest)]
+  defp expand_shorthands(["port" | _]), do: ["--help"]
   defp expand_shorthands([arg | rest]), do: [arg | expand_shorthands(rest)]
 
   defp background_requested?(args) do
@@ -244,20 +256,21 @@ defmodule CymphonyElixir.CLI do
 
     Usage:
       cymphony                       Run with saved config (all projects)
-      cymphony p frontend            Run only the "frontend" project
+      cymphony project frontend      Run only the "frontend" project
       cymphony c cz                  Run with a different Claude provider (e.g. cz, ck, cm)
       cymphony c cv1,cz2,cz1         Run with provider rotation (random per session)
       cymphony cr 3                  Set max concurrent agents to 3
       cymphony cr 3 c cv1,cz2        Set concurrency and provider rotation together
-      cymphony b                     Run in background
-      cymphony bs                    Stop background process
-      cymphony r                     Restart background process
-      cymphony s                     Run setup / onboarding wizard
-      cymphony a                     Add a project to existing config
-      cymphony l                     List configured projects
+      cymphony port 4089             Set HTTP server / dashboard port
+      cymphony start                 Run in background
+      cymphony stop                  Stop background process
+      cymphony restart               Restart background process
+      cymphony setup                 Run setup / onboarding wizard
+      cymphony add                   Add a project to existing config
+      cymphony list                  List configured projects
       cymphony v                     Show version
-      cymphony log                   Show full log
-      cymphony log 50                Show last 50 lines of log
+      cymphony logs                  Show full log
+      cymphony logs 50               Show last 50 lines of log
       cymphony h                     Show this help
 
     Flags:

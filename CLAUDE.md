@@ -34,27 +34,30 @@ Defined in `lib/cymphony_elixir/cli.ex`.
 
 ### Shorthand expansions
 
-| Shorthand | Expands to | Description |
-|-----------|-----------|-------------|
-| `p <name>` | `--project <name>` | Run a specific project |
+| Command | Expands to | Description |
+|---------|-----------|-------------|
+| `project <name>` / `projects <name>` | `--project <name>` | Run a specific project |
 | `c <value>` | `--claude-command <value>` | Override provider or Claude command |
 | `cr <n>` | `--concurrency <n>` | Set max concurrent agents |
-| `s` | `--setup` | Run onboarding wizard |
-| `a` | `add-project` | Add a project to config |
-| `l` / `ls` | `list` | List configured projects |
+| `port <n>` | `--port <n>` | Set HTTP server / dashboard port |
+| `setup` | `--setup` | Run onboarding wizard |
+| `add` | `add-project` | Add a project to config |
+| `list` | — | List configured projects |
 | `v` | `--version` | Show version |
 | `h` | `--help` | Show help |
-| `b` | `--background` | Run in background |
-| `bs` | `--background-stop` | Stop background process |
-| `r` | `--restart` | Restart background process |
-| `log [n]` | — | Show last n lines of log (default: all) |
+| `start` | `--background` | Run in background |
+| `stop` | `--background-stop` | Stop background process |
+| `restart` | `--restart` | Restart background process |
+| `logs [n]` | — | Show last n lines of log (default: all) |
+
+The short forms `b`, `bs`, `r`, `s`, `p`, `a`, `l` / `ls`, `log`, and the long flag `--port` still work as aliases for backward compatibility but are no longer documented in `--help`.
 
 ### Concurrency control
 
 ```bash
 cymphony cr 3                    # Limit to 3 concurrent sessions
 cymphony cr 1                    # Run one session at a time
-cymphony p AgentFarm cr 5        # 5 sessions for "AgentFarm" project
+cymphony project AgentFarm cr 5  # 5 sessions for "AgentFarm" project
 ```
 
 Limits how many Claude sessions run simultaneously. Default is 10. As sessions complete, waiting issues auto-dispatch on the next poll tick.
@@ -62,8 +65,8 @@ Limits how many Claude sessions run simultaneously. Default is 10. As sessions c
 ### Provider rotation
 
 ```bash
-cymphony c cv1,cz2,ck1           # Rotate across 3 providers
-cymphony p Farm cr 6 c cv1,cz2   # 6 sessions split across 2 providers (~3 each)
+cymphony c cv1,cz2,ck1                # Rotate across 3 providers
+cymphony project Farm cr 6 c cv1,cz2  # 6 sessions split across 2 providers (~3 each)
 ```
 
 Comma-separated provider names are randomly assigned per session. Each provider must be defined in `~/.cymphony/config.json` under `providers` or as a shell function in `~/.cld`.
@@ -71,7 +74,7 @@ Comma-separated provider names are randomly assigned per session. Each provider 
 ### Combined usage
 
 ```bash
-cymphony p AgentFarm cr 3 c cv1,cz2 --port 4089
+cymphony project AgentFarm cr 3 c cv1,cz2 port 4089
 ```
 
 Runs project "AgentFarm" with 3 concurrent sessions rotating across cv1 and cz2 providers, with dashboard on port 4089.
@@ -132,7 +135,7 @@ Each project gets its own `ProjectSupervisor` with a `WorkflowStore` and `Orches
 
 ## Web Dashboard
 
-The Phoenix LiveView dashboard (`lib/cymphony_elixir_web/live/dashboard_live.ex`) provides real-time observability. Enabled with `--port <port>`.
+The Phoenix LiveView dashboard (`lib/cymphony_elixir_web/live/dashboard_live.ex`) provides real-time observability. Enabled with `cymphony port <n>` (or `--port <n>`).
 
 ### Sections
 

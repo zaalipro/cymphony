@@ -177,6 +177,11 @@ defmodule CymphonyElixir.CLITest do
       assert match?({:ok, _}, result) or match?({:error, _}, result)
     end
 
+    test "setup expands to --setup", %{deps: deps} do
+      result = CLI.evaluate(["setup"], deps)
+      assert result in [:ok, :done] or match?({:error, _}, result)
+    end
+
     test "--logs-root <path> sets log root", %{deps: deps} do
       parent = self()
 
@@ -208,9 +213,41 @@ defmodule CymphonyElixir.CLITest do
       assert :done = CLI.evaluate(["l"])
     end
 
+    test "list lists projects" do
+      assert :done = CLI.evaluate(["list"])
+    end
+
     test "p without value shows help" do
       assert {:error, text} = CLI.evaluate(["p"])
       assert text =~ "Usage:"
+    end
+
+    test "project without value shows help" do
+      assert {:error, text} = CLI.evaluate(["project"])
+      assert text =~ "Usage:"
+    end
+
+    test "projects without value shows help" do
+      assert {:error, text} = CLI.evaluate(["projects"])
+      assert text =~ "Usage:"
+    end
+
+    test "port without value shows help" do
+      assert {:error, text} = CLI.evaluate(["port"])
+      assert text =~ "Usage:"
+    end
+
+    test "port <n> sets server port", %{deps: deps} do
+      parent = self()
+
+      port_deps =
+        Map.put(deps, :set_server_port_override, fn port ->
+          send(parent, {:port, port})
+          :ok
+        end)
+
+      assert :ok = CLI.evaluate([@ack_flag, "port", "9090", "WORKFLOW.md"], port_deps)
+      assert_received {:port, 9090}
     end
 
     test "c without value shows help" do

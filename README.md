@@ -78,14 +78,19 @@ sudo dpkg -r cymphony
 
 ```bash
 cymphony                       # Run with saved config
-cymphony p frontend            # Run only the "frontend" project
+cymphony project frontend      # Run only the "frontend" project
 cymphony c cz                  # Run with a different Claude provider (e.g. cz, ck, cm)
 cymphony cr 3                  # Limit to 3 concurrent sessions
 cymphony c cv1,cz2,ck1         # Rotate across multiple providers (round-robin random)
-cymphony p AgentFarm cr 5 c cv1,cz2 --port 4089  # Combine: project + concurrency + providers + dashboard
-cymphony s                     # Re-run setup
-cymphony a                     # Add a project
-cymphony l                     # List projects
+cymphony port 4089             # Set dashboard / HTTP server port
+cymphony project AgentFarm cr 5 c cv1,cz2 port 4089  # Combine: project + concurrency + providers + dashboard
+cymphony start                 # Run in background
+cymphony stop                  # Stop background process
+cymphony restart               # Restart background process
+cymphony logs                  # Show log (use `logs 50` for last 50 lines)
+cymphony setup                 # Re-run setup
+cymphony add                   # Add a project
+cymphony list                  # List projects
 cymphony v                     # Show version
 cymphony h                     # Show help
 ```
@@ -109,7 +114,7 @@ By default Cymphony runs up to 10 concurrent Claude sessions. Use `cr N` to chan
 ```bash
 cymphony cr 3          # Only 3 sessions at a time
 cymphony cr 1          # Run one at a time (sequential)
-cymphony p backend cr 5  # 5 sessions for the "backend" project
+cymphony project backend cr 5  # 5 sessions for the "backend" project
 ```
 
 How it works:
@@ -135,7 +140,7 @@ How it works:
 
 You can also change a session's provider live from the web dashboard:
 
-1. Open the dashboard (enable with `--port 4089`)
+1. Open the dashboard (enable with `cymphony port 4089`)
 2. Find the running session card
 3. Type a new provider name in the provider input field
 4. Click **Set** — the session is killed and restarted with the new provider
@@ -185,7 +190,7 @@ Providers are configured interactively during `cymphony s` setup, or you can edi
 ### Reconfigure
 
 ```bash
-cymphony s
+cymphony setup
 ```
 
 ### Upgrade
