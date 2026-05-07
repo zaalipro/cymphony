@@ -88,15 +88,13 @@ defmodule CymphonyElixirWeb.DashboardLive do
   @impl true
   def handle_event("pause_dispatch", _params, socket) do
     apply_pause_to_all(:pause)
-    spawn_payload_load()
-    {:noreply, put_flash(socket, :info, "Dispatch paused — running sessions will complete normally")}
+    {:noreply, reload_payload_now(put_flash(socket, :info, "Dispatch paused — running sessions will complete normally"))}
   end
 
   @impl true
   def handle_event("resume_dispatch", _params, socket) do
     apply_pause_to_all(:resume)
-    spawn_payload_load()
-    {:noreply, put_flash(socket, :info, "Dispatch resumed")}
+    {:noreply, reload_payload_now(put_flash(socket, :info, "Dispatch resumed"))}
   end
 
   @impl true
@@ -104,9 +102,8 @@ defmodule CymphonyElixirWeb.DashboardLive do
     case parse_concurrency(raw_value) do
       {:ok, n} ->
         apply_concurrency_to_all(n)
-        spawn_payload_load()
 
-        {:noreply, put_flash(socket, :info, "Concurrency set to #{n}; persisted to ~/.cymphony/config.json")}
+        {:noreply, reload_payload_now(put_flash(socket, :info, "Concurrency set to #{n}; persisted to ~/.cymphony/config.json"))}
 
       :error ->
         {:noreply, put_flash(socket, :error, "Concurrency must be a positive integer")}
@@ -123,8 +120,7 @@ defmodule CymphonyElixirWeb.DashboardLive do
       {:ok, n} ->
         case apply_project_concurrency(project_name, n) do
           :ok ->
-            spawn_payload_load()
-            {:noreply, put_flash(socket, :info, "#{project_name}: concurrency set to #{n}")}
+            {:noreply, reload_payload_now(put_flash(socket, :info, "#{project_name}: concurrency set to #{n}"))}
 
           {:error, :not_found} ->
             {:noreply, put_flash(socket, :error, "Project not found: #{project_name}")}
@@ -145,8 +141,7 @@ defmodule CymphonyElixirWeb.DashboardLive do
       {:ok, list} ->
         case apply_project_providers(project_name, list) do
           :ok ->
-            spawn_payload_load()
-            {:noreply, put_flash(socket, :info, "#{project_name}: providers set to #{Enum.join(list, ", ")}")}
+            {:noreply, reload_payload_now(put_flash(socket, :info, "#{project_name}: providers set to #{Enum.join(list, ", ")}"))}
 
           {:error, :not_found} ->
             {:noreply, put_flash(socket, :error, "Project not found: #{project_name}")}
@@ -161,8 +156,7 @@ defmodule CymphonyElixirWeb.DashboardLive do
   def handle_event("toggle_project_pause", %{"project" => project_name}, socket) do
     case toggle_project_pause(socket.assigns.payload, project_name) do
       :ok ->
-        spawn_payload_load()
-        {:noreply, socket}
+        {:noreply, reload_payload_now(socket)}
 
       {:error, :not_found} ->
         {:noreply, put_flash(socket, :error, "Project orchestrator not found: #{project_name}")}
@@ -681,6 +675,19 @@ defmodule CymphonyElixirWeb.DashboardLive do
     Task.Supervisor.start_child(CymphonyElixir.TaskSupervisor, fn ->
       send(pid, {:payload_loaded, load_payload()})
     end)
+  end
+
+  # Use after a state-changing operation so the next render already shows the
+  # updated value, not the previous one. Async refresh is fine for periodic
+  # ticks but causes a one-frame flash of stale data on form submits.
+  defp reload_payload_now(socket) do
+    payload = load_payload()
+    token_samples = update_token_samples(socket.assigns.token_samples, payload)
+
+    socket
+    |> assign(:payload, payload)
+    |> assign(:token_samples, token_samples)
+    |> assign(:last_payload_refresh, System.monotonic_time(:millisecond))
   end
 
   defp orchestrator do
