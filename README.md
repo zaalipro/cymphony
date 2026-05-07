@@ -15,6 +15,7 @@ If you've used [openai/symphony](https://github.com/openai/symphony), the core i
 | | openai/symphony | **Cymphony** |
 |---|---|---|
 | Coding agent | Codex | **Claude Code** |
+| How you run it | clone the repo, run a Node server, keep it alive in a terminal tab | **One command from anywhere on your machine** — `cymphony` launches the orchestrator + dashboard; `cymphony start` runs it as a background daemon |
 | Concurrency | one project, fixed | **Multi-project orchestration**, with a per-project cap on how many sessions may run at once (default 10, change live from the dashboard or CLI) |
 | Claude command | one binary | **Custom Claude command per project** — point one project at the official `claude` CLI, another at a wrapper that swaps in z.ai / Kimi / OpenRouter credentials, etc. |
 | Providers | one API endpoint | **Rotate across multiple Claude-compatible backends** — list two or more providers and Cymphony spreads new sessions across them randomly. Avoids hitting any single backend's rate limit. |
@@ -23,7 +24,7 @@ If you've used [openai/symphony](https://github.com/openai/symphony), the core i
 | Workspace lifecycle | clone-on-create | **after_create / before_run / after_run / before_remove hooks**, optional retention sweep |
 | Setup | edit a YAML file | `cymphony setup` wizard, all config in `~/.cymphony/config.json` |
 | Hot reload | restart | edit `WORKFLOW.md`, picked up next tick |
-| Distribution | source build | **Homebrew tap + standalone macOS/Linux binaries** (Erlang bundled — no system deps) |
+| Distribution | source build | **One-liner install** — `brew install zaalipro/cymphony/cymphony` (macOS) or grab the `.deb` on Ubuntu/Debian; Erlang is bundled, no system deps |
 | Auth | — | optional `CYMPHONY_API_TOKEN` bearer auth on dashboard + API |
 
 If you're already running `symphony`, switching is mostly: install `cymphony`, run `cymphony setup`, paste your Linear API key.
