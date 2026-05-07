@@ -20,11 +20,22 @@ Cymphony works best in codebases that have adopted [harness engineering](https:/
 
 ### Install the CLI (macOS)
 
+Two formulas — pick one:
+
 ```bash
 brew tap zaalipro/cymphony
+
+# Recommended: self-contained (Erlang/Elixir bundled, no system deps)
 brew install cymphony
+
+# Or: smaller binary that uses Homebrew's Elixir/Erlang
+# (useful if you already have Elixir installed for other projects)
+brew install cymphony-lite
+
 cymphony
 ```
+
+The two formulas conflict — install only one. Switching is just `brew uninstall <one> && brew install <other>`; your config and workspaces are untouched.
 
 First run triggers an interactive setup (GitHub repo URL, Linear project slug, API key).
 
@@ -196,7 +207,8 @@ cymphony setup
 ### Upgrade
 
 ```bash
-brew upgrade zaalipro/cymphony/cymphony
+brew upgrade zaalipro/cymphony/cymphony       # bundled
+brew upgrade zaalipro/cymphony/cymphony-lite  # source-built
 ```
 
 ## Run from Source
