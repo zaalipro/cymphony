@@ -15,7 +15,7 @@ defmodule CymphonyElixir.Cymphony.Onboarding do
     ╰──────────────────────────────────────────────────────────╯
     """)
 
-    case collect_project(nil) do
+    case collect_project([]) do
       {:ok, first_project} ->
         projects = collect_additional_projects([first_project])
         config = %{"projects" => projects}
