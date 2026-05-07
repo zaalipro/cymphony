@@ -75,6 +75,15 @@ defmodule CymphonyElixir.ExtensionsTest do
     def handle_call(:request_refresh, _from, state) do
       {:reply, Keyword.get(state, :refresh, :unavailable), state}
     end
+
+    def handle_call(call, _from, state) do
+      case Keyword.get(state, :recipient) do
+        pid when is_pid(pid) -> send(pid, {:orchestrator_call, call})
+        _ -> :ok
+      end
+
+      {:reply, :ok, state}
+    end
   end
 
   setup do
@@ -350,6 +359,9 @@ defmodule CymphonyElixir.ExtensionsTest do
                %{
                  "issue_id" => "issue-http",
                  "issue_identifier" => "MT-HTTP",
+                 "issue_title" => nil,
+                 "issue_url" => nil,
+                 "priority" => nil,
                  "state" => "In Progress",
                  "worker_host" => nil,
                  "provider" => nil,
@@ -370,6 +382,9 @@ defmodule CymphonyElixir.ExtensionsTest do
                %{
                  "issue_id" => "issue-retry",
                  "issue_identifier" => "MT-RETRY",
+                 "issue_title" => nil,
+                 "issue_url" => nil,
+                 "priority" => nil,
                  "attempt" => 2,
                  "due_at" => state_payload["retrying"] |> List.first() |> Map.fetch!("due_at"),
                  "error" => "boom",
@@ -390,7 +405,12 @@ defmodule CymphonyElixir.ExtensionsTest do
                "total_tokens" => 12,
                "seconds_running" => 42.5
              },
-             "polling" => nil,
+             "polling" => %{
+               "next_poll_in_ms" => 5_000,
+               "poll_interval_ms" => 30_000,
+               "paused" => false,
+               "checking?" => false
+             },
              "rate_limits" => %{"primary" => %{"remaining" => 11}},
              "recent_completed" => []
            }
@@ -692,6 +712,215 @@ defmodule CymphonyElixir.ExtensionsTest do
     end
   end
 
+  describe "dashboard liveview writable surface" do
+    test "kill_issue sends the UUID issue_id to the orchestrator (regression for identifier mix-up)" do
+      orchestrator_name = Module.concat(__MODULE__, :KillOrchestrator)
+
+      {:ok, _pid} =
+        StaticOrchestrator.start_link(
+          name: orchestrator_name,
+          snapshot: static_snapshot(),
+          recipient: self()
+        )
+
+      start_test_endpoint(orchestrator: orchestrator_name, snapshot_timeout_ms: 50)
+
+      {:ok, view, _html} = live(build_conn(), "/")
+
+      view
+      |> element(~s|button[phx-click="kill_issue"][phx-value-issue="MT-HTTP"]|)
+      |> render_click()
+
+      assert_receive {:orchestrator_call, {:kill_issue, "issue-http"}}, 1_000
+    end
+
+    test "retry_issue sends the UUID issue_id to the orchestrator" do
+      orchestrator_name = Module.concat(__MODULE__, :RetryOrchestrator)
+
+      {:ok, _pid} =
+        StaticOrchestrator.start_link(
+          name: orchestrator_name,
+          snapshot: static_snapshot(),
+          recipient: self()
+        )
+
+      start_test_endpoint(orchestrator: orchestrator_name, snapshot_timeout_ms: 50)
+
+      {:ok, view, _html} = live(build_conn(), "/")
+
+      view
+      |> element(~s|button[phx-click="retry_issue"][phx-value-issue="MT-RETRY"]|)
+      |> render_click()
+
+      assert_receive {:orchestrator_call, {:retry_issue_now, "issue-retry"}}, 1_000
+    end
+
+    test "set_provider submits the UUID issue_id and provider to the orchestrator" do
+      orchestrator_name = Module.concat(__MODULE__, :SetProviderOrchestrator)
+
+      {:ok, _pid} =
+        StaticOrchestrator.start_link(
+          name: orchestrator_name,
+          snapshot: static_snapshot(),
+          recipient: self()
+        )
+
+      start_test_endpoint(orchestrator: orchestrator_name, snapshot_timeout_ms: 50)
+
+      {:ok, view, _html} = live(build_conn(), "/")
+
+      view
+      |> form(~s|form.provider-form|, %{issue: "MT-HTTP", provider: "cv2"})
+      |> render_submit()
+
+      assert_receive {:orchestrator_call, {:set_issue_provider, "issue-http", "cv2"}}, 1_000
+    end
+
+    test "pause_dispatch sends :pause to the orchestrator" do
+      orchestrator_name = Module.concat(__MODULE__, :PauseLiveOrchestrator)
+
+      {:ok, _pid} =
+        StaticOrchestrator.start_link(
+          name: orchestrator_name,
+          snapshot: static_snapshot(),
+          recipient: self()
+        )
+
+      start_test_endpoint(orchestrator: orchestrator_name, snapshot_timeout_ms: 50)
+
+      {:ok, view, _html} = live(build_conn(), "/")
+
+      view |> element(~s|button[phx-click="pause_dispatch"]|) |> render_click()
+      assert_receive {:orchestrator_call, :pause}, 1_000
+    end
+
+    test "set_concurrency event sends :set_concurrency with parsed integer to orchestrator" do
+      tmp = Path.join(System.tmp_dir!(), "cymphony-concurrency-#{System.unique_integer([:positive])}")
+      File.mkdir_p!(tmp)
+      File.write!(Path.join(tmp, "config.json"), "{\"projects\": []}")
+      Application.put_env(:cymphony_elixir, :config_dir_override, tmp)
+
+      on_exit(fn ->
+        Application.delete_env(:cymphony_elixir, :config_dir_override)
+        File.rm_rf!(tmp)
+      end)
+
+      orchestrator_name = Module.concat(__MODULE__, :ConcurrencyLiveOrchestrator)
+
+      {:ok, _pid} =
+        StaticOrchestrator.start_link(
+          name: orchestrator_name,
+          snapshot: static_snapshot(),
+          recipient: self()
+        )
+
+      start_test_endpoint(orchestrator: orchestrator_name, snapshot_timeout_ms: 50)
+
+      {:ok, view, _html} = live(build_conn(), "/")
+
+      view
+      |> form(~s|form.concurrency-form|, %{value: "5"})
+      |> render_submit()
+
+      assert_receive {:orchestrator_call, {:set_concurrency, 5}}, 1_000
+    end
+
+    test "POST /api/v1/concurrency calls orchestrator and persists value" do
+      tmp = Path.join(System.tmp_dir!(), "cymphony-concurrency-api-#{System.unique_integer([:positive])}")
+      File.mkdir_p!(tmp)
+      File.write!(Path.join(tmp, "config.json"), "{}")
+      Application.put_env(:cymphony_elixir, :config_dir_override, tmp)
+
+      on_exit(fn ->
+        Application.delete_env(:cymphony_elixir, :config_dir_override)
+        File.rm_rf!(tmp)
+      end)
+
+      orchestrator_name = Module.concat(__MODULE__, :ConcurrencyApiOrchestrator)
+
+      {:ok, _pid} =
+        StaticOrchestrator.start_link(
+          name: orchestrator_name,
+          snapshot: static_snapshot(),
+          recipient: self()
+        )
+
+      start_test_endpoint(orchestrator: orchestrator_name, snapshot_timeout_ms: 50)
+
+      conn = post(build_conn(), "/api/v1/concurrency", %{"value" => 4})
+      assert %{status: 202, resp_body: body} = conn
+      assert body =~ ~s("max_concurrent_agents":4)
+
+      assert_receive {:orchestrator_call, {:set_concurrency, 4}}, 1_000
+
+      {:ok, persisted} = Jason.decode(File.read!(Path.join(tmp, "config.json")))
+      [project | _] = persisted["projects"]
+      assert project["max_concurrent_agents"] == 4
+    end
+
+    test "presenter surfaces issue title, url, and priority from entry.issue" do
+      orchestrator_name = Module.concat(__MODULE__, :IssueDataOrchestrator)
+
+      snapshot =
+        put_in(static_snapshot(), [:running], [
+          %{
+            issue_id: "issue-http",
+            identifier: "MT-HTTP",
+            issue: %CymphonyElixir.Linear.Issue{
+              id: "issue-http",
+              identifier: "MT-HTTP",
+              title: "Implement feature",
+              url: "https://linear.app/test/issue/MT-HTTP",
+              priority: 2
+            },
+            state: "In Progress",
+            session_id: "thread-http",
+            turn_count: 3,
+            claude_app_server_pid: nil,
+            last_claude_message: nil,
+            last_claude_timestamp: nil,
+            last_claude_event: nil,
+            claude_input_tokens: 1,
+            claude_output_tokens: 2,
+            claude_total_tokens: 3,
+            started_at: DateTime.utc_now()
+          }
+        ])
+
+      {:ok, _pid} = StaticOrchestrator.start_link(name: orchestrator_name, snapshot: snapshot)
+
+      start_test_endpoint(orchestrator: orchestrator_name, snapshot_timeout_ms: 50)
+
+      payload = json_response(get(build_conn(), "/api/v1/state"), 200)
+      [running | _] = payload["running"]
+
+      assert running["issue_title"] == "Implement feature"
+      assert running["issue_url"] == "https://linear.app/test/issue/MT-HTTP"
+      assert running["priority"] == 2
+      assert running["turn_count"] == 3
+    end
+
+    test "resume_dispatch sends :resume to the orchestrator" do
+      orchestrator_name = Module.concat(__MODULE__, :ResumeLiveOrchestrator)
+
+      paused_snapshot = put_in(static_snapshot(), [:polling, :paused], true)
+
+      {:ok, _pid} =
+        StaticOrchestrator.start_link(
+          name: orchestrator_name,
+          snapshot: paused_snapshot,
+          recipient: self()
+        )
+
+      start_test_endpoint(orchestrator: orchestrator_name, snapshot_timeout_ms: 50)
+
+      {:ok, view, _html} = live(build_conn(), "/")
+
+      view |> element(~s|button[phx-click="resume_dispatch"]|) |> render_click()
+      assert_receive {:orchestrator_call, :resume}, 1_000
+    end
+  end
+
   describe "api auth (CYMPHONY_API_TOKEN)" do
     setup do
       original = System.get_env("CYMPHONY_API_TOKEN")
@@ -882,7 +1111,13 @@ defmodule CymphonyElixir.ExtensionsTest do
         }
       ],
       claude_totals: %{input_tokens: 4, output_tokens: 8, total_tokens: 12, seconds_running: 42.5},
-      rate_limits: %{"primary" => %{"remaining" => 11}}
+      rate_limits: %{"primary" => %{"remaining" => 11}},
+      polling: %{
+        next_poll_in_ms: 5_000,
+        poll_interval_ms: 30_000,
+        paused: false,
+        checking?: false
+      }
     }
   end
 

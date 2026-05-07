@@ -355,16 +355,33 @@ Cymphony sweeps the workspace root every 6 hours, deleting only directories whos
 
 ### Pause / resume
 
-Click **Pause** in the dashboard's Polling section to stop dispatching new issues. Running sessions complete normally; queued retries wait until you click **Resume**. Useful before deploys, during rate-limit cool-downs, or when you want to look at the dashboard without new chaos arriving.
+Click **Pause** in the dashboard's Polling section to stop dispatching new issues across all projects. Running sessions complete normally; queued retries wait until you click **Resume**. Each project mini-card also has its own Pause/Resume button if you only want to halt one project. Useful before deploys, during rate-limit cool-downs, or when you want to look at the dashboard without new chaos arriving.
 
 Scriptable via the API:
 
 ```bash
-curl -X POST http://localhost:4089/api/v1/pause     # stop new dispatches
-curl -X POST http://localhost:4089/api/v1/resume    # resume
+curl -X POST http://localhost:4089/api/v1/pause                        # all projects
+curl -X POST 'http://localhost:4089/api/v1/pause?project=AgentFarm'    # one project
+curl -X POST http://localhost:4089/api/v1/resume                       # all
 ```
 
 Pause state is in-memory and clears on daemon restart.
+
+### Concurrency control
+
+The dashboard's Polling section has a numeric input for `max_concurrent_agents`. Submitting a new value updates each running orchestrator immediately and persists to `~/.cymphony/config.json`, so it survives daemon restarts.
+
+Scriptable via the API:
+
+```bash
+curl -X POST -H 'Content-Type: application/json' \
+     -d '{"value": 5}' \
+     'http://localhost:4089/api/v1/concurrency?project=AgentFarm'
+```
+
+### Per-session details
+
+Each running session card shows the Linear issue identifier (linked to the issue), the issue title, a priority badge (Urgent/High/Medium/Low), and the current turn number — pulled from the Linear `%Issue{}` struct that's already cached on the running entry.
 
 ### Auth (optional)
 

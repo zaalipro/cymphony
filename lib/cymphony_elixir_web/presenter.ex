@@ -57,7 +57,15 @@ defmodule CymphonyElixirWeb.Presenter do
           polling: merged.polling,
           projects:
             Enum.map(snapshots, fn %{project_name: name, snapshot: snap} ->
-              %{name: name, running: length(snap.running), retrying: length(snap.retrying)}
+              polling = Map.get(snap, :polling) || %{}
+
+              %{
+                name: name,
+                running: length(snap.running),
+                retrying: length(snap.retrying),
+                paused: Map.get(polling, :paused, false),
+                max_concurrent_agents: Map.get(polling, :max_concurrent_agents)
+              }
             end)
         }
     end
@@ -313,6 +321,9 @@ defmodule CymphonyElixirWeb.Presenter do
     %{
       issue_id: entry.issue_id,
       issue_identifier: entry.identifier,
+      issue_title: issue_field(entry, :title),
+      issue_url: issue_field(entry, :url),
+      priority: issue_field(entry, :priority),
       state: entry.state,
       worker_host: Map.get(entry, :worker_host),
       provider: Map.get(entry, :provider),
@@ -338,6 +349,9 @@ defmodule CymphonyElixirWeb.Presenter do
     %{
       issue_id: entry.issue_id,
       issue_identifier: entry.identifier,
+      issue_title: issue_field(entry, :title),
+      issue_url: issue_field(entry, :url),
+      priority: issue_field(entry, :priority),
       attempt: entry.attempt,
       due_at: due_at_iso8601(entry.due_in_ms),
       error: entry.error,
@@ -351,6 +365,13 @@ defmodule CymphonyElixirWeb.Presenter do
       last_message: nil,
       log_events: []
     }
+  end
+
+  defp issue_field(entry, key) do
+    case Map.get(entry, :issue) do
+      %{} = issue -> Map.get(issue, key)
+      _ -> nil
+    end
   end
 
   defp running_issue_payload(running) do

@@ -5,7 +5,12 @@ defmodule CymphonyElixir.Cymphony.Config do
   @config_file "config.json"
 
   @spec config_dir() :: String.t()
-  def config_dir, do: Path.expand(@config_dir)
+  def config_dir do
+    case Application.get_env(:cymphony_elixir, :config_dir_override) do
+      override when is_binary(override) -> override
+      _ -> Path.expand(@config_dir)
+    end
+  end
 
   @spec config_path() :: String.t()
   def config_path, do: Path.join(config_dir(), @config_file)
@@ -62,6 +67,44 @@ defmodule CymphonyElixir.Cymphony.Config do
       nil -> {:error, :project_not_found}
       project -> {:ok, project}
     end
+  end
+
+  @doc """
+  Updates `max_concurrent_agents` for the named project (or for the entire
+  legacy single-project config if `project_name` is `nil`) and persists to
+  disk. Returns `{:ok, updated_config}` or an error tuple.
+  """
+  @spec update_concurrency(String.t() | nil, pos_integer()) ::
+          {:ok, map()} | {:error, term()}
+  def update_concurrency(project_name, n) when is_integer(n) and n > 0 do
+    with {:ok, config} <- load(),
+         {:ok, updated} <- apply_concurrency(config, project_name, n),
+         :ok <- save(updated) do
+      {:ok, updated}
+    end
+  end
+
+  defp apply_concurrency(%{"projects" => projects} = config, project_name, n)
+       when is_list(projects) do
+    updated_projects =
+      Enum.map(projects, fn project ->
+        cond do
+          is_nil(project_name) ->
+            Map.put(project, "max_concurrent_agents", n)
+
+          project["name"] == project_name ->
+            Map.put(project, "max_concurrent_agents", n)
+
+          true ->
+            project
+        end
+      end)
+
+    {:ok, Map.put(config, "projects", updated_projects)}
+  end
+
+  defp apply_concurrency(config, _project_name, n) when is_map(config) do
+    {:ok, Map.put(config, "max_concurrent_agents", n)}
   end
 
   @spec save(map()) :: :ok | {:error, term()}

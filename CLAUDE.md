@@ -159,7 +159,11 @@ The Phoenix LiveView dashboard (`lib/cymphony_elixir_web/live/dashboard_live.ex`
 | `retry_issue` | Immediately retry a queued issue |
 | `refresh_now` | Trigger Linear refresh from dashboard |
 | `set_provider` | Change provider for a running session (kills and restarts with new provider) |
-| `pause_dispatch` / `resume_dispatch` | Stop/start dispatching new issues; running sessions complete normally |
+| `pause_dispatch` / `resume_dispatch` | Stop/start dispatching new issues for **all** projects; running sessions complete normally |
+| `toggle_project_pause` | Pause or resume dispatching for a single project from its mini-card |
+| `set_concurrency` | Update `max_concurrent_agents` at runtime; persists to `~/.cymphony/config.json` |
+
+Each running session card shows the Linear issue identifier (linked to the issue), title, priority badge (Urgent/High/Medium/Low), and turn count.
 
 ### Refresh behavior
 
@@ -188,8 +192,9 @@ Routes defined in `lib/cymphony_elixir_web/router.ex`:
 | `/api/v1/projects` | GET | Project list with running/retrying counts |
 | `/api/v1/:issue_identifier` | GET | Single issue details (optional `?project=` filter) |
 | `/api/v1/refresh` | POST | Trigger Linear refresh (returns 202) |
-| `/api/v1/pause` | POST | Stop dispatching new issues; running sessions continue. Returns 202. |
-| `/api/v1/resume` | POST | Resume dispatching new issues. Returns 202. |
+| `/api/v1/pause` | POST | Stop dispatching new issues; running sessions continue. Optional `?project=<name>` to scope to one project. Returns 202. |
+| `/api/v1/resume` | POST | Resume dispatching new issues. Optional `?project=<name>`. Returns 202. |
+| `/api/v1/concurrency` | POST | Update `max_concurrent_agents` at runtime. JSON body `{"value": <int>}`, optional `?project=<name>`. Persists to `~/.cymphony/config.json`. Returns 202. |
 | `/api/v1/completed` | GET | Recent completed sessions (last 100, in-memory ring buffer). Optional `?project=<name>` and `?limit=N`. |
 
 All other methods return 405; all other paths return 404.

@@ -5,9 +5,10 @@ defmodule CymphonyElixirWeb.ObservabilityApiController do
 
   use Phoenix.Controller, formats: [:json]
 
-  alias Plug.Conn
+  alias CymphonyElixir.Cymphony.Config, as: CymphonyConfig
   alias CymphonyElixir.{Orchestrator, ProjectSupervisor}
   alias CymphonyElixirWeb.{Endpoint, Presenter}
+  alias Plug.Conn
 
   @spec state(Conn.t(), map()) :: Conn.t()
   def state(conn, _params) do
@@ -73,15 +74,37 @@ defmodule CymphonyElixirWeb.ObservabilityApiController do
   end
 
   @spec pause(Conn.t(), map()) :: Conn.t()
-  def pause(conn, _params) do
-    apply_pause_to_all(:pause)
-    conn |> put_status(202) |> json(%{paused: true})
+  def pause(conn, params) do
+    apply_pause(:pause, params["project"])
+    conn |> put_status(202) |> json(%{paused: true, project: params["project"]})
   end
 
   @spec resume(Conn.t(), map()) :: Conn.t()
-  def resume(conn, _params) do
-    apply_pause_to_all(:resume)
-    conn |> put_status(202) |> json(%{paused: false})
+  def resume(conn, params) do
+    apply_pause(:resume, params["project"])
+    conn |> put_status(202) |> json(%{paused: false, project: params["project"]})
+  end
+
+  @spec concurrency(Conn.t(), map()) :: Conn.t()
+  def concurrency(conn, params) do
+    project = params["project"]
+
+    case parse_concurrency(params["value"]) do
+      {:ok, n} ->
+        apply_concurrency(n, project)
+
+        conn
+        |> put_status(202)
+        |> json(%{max_concurrent_agents: n, project: project})
+
+      :error ->
+        error_response(
+          conn,
+          422,
+          "invalid_concurrency",
+          "concurrency 'value' must be a positive integer"
+        )
+    end
   end
 
   @spec method_not_allowed(Conn.t(), map()) :: Conn.t()
@@ -108,6 +131,22 @@ defmodule CymphonyElixirWeb.ObservabilityApiController do
     Endpoint.config(:snapshot_timeout_ms) || 15_000
   end
 
+  defp apply_pause(action, nil), do: apply_pause_to_all(action)
+  defp apply_pause(action, ""), do: apply_pause_to_all(action)
+
+  defp apply_pause(action, project_name) when is_binary(project_name) do
+    case ProjectSupervisor.lookup(project_name, :orchestrator) do
+      pid when is_pid(pid) ->
+        case action do
+          :pause -> Orchestrator.pause(pid)
+          :resume -> Orchestrator.resume(pid)
+        end
+
+      _ ->
+        :unavailable
+    end
+  end
+
   defp apply_pause_to_all(action) do
     case ProjectSupervisor.list_orchestrators() do
       [] ->
@@ -126,4 +165,45 @@ defmodule CymphonyElixirWeb.ObservabilityApiController do
         end)
     end
   end
+
+  defp apply_concurrency(n, nil), do: apply_concurrency_to_all(n)
+  defp apply_concurrency(n, ""), do: apply_concurrency_to_all(n)
+
+  defp apply_concurrency(n, project_name) when is_binary(project_name) do
+    case ProjectSupervisor.lookup(project_name, :orchestrator) do
+      pid when is_pid(pid) ->
+        Orchestrator.set_concurrency(pid, n)
+        _ = CymphonyConfig.update_concurrency(project_name, n)
+        :ok
+
+      _ ->
+        :unavailable
+    end
+  end
+
+  defp apply_concurrency_to_all(n) do
+    case ProjectSupervisor.list_orchestrators() do
+      [] ->
+        Orchestrator.set_concurrency(orchestrator(), n)
+        _ = CymphonyConfig.update_concurrency(nil, n)
+        :ok
+
+      orchestrators ->
+        Enum.each(orchestrators, fn {project, pid} ->
+          Orchestrator.set_concurrency(pid, n)
+          _ = CymphonyConfig.update_concurrency(project, n)
+        end)
+    end
+  end
+
+  defp parse_concurrency(value) when is_integer(value) and value > 0, do: {:ok, value}
+
+  defp parse_concurrency(value) when is_binary(value) do
+    case Integer.parse(String.trim(value)) do
+      {n, ""} when n > 0 -> {:ok, n}
+      _ -> :error
+    end
+  end
+
+  defp parse_concurrency(_), do: :error
 end

@@ -1328,6 +1328,16 @@ defmodule CymphonyElixir.Orchestrator do
     :exit, _ -> :unavailable
   end
 
+  @spec set_concurrency(GenServer.server(), pos_integer()) ::
+          :ok | {:error, :invalid_concurrency} | :unavailable
+  def set_concurrency(server, n) when is_integer(n) and n > 0 do
+    GenServer.call(server, {:set_concurrency, n})
+  catch
+    :exit, _ -> :unavailable
+  end
+
+  def set_concurrency(_server, _n), do: {:error, :invalid_concurrency}
+
   @spec snapshot() :: map() | :timeout | :unavailable
   def snapshot, do: snapshot(__MODULE__, 15_000)
 
@@ -1353,6 +1363,7 @@ defmodule CymphonyElixir.Orchestrator do
         %{
           issue_id: issue_id,
           identifier: metadata.identifier,
+          issue: Map.get(metadata, :issue),
           state: metadata.issue.state,
           worker_host: Map.get(metadata, :worker_host),
           provider: Map.get(metadata, :provider),
@@ -1398,7 +1409,8 @@ defmodule CymphonyElixir.Orchestrator do
          checking?: state.poll_check_in_progress == true,
          next_poll_in_ms: next_poll_in_ms(state.next_poll_due_at_ms, now_ms),
          poll_interval_ms: state.poll_interval_ms,
-         paused: state.paused
+         paused: state.paused,
+         max_concurrent_agents: state.max_concurrent_agents || state.config.agent.max_concurrent_agents
        }
      }, state}
   end

@@ -5,6 +5,7 @@ defmodule CymphonyElixirWeb.DashboardLive do
 
   use Phoenix.LiveView, layout: {CymphonyElixirWeb.Layouts, :app}
 
+  alias CymphonyElixir.Cymphony.Config, as: CymphonyConfig
   alias CymphonyElixirWeb.{Endpoint, ObservabilityPubSub, Presenter}
 
   @version Mix.Project.config()[:version]
@@ -72,13 +73,13 @@ defmodule CymphonyElixirWeb.DashboardLive do
   end
 
   @impl true
-  def handle_event("kill_issue", %{"issue" => issue_id}, socket) do
-    {:noreply, send_issue_command(socket, issue_id, :kill_issue)}
+  def handle_event("kill_issue", %{"issue" => issue_identifier}, socket) do
+    {:noreply, send_issue_command(socket, issue_identifier, :kill_issue)}
   end
 
   @impl true
-  def handle_event("retry_issue", %{"issue" => issue_id}, socket) do
-    {:noreply, send_issue_command(socket, issue_id, :retry_issue_now)}
+  def handle_event("retry_issue", %{"issue" => issue_identifier}, socket) do
+    {:noreply, send_issue_command(socket, issue_identifier, :retry_issue_now)}
   end
 
   @impl true
@@ -103,6 +104,32 @@ defmodule CymphonyElixirWeb.DashboardLive do
     apply_pause_to_all(:resume)
     spawn_payload_load()
     {:noreply, put_flash(socket, :info, "Dispatch resumed")}
+  end
+
+  @impl true
+  def handle_event("set_concurrency", %{"value" => raw_value}, socket) do
+    case parse_concurrency(raw_value) do
+      {:ok, n} ->
+        apply_concurrency_to_all(n)
+        spawn_payload_load()
+
+        {:noreply, put_flash(socket, :info, "Concurrency set to #{n}; persisted to ~/.cymphony/config.json")}
+
+      :error ->
+        {:noreply, put_flash(socket, :error, "Concurrency must be a positive integer")}
+    end
+  end
+
+  @impl true
+  def handle_event("toggle_project_pause", %{"project" => project_name}, socket) do
+    case toggle_project_pause(socket.assigns.payload, project_name) do
+      :ok ->
+        spawn_payload_load()
+        {:noreply, socket}
+
+      {:error, :not_found} ->
+        {:noreply, put_flash(socket, :error, "Project orchestrator not found: #{project_name}")}
+    end
   end
 
   @impl true
@@ -222,8 +249,13 @@ defmodule CymphonyElixirWeb.DashboardLive do
         <%= if @payload[:projects] do %>
           <section class="project-grid">
             <%= for project <- @payload.projects do %>
-              <article class="project-mini-card">
-                <p class="project-mini-name"><%= project.name %></p>
+              <article class={"project-mini-card" <> if(Map.get(project, :paused, false), do: " project-mini-card-paused", else: "")}>
+                <div class="project-mini-header">
+                  <p class="project-mini-name"><%= project.name %></p>
+                  <%= if Map.get(project, :paused, false) do %>
+                    <span class="state-badge state-badge-warning">Paused</span>
+                  <% end %>
+                </div>
                 <div class="project-mini-stats">
                   <span class="project-mini-stat">
                     <span class="project-mini-value numeric"><%= project.running %></span>
@@ -233,6 +265,16 @@ defmodule CymphonyElixirWeb.DashboardLive do
                     <span class="project-mini-value numeric"><%= project.retrying %></span>
                     <span class="project-mini-label">retrying</span>
                   </span>
+                </div>
+                <div class="project-mini-actions">
+                  <button
+                    type="button"
+                    class="subtle-button"
+                    phx-click="toggle_project_pause"
+                    phx-value-project={project.name}
+                  >
+                    <%= if Map.get(project, :paused, false), do: "Resume", else: "Pause" %>
+                  </button>
                 </div>
               </article>
             <% end %>
@@ -279,17 +321,31 @@ defmodule CymphonyElixirWeb.DashboardLive do
               <h2 class="section-title">Polling</h2>
               <p class="section-copy">Linear issue tracker refresh schedule.</p>
             </div>
-            <%= if @payload.polling do %>
-              <%= if Map.get(@payload.polling, :paused, false) do %>
-                <button type="button" class="subtle-button" phx-click="resume_dispatch">
-                  Resume
-                </button>
-              <% else %>
-                <button type="button" class="subtle-button" phx-click="pause_dispatch">
-                  Pause
-                </button>
+            <div class="polling-controls">
+              <%= if @payload.polling do %>
+                <form phx-submit="set_concurrency" class="concurrency-form">
+                  <label class="concurrency-label" for="concurrency-input">Concurrency</label>
+                  <input
+                    id="concurrency-input"
+                    type="number"
+                    name="value"
+                    min="1"
+                    value={Map.get(@payload.polling, :max_concurrent_agents) || ""}
+                    class="concurrency-input"
+                  />
+                  <button type="submit" class="subtle-button">Set</button>
+                </form>
+                <%= if Map.get(@payload.polling, :paused, false) do %>
+                  <button type="button" class="subtle-button" phx-click="resume_dispatch">
+                    Resume
+                  </button>
+                <% else %>
+                  <button type="button" class="subtle-button" phx-click="pause_dispatch">
+                    Pause
+                  </button>
+                <% end %>
               <% end %>
-            <% end %>
+            </div>
           </div>
 
           <%= if @payload.polling do %>
@@ -311,6 +367,14 @@ defmodule CymphonyElixirWeb.DashboardLive do
                 <div class="polling-item">
                   <span class="polling-label">Interval</span>
                   <span class="polling-value"><%= div(@payload.polling.poll_interval_ms, 1_000) %>s</span>
+                </div>
+              <% end %>
+              <%= if Map.get(@payload.polling, :max_concurrent_agents) do %>
+                <div class="polling-item">
+                  <span class="polling-label">Concurrency</span>
+                  <span class="polling-value numeric">
+                    <%= Map.get(@payload.polling, :max_concurrent_agents) %>
+                  </span>
                 </div>
               <% end %>
             </div>
@@ -432,9 +496,23 @@ defmodule CymphonyElixirWeb.DashboardLive do
                 <article class="session-card">
                   <div class="session-card-header">
                     <div class="session-card-identity">
-                      <span class="session-card-issue-id"><%= entry.issue_identifier %></span>
+                      <span class="session-card-issue-id">
+                        <%= if entry.issue_url do %>
+                          <a href={entry.issue_url} target="_blank" rel="noopener" class="session-card-issue-link">
+                            <%= entry.issue_identifier %>
+                          </a>
+                        <% else %>
+                          <%= entry.issue_identifier %>
+                        <% end %>
+                      </span>
+                      <%= if entry.issue_title do %>
+                        <span class="session-card-issue-title"><%= entry.issue_title %></span>
+                      <% end %>
                       <div class="session-card-badges">
                         <span class={state_badge_class(entry.state)}><%= entry.state %></span>
+                        <%= if priority_label = priority_label(entry.priority) do %>
+                          <span class={priority_badge_class(entry.priority)}><%= priority_label %></span>
+                        <% end %>
                         <%= if entry.stalled do %>
                           <span class="state-badge state-badge-stalled">Stalled</span>
                         <% end %>
@@ -476,7 +554,7 @@ defmodule CymphonyElixirWeb.DashboardLive do
                       <span class="session-stat-value numeric">
                         <%= format_runtime_seconds(runtime_seconds_from_started_at(entry.started_at, @now)) %>
                       </span>
-                      <span class="session-stat-detail"><%= entry.turn_count %> turns</span>
+                      <span class="session-stat-detail">Turn <%= entry.turn_count %></span>
                     </div>
                     <div class="session-stat">
                       <span class="session-stat-label">Tokens</span>
@@ -748,6 +826,58 @@ defmodule CymphonyElixirWeb.DashboardLive do
     end
   end
 
+  defp apply_concurrency_to_all(n) do
+    case CymphonyElixir.ProjectSupervisor.list_orchestrators() do
+      [] ->
+        CymphonyElixir.Orchestrator.set_concurrency(orchestrator(), n)
+        _ = CymphonyConfig.update_concurrency(nil, n)
+        :ok
+
+      orchestrators ->
+        Enum.each(orchestrators, fn {project, pid} ->
+          CymphonyElixir.Orchestrator.set_concurrency(pid, n)
+          _ = CymphonyConfig.update_concurrency(project, n)
+        end)
+    end
+  end
+
+  defp parse_concurrency(value) when is_integer(value) and value > 0, do: {:ok, value}
+
+  defp parse_concurrency(value) when is_binary(value) do
+    case Integer.parse(String.trim(value)) do
+      {n, ""} when n > 0 -> {:ok, n}
+      _ -> :error
+    end
+  end
+
+  defp parse_concurrency(_), do: :error
+
+  defp toggle_project_pause(payload, project_name) do
+    case CymphonyElixir.ProjectSupervisor.lookup(project_name, :orchestrator) do
+      pid when is_pid(pid) ->
+        project = Enum.find(payload[:projects] || [], &(&1.name == project_name))
+        currently_paused = project && Map.get(project, :paused, false)
+        action = if currently_paused, do: :resume, else: :pause
+        spawn_orchestrator_pause_action(pid, action)
+        :ok
+
+      _ ->
+        {:error, :not_found}
+    end
+  end
+
+  defp spawn_orchestrator_pause_action(pid, :pause) do
+    Task.Supervisor.start_child(CymphonyElixir.TaskSupervisor, fn ->
+      CymphonyElixir.Orchestrator.pause(pid)
+    end)
+  end
+
+  defp spawn_orchestrator_pause_action(pid, :resume) do
+    Task.Supervisor.start_child(CymphonyElixir.TaskSupervisor, fn ->
+      CymphonyElixir.Orchestrator.resume(pid)
+    end)
+  end
+
   defp snapshot_timeout_ms do
     Endpoint.config(:snapshot_timeout_ms) || 15_000
   end
@@ -804,6 +934,18 @@ defmodule CymphonyElixirWeb.DashboardLive do
       true -> base
     end
   end
+
+  defp priority_label(1), do: "Urgent"
+  defp priority_label(2), do: "High"
+  defp priority_label(3), do: "Medium"
+  defp priority_label(4), do: "Low"
+  defp priority_label(_), do: nil
+
+  defp priority_badge_class(1), do: "priority-badge priority-badge-urgent"
+  defp priority_badge_class(2), do: "priority-badge priority-badge-high"
+  defp priority_badge_class(3), do: "priority-badge priority-badge-medium"
+  defp priority_badge_class(4), do: "priority-badge priority-badge-low"
+  defp priority_badge_class(_), do: "priority-badge"
 
   defp schedule_runtime_tick do
     Process.send_after(self(), :runtime_tick, @runtime_tick_ms)
@@ -1000,12 +1142,13 @@ defmodule CymphonyElixirWeb.DashboardLive do
     end)
   end
 
-  defp send_issue_command(socket, issue_id, command) do
+  defp send_issue_command(socket, issue_identifier, command) do
     entry =
-      Enum.find(socket.assigns.payload.running, &(&1.issue_identifier == issue_id)) ||
-        Enum.find(socket.assigns.payload.retrying, &(&1.issue_identifier == issue_id)) ||
+      Enum.find(socket.assigns.payload.running, &(&1.issue_identifier == issue_identifier)) ||
+        Enum.find(socket.assigns.payload.retrying, &(&1.issue_identifier == issue_identifier)) ||
         %{}
 
+    issue_id = Map.get(entry, :issue_id)
     project_name = Map.get(entry, :project_name)
 
     orchestrator_pid =
@@ -1015,7 +1158,7 @@ defmodule CymphonyElixirWeb.DashboardLive do
         orchestrator()
       end
 
-    if is_pid(orchestrator_pid) do
+    if is_binary(issue_id) and orchestrator_addressable?(orchestrator_pid) do
       Task.Supervisor.start_child(CymphonyElixir.TaskSupervisor, fn ->
         try do
           GenServer.call(orchestrator_pid, {command, issue_id}, 10_000)
@@ -1028,6 +1171,12 @@ defmodule CymphonyElixirWeb.DashboardLive do
     socket
   end
 
+  defp orchestrator_addressable?(pid) when is_pid(pid), do: true
+  defp orchestrator_addressable?(name) when is_atom(name) and not is_nil(name), do: true
+  defp orchestrator_addressable?({:via, _, _}), do: true
+  defp orchestrator_addressable?({:global, _}), do: true
+  defp orchestrator_addressable?(_), do: false
+
   defp send_set_provider(socket, entry, issue_id, provider) do
     project_name = Map.get(entry, :project_name)
 
@@ -1038,7 +1187,7 @@ defmodule CymphonyElixirWeb.DashboardLive do
         orchestrator()
       end
 
-    if is_pid(orchestrator_pid) do
+    if orchestrator_addressable?(orchestrator_pid) do
       Task.Supervisor.start_child(CymphonyElixir.TaskSupervisor, fn ->
         try do
           GenServer.call(orchestrator_pid, {:set_issue_provider, issue_id, provider}, 10_000)
