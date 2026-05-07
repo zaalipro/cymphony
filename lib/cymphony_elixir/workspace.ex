@@ -313,12 +313,12 @@ defmodule CymphonyElixir.Workspace do
     end
   end
 
-  # Serialize after_create per project so the storm of `git clone`s on the first
-  # poll tick doesn't race on SSH agent / known_hosts / GitHub burst limits.
-  # Scoped by workspace root: different projects stay independent.
-  defp with_after_create_lock(config, fun) do
-    lock_id = {{:cymphony_after_create, workspace_root(config)}, self()}
-    :global.trans(lock_id, fun, [Node.self()], :infinity)
+  # Serialize after_create across the whole node so the storm of `git clone`s on
+  # the first poll tick doesn't race on SSH agent / known_hosts / GitHub burst
+  # limits. SSH-agent state is host-wide, so different projects must also wait.
+  # The hook timeout still kills hangs, releasing the lock.
+  defp with_after_create_lock(_config, fun) do
+    :global.trans({:cymphony_after_create, self()}, fun, [Node.self()], :infinity)
   end
 
   defp maybe_run_before_remove_hook(workspace, nil) do

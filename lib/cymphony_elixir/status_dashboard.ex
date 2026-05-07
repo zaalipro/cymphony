@@ -317,7 +317,8 @@ defmodule CymphonyElixir.StatusDashboard do
              retrying: retrying,
              claude_totals: claude_totals,
              rate_limits: Map.get(snapshot, :rate_limits),
-             polling: Map.get(snapshot, :polling)
+             polling: Map.get(snapshot, :polling),
+             per_project: Map.get(snapshot, :per_project, [])
            }},
           update_token_samples(token_samples, now_ms, total_tokens)
         }
