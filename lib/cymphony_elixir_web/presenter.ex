@@ -24,6 +24,10 @@ defmodule CymphonyElixirWeb.Presenter do
               },
               running: Enum.map(snapshot.running, &running_entry_payload/1),
               retrying: Enum.map(snapshot.retrying, &retry_entry_payload/1),
+              recent_completed:
+                snapshot
+                |> Map.get(:recent_completed, [])
+                |> Enum.map(&completed_entry_payload/1),
               claude_totals: normalize_claude_totals(snapshot.claude_totals),
               rate_limits: snapshot.rate_limits,
               polling: Map.get(snapshot, :polling)
@@ -47,6 +51,7 @@ defmodule CymphonyElixirWeb.Presenter do
           },
           running: Enum.map(merged.running, &running_entry_payload/1),
           retrying: Enum.map(merged.retrying, &retry_entry_payload/1),
+          recent_completed: Enum.map(merged.recent_completed, &completed_entry_payload/1),
           claude_totals: merged.claude_totals,
           rate_limits: merged.rate_limits,
           polling: merged.polling,
@@ -56,6 +61,23 @@ defmodule CymphonyElixirWeb.Presenter do
             end)
         }
     end
+  end
+
+  @spec completed_entry_payload(map()) :: map()
+  def completed_entry_payload(entry) do
+    %{
+      issue_id: Map.get(entry, :issue_id),
+      issue_identifier: Map.get(entry, :identifier),
+      project_name: Map.get(entry, :project_name),
+      ended_at: iso8601(Map.get(entry, :ended_at)),
+      started_at: iso8601(Map.get(entry, :started_at)),
+      runtime_seconds: Map.get(entry, :runtime_seconds),
+      claude_input_tokens: Map.get(entry, :claude_input_tokens, 0),
+      claude_output_tokens: Map.get(entry, :claude_output_tokens, 0),
+      claude_total_tokens: Map.get(entry, :claude_total_tokens, 0),
+      worker_host: Map.get(entry, :worker_host),
+      workspace_path: Map.get(entry, :workspace_path)
+    }
   end
 
   @spec projects_payload() :: [map()]
@@ -450,6 +472,16 @@ defmodule CymphonyElixirWeb.Presenter do
         Enum.map(snap.retrying, &Map.put(&1, :project_name, project_name))
       end)
 
+    all_completed =
+      snapshots
+      |> Enum.flat_map(fn %{project_name: project_name, snapshot: snap} ->
+        snap
+        |> Map.get(:recent_completed, [])
+        |> Enum.map(&Map.put(&1, :project_name, project_name))
+      end)
+      |> Enum.sort_by(fn entry -> entry[:ended_at] end, {:desc, DateTime})
+      |> Enum.take(100)
+
     merged_totals =
       Enum.reduce(snapshots, %{input_tokens: 0, output_tokens: 0, total_tokens: 0, seconds_running: 0}, fn %{snapshot: snap}, acc ->
         totals = Map.get(snap, :claude_totals, %{input_tokens: 0, output_tokens: 0, total_tokens: 0, seconds_running: 0})
@@ -467,6 +499,7 @@ defmodule CymphonyElixirWeb.Presenter do
     %{
       running: all_running,
       retrying: all_retrying,
+      recent_completed: all_completed,
       claude_totals: merged_totals,
       rate_limits: Map.get(first_snap, :rate_limits),
       polling: Map.get(first_snap, :polling)

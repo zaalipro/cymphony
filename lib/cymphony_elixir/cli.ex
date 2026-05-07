@@ -186,7 +186,7 @@ defmodule CymphonyElixir.CLI do
             read_all_logs(log_path) |> tail_lines(n)
         end
 
-      IO.write(output)
+      IO.binwrite(output)
     else
       IO.puts(:stderr, "No log file found at #{log_path}")
     end

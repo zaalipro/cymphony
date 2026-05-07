@@ -391,7 +391,8 @@ defmodule CymphonyElixir.ExtensionsTest do
                "seconds_running" => 42.5
              },
              "polling" => nil,
-             "rate_limits" => %{"primary" => %{"remaining" => 11}}
+             "rate_limits" => %{"primary" => %{"remaining" => 11}},
+             "recent_completed" => []
            }
 
     conn = get(build_conn(), "/api/v1/MT-HTTP")
@@ -563,7 +564,7 @@ defmodule CymphonyElixir.ExtensionsTest do
     assert html =~ "Live"
     assert html =~ "Offline"
     assert html =~ "Copy ID"
-    assert html =~ "Claude update"
+    assert html =~ "Last activity"
     refute html =~ "data-runtime-clock="
     refute html =~ "setInterval(refreshRuntimeClocks"
     refute html =~ "Refresh now"
@@ -621,6 +622,159 @@ defmodule CymphonyElixir.ExtensionsTest do
     {:ok, _view, html} = live(build_conn(), "/")
     assert html =~ "Snapshot unavailable"
     assert html =~ "snapshot_unavailable"
+  end
+
+  describe "recent completions" do
+    test "GET /api/v1/completed returns the ring buffer; ?limit=N truncates" do
+      orchestrator_name = Module.concat(__MODULE__, :CompletedOrchestrator)
+      {:ok, pid} = CymphonyElixir.Orchestrator.start_link(name: orchestrator_name)
+
+      on_exit(fn -> if Process.alive?(pid), do: GenServer.stop(pid) end)
+
+      # Inject 3 completed records directly into orchestrator state.
+      :sys.replace_state(pid, fn state ->
+        records =
+          for n <- 1..3 do
+            %{
+              issue_id: "issue-#{n}",
+              identifier: "MT-#{n}",
+              project_name: nil,
+              ended_at: DateTime.add(DateTime.utc_now(), -n, :second),
+              started_at: DateTime.add(DateTime.utc_now(), -60 * n, :second),
+              runtime_seconds: 60,
+              claude_input_tokens: 10,
+              claude_output_tokens: 20,
+              claude_total_tokens: 30,
+              last_event: nil,
+              last_message: nil,
+              worker_host: nil,
+              workspace_path: nil
+            }
+          end
+
+        %{state | recent_completed: records}
+      end)
+
+      start_test_endpoint(orchestrator: orchestrator_name, snapshot_timeout_ms: 200)
+
+      conn = get(build_conn(), "/api/v1/completed")
+      payload = json_response(conn, 200)
+
+      assert length(payload["recent_completed"]) == 3
+      assert hd(payload["recent_completed"])["issue_identifier"] == "MT-1"
+
+      conn = get(build_conn(), "/api/v1/completed?limit=2")
+      payload = json_response(conn, 200)
+      assert length(payload["recent_completed"]) == 2
+    end
+  end
+
+  describe "pause / resume" do
+    test "POST /api/v1/pause sets paused flag and POST /api/v1/resume clears it" do
+      orchestrator_name = Module.concat(__MODULE__, :PauseOrchestrator)
+      {:ok, pid} = CymphonyElixir.Orchestrator.start_link(name: orchestrator_name)
+
+      on_exit(fn -> if Process.alive?(pid), do: GenServer.stop(pid) end)
+
+      start_test_endpoint(orchestrator: orchestrator_name, snapshot_timeout_ms: 50)
+
+      assert %{status: 202, resp_body: pause_body} = post(build_conn(), "/api/v1/pause", %{})
+      assert pause_body =~ ~s("paused":true)
+
+      snapshot = CymphonyElixir.Orchestrator.snapshot(orchestrator_name, 1_000)
+      assert snapshot.polling.paused == true
+
+      assert %{status: 202, resp_body: resume_body} = post(build_conn(), "/api/v1/resume", %{})
+      assert resume_body =~ ~s("paused":false)
+
+      snapshot = CymphonyElixir.Orchestrator.snapshot(orchestrator_name, 1_000)
+      assert snapshot.polling.paused == false
+    end
+  end
+
+  describe "api auth (CYMPHONY_API_TOKEN)" do
+    setup do
+      original = System.get_env("CYMPHONY_API_TOKEN")
+
+      on_exit(fn ->
+        if is_nil(original) do
+          System.delete_env("CYMPHONY_API_TOKEN")
+        else
+          System.put_env("CYMPHONY_API_TOKEN", original)
+        end
+      end)
+
+      :ok
+    end
+
+    test "without env var, all routes are public (passthrough)" do
+      System.delete_env("CYMPHONY_API_TOKEN")
+
+      orchestrator_name = Module.concat(__MODULE__, :AuthPassthroughOrchestrator)
+
+      {:ok, _pid} =
+        StaticOrchestrator.start_link(name: orchestrator_name, snapshot: static_snapshot())
+
+      start_test_endpoint(orchestrator: orchestrator_name, snapshot_timeout_ms: 50)
+
+      assert %{status: 200} = get(build_conn(), "/api/v1/state")
+    end
+
+    test "with env var set, missing token gets 401 on api and dashboard" do
+      System.put_env("CYMPHONY_API_TOKEN", "secret123")
+
+      orchestrator_name = Module.concat(__MODULE__, :AuthGatedOrchestrator)
+
+      {:ok, _pid} =
+        StaticOrchestrator.start_link(name: orchestrator_name, snapshot: static_snapshot())
+
+      start_test_endpoint(orchestrator: orchestrator_name, snapshot_timeout_ms: 50)
+
+      assert %{status: 401} = get(build_conn(), "/api/v1/state")
+      assert %{status: 401} = get(build_conn(), "/")
+    end
+
+    test "with env var set, wrong token gets 401" do
+      System.put_env("CYMPHONY_API_TOKEN", "secret123")
+
+      orchestrator_name = Module.concat(__MODULE__, :AuthWrongOrchestrator)
+
+      {:ok, _pid} =
+        StaticOrchestrator.start_link(name: orchestrator_name, snapshot: static_snapshot())
+
+      start_test_endpoint(orchestrator: orchestrator_name, snapshot_timeout_ms: 50)
+
+      conn = build_conn() |> Plug.Conn.put_req_header("authorization", "Bearer wrong")
+      assert %{status: 401} = get(conn, "/api/v1/state")
+    end
+
+    test "with env var set, correct Bearer token allows access" do
+      System.put_env("CYMPHONY_API_TOKEN", "secret123")
+
+      orchestrator_name = Module.concat(__MODULE__, :AuthOkOrchestrator)
+
+      {:ok, _pid} =
+        StaticOrchestrator.start_link(name: orchestrator_name, snapshot: static_snapshot())
+
+      start_test_endpoint(orchestrator: orchestrator_name, snapshot_timeout_ms: 50)
+
+      conn = build_conn() |> Plug.Conn.put_req_header("authorization", "Bearer secret123")
+      assert %{status: 200} = get(conn, "/api/v1/state")
+    end
+
+    test "with env var set, ?token=<correct> redirects and sets session for browser" do
+      System.put_env("CYMPHONY_API_TOKEN", "secret123")
+
+      orchestrator_name = Module.concat(__MODULE__, :AuthQueryOrchestrator)
+
+      {:ok, _pid} =
+        StaticOrchestrator.start_link(name: orchestrator_name, snapshot: static_snapshot())
+
+      start_test_endpoint(orchestrator: orchestrator_name, snapshot_timeout_ms: 50)
+
+      conn = get(build_conn(), "/?token=secret123")
+      assert conn.status == 302
+    end
   end
 
   test "http server serves embedded assets, accepts form posts, and rejects invalid hosts" do

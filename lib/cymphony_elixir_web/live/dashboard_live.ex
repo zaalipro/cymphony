@@ -5,7 +5,7 @@ defmodule CymphonyElixirWeb.DashboardLive do
 
   use Phoenix.LiveView, layout: {CymphonyElixirWeb.Layouts, :app}
 
-  alias CymphonyElixirWeb.{Endpoint, Presenter}
+  alias CymphonyElixirWeb.{Endpoint, ObservabilityPubSub, Presenter}
 
   @version Mix.Project.config()[:version]
   @runtime_tick_ms 1_000
@@ -21,20 +21,26 @@ defmodule CymphonyElixirWeb.DashboardLive do
 
   @impl true
   def mount(_params, _session, socket) do
+    connected? = connected?(socket)
+    initial_payload = if connected?, do: load_payload(), else: @default_payload
+
+    last_refresh =
+      if connected?, do: System.monotonic_time(:millisecond), else: nil
+
     socket =
       socket
-      |> assign(:payload, @default_payload)
+      |> assign(:payload, initial_payload)
       |> assign(:now, DateTime.utc_now())
       |> assign(:stalled_alert_dismissed, false)
       |> assign(:expanded_issue_ids, MapSet.new())
       |> assign(:filter_project, nil)
-      |> assign(:token_samples, [])
+      |> assign(:token_samples, update_token_samples([], initial_payload))
       |> assign(:version, @version)
-      |> assign(:last_payload_refresh, nil)
+      |> assign(:last_payload_refresh, last_refresh)
 
-    if connected?(socket) do
+    if connected? do
       schedule_runtime_tick()
-      spawn_payload_load()
+      ObservabilityPubSub.subscribe()
     end
 
     {:ok, socket}
@@ -86,6 +92,20 @@ defmodule CymphonyElixirWeb.DashboardLive do
   end
 
   @impl true
+  def handle_event("pause_dispatch", _params, socket) do
+    apply_pause_to_all(:pause)
+    spawn_payload_load()
+    {:noreply, put_flash(socket, :info, "Dispatch paused — running sessions will complete normally")}
+  end
+
+  @impl true
+  def handle_event("resume_dispatch", _params, socket) do
+    apply_pause_to_all(:resume)
+    spawn_payload_load()
+    {:noreply, put_flash(socket, :info, "Dispatch resumed")}
+  end
+
+  @impl true
   def handle_event("set_provider", %{"issue" => issue_identifier, "provider" => provider}, socket) do
     provider = String.trim(provider)
 
@@ -99,6 +119,12 @@ defmodule CymphonyElixirWeb.DashboardLive do
     end
 
     {:noreply, socket}
+  end
+
+  @impl true
+  def handle_info(:observability_updated, socket) do
+    spawn_payload_load()
+    {:noreply, assign(socket, :last_payload_refresh, System.monotonic_time(:millisecond))}
   end
 
   @impl true
@@ -253,6 +279,17 @@ defmodule CymphonyElixirWeb.DashboardLive do
               <h2 class="section-title">Polling</h2>
               <p class="section-copy">Linear issue tracker refresh schedule.</p>
             </div>
+            <%= if @payload.polling do %>
+              <%= if Map.get(@payload.polling, :paused, false) do %>
+                <button type="button" class="subtle-button" phx-click="resume_dispatch">
+                  Resume
+                </button>
+              <% else %>
+                <button type="button" class="subtle-button" phx-click="pause_dispatch">
+                  Pause
+                </button>
+              <% end %>
+            <% end %>
           </div>
 
           <%= if @payload.polling do %>
@@ -260,10 +297,13 @@ defmodule CymphonyElixirWeb.DashboardLive do
               <div class="polling-item">
                 <span class="polling-label">Next poll</span>
                 <span class="polling-value">
-                  <%= if @payload.polling.checking? do %>
-                    <span class="polling-live">Checking now…</span>
-                  <% else %>
-                    <%= format_poll_countdown(@payload.polling.next_poll_in_ms, @now) %>
+                  <%= cond do %>
+                    <% Map.get(@payload.polling, :paused, false) -> %>
+                      <span class="polling-live">Paused — new dispatches stopped</span>
+                    <% @payload.polling.checking? -> %>
+                      <span class="polling-live">Checking now…</span>
+                    <% true -> %>
+                      <%= format_poll_countdown(@payload.polling.next_poll_in_ms, @now) %>
                   <% end %>
                 </span>
               </div>
@@ -617,6 +657,58 @@ defmodule CymphonyElixirWeb.DashboardLive do
             </div>
           <% end %>
         </section>
+
+        <%= if @payload[:recent_completed] && @payload.recent_completed != [] do %>
+          <section class="section-card">
+            <div class="section-header">
+              <div>
+                <h2 class="section-title">Recent completions</h2>
+                <p class="section-copy">Last <%= length(@payload.recent_completed) %> agent runs that wrapped up. Cleared on daemon restart.</p>
+              </div>
+            </div>
+
+            <div class="session-card-grid">
+              <%= for entry <- @payload.recent_completed do %>
+                <article class="retry-card">
+                  <div class="retry-card-header">
+                    <div class="retry-card-identity">
+                      <span class="retry-card-issue-id"><%= entry.issue_identifier %></span>
+                      <div class="retry-card-badges">
+                        <span class="state-badge state-badge-success">Done</span>
+                        <span class="host-badge"><%= entry.worker_host || "local" %></span>
+                        <%= if Map.get(entry, :project_name) do %>
+                          <span class="session-card-project-badge"><%= entry.project_name %></span>
+                        <% end %>
+                      </div>
+                    </div>
+                    <div class="retry-card-countdown">
+                      <span class="retry-countdown-value numeric">
+                        <%= format_runtime_seconds(entry.runtime_seconds || 0) %>
+                      </span>
+                      <span class="retry-countdown-label">
+                        <%= format_int(entry.claude_total_tokens) %> tokens
+                      </span>
+                    </div>
+                  </div>
+                  <div class="retry-card-body">
+                    <div class="retry-card-meta">
+                      <%= if entry.workspace_path do %>
+                        <span class="retry-meta-item">
+                          <span class="mono" style="font-size:0.82rem;"><%= entry.workspace_path %></span>
+                        </span>
+                      <% end %>
+                      <%= if entry.ended_at do %>
+                        <span class="retry-meta-item">
+                          <span class="mono" style="font-size:0.78rem;color:var(--muted);">ended <%= entry.ended_at %></span>
+                        </span>
+                      <% end %>
+                    </div>
+                  </div>
+                </article>
+              <% end %>
+            </div>
+          </section>
+        <% end %>
       <% end %>
     </section>
     """
@@ -636,6 +728,24 @@ defmodule CymphonyElixirWeb.DashboardLive do
 
   defp orchestrator do
     Endpoint.config(:orchestrator) || CymphonyElixir.Orchestrator
+  end
+
+  defp apply_pause_to_all(action) do
+    case CymphonyElixir.ProjectSupervisor.list_orchestrators() do
+      [] ->
+        case action do
+          :pause -> CymphonyElixir.Orchestrator.pause(orchestrator())
+          :resume -> CymphonyElixir.Orchestrator.resume(orchestrator())
+        end
+
+      orchestrators ->
+        Enum.each(orchestrators, fn {_project, pid} ->
+          case action do
+            :pause -> CymphonyElixir.Orchestrator.pause(pid)
+            :resume -> CymphonyElixir.Orchestrator.resume(pid)
+          end
+        end)
+    end
   end
 
   defp snapshot_timeout_ms do

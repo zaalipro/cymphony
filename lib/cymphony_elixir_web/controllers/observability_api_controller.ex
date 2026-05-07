@@ -6,6 +6,7 @@ defmodule CymphonyElixirWeb.ObservabilityApiController do
   use Phoenix.Controller, formats: [:json]
 
   alias Plug.Conn
+  alias CymphonyElixir.{Orchestrator, ProjectSupervisor}
   alias CymphonyElixirWeb.{Endpoint, Presenter}
 
   @spec state(Conn.t(), map()) :: Conn.t()
@@ -44,6 +45,45 @@ defmodule CymphonyElixirWeb.ObservabilityApiController do
     end
   end
 
+  @spec completed(Conn.t(), map()) :: Conn.t()
+  def completed(conn, params) do
+    payload = Presenter.state_payload(orchestrator(), snapshot_timeout_ms())
+    entries = Map.get(payload, :recent_completed, [])
+
+    entries =
+      case params["project"] do
+        nil -> entries
+        "" -> entries
+        project -> Enum.filter(entries, &(&1.project_name == project))
+      end
+
+    entries =
+      case params["limit"] do
+        nil ->
+          entries
+
+        value ->
+          case Integer.parse(value) do
+            {n, ""} when n > 0 -> Enum.take(entries, n)
+            _ -> entries
+          end
+      end
+
+    json(conn, %{recent_completed: entries})
+  end
+
+  @spec pause(Conn.t(), map()) :: Conn.t()
+  def pause(conn, _params) do
+    apply_pause_to_all(:pause)
+    conn |> put_status(202) |> json(%{paused: true})
+  end
+
+  @spec resume(Conn.t(), map()) :: Conn.t()
+  def resume(conn, _params) do
+    apply_pause_to_all(:resume)
+    conn |> put_status(202) |> json(%{paused: false})
+  end
+
   @spec method_not_allowed(Conn.t(), map()) :: Conn.t()
   def method_not_allowed(conn, _params) do
     error_response(conn, 405, "method_not_allowed", "Method not allowed")
@@ -66,5 +106,24 @@ defmodule CymphonyElixirWeb.ObservabilityApiController do
 
   defp snapshot_timeout_ms do
     Endpoint.config(:snapshot_timeout_ms) || 15_000
+  end
+
+  defp apply_pause_to_all(action) do
+    case ProjectSupervisor.list_orchestrators() do
+      [] ->
+        # Legacy single-orchestrator mode.
+        case action do
+          :pause -> Orchestrator.pause(orchestrator())
+          :resume -> Orchestrator.resume(orchestrator())
+        end
+
+      orchestrators ->
+        Enum.each(orchestrators, fn {_project, pid} ->
+          case action do
+            :pause -> Orchestrator.pause(pid)
+            :resume -> Orchestrator.resume(pid)
+          end
+        end)
+    end
   end
 end

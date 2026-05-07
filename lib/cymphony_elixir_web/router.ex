@@ -12,6 +12,11 @@ defmodule CymphonyElixirWeb.Router do
     plug(:put_root_layout, html: {CymphonyElixirWeb.Layouts, :root})
     plug(:protect_from_forgery)
     plug(:put_secure_browser_headers)
+    plug(CymphonyElixirWeb.Plugs.ApiAuth)
+  end
+
+  pipeline :api do
+    plug(CymphonyElixirWeb.Plugs.ApiAuth)
   end
 
   scope "/", CymphonyElixirWeb do
@@ -28,13 +33,21 @@ defmodule CymphonyElixirWeb.Router do
   end
 
   scope "/", CymphonyElixirWeb do
+    pipe_through(:api)
+
     get("/api/v1/projects", ObservabilityApiController, :projects)
     get("/api/v1/state", ObservabilityApiController, :state)
 
     match(:*, "/", ObservabilityApiController, :method_not_allowed)
     match(:*, "/api/v1/state", ObservabilityApiController, :method_not_allowed)
+    get("/api/v1/completed", ObservabilityApiController, :completed)
+    match(:*, "/api/v1/completed", ObservabilityApiController, :method_not_allowed)
     post("/api/v1/refresh", ObservabilityApiController, :refresh)
     match(:*, "/api/v1/refresh", ObservabilityApiController, :method_not_allowed)
+    post("/api/v1/pause", ObservabilityApiController, :pause)
+    match(:*, "/api/v1/pause", ObservabilityApiController, :method_not_allowed)
+    post("/api/v1/resume", ObservabilityApiController, :resume)
+    match(:*, "/api/v1/resume", ObservabilityApiController, :method_not_allowed)
     get("/api/v1/:issue_identifier", ObservabilityApiController, :issue)
     match(:*, "/api/v1/:issue_identifier", ObservabilityApiController, :method_not_allowed)
     match(:*, "/*path", ObservabilityApiController, :not_found)

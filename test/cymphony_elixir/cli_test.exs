@@ -217,6 +217,15 @@ defmodule CymphonyElixir.CLITest do
       assert :done = CLI.evaluate(["list"])
     end
 
+    test "logs is accepted as alias for log" do
+      ExUnit.CaptureIO.capture_io(fn -> assert :done = CLI.evaluate(["log"]) end)
+      ExUnit.CaptureIO.capture_io(fn -> assert :done = CLI.evaluate(["logs"]) end)
+    end
+
+    test "logs accepts a tail count argument" do
+      ExUnit.CaptureIO.capture_io(fn -> assert :done = CLI.evaluate(["logs", "50"]) end)
+    end
+
     test "p without value shows help" do
       assert {:error, text} = CLI.evaluate(["p"])
       assert text =~ "Usage:"

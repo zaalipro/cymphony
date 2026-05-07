@@ -1324,4 +1324,80 @@ defmodule CymphonyElixir.WorkspaceAndConfigTest do
       File.rm_rf(test_root)
     end
   end
+
+  describe "clean_stale/2" do
+    # macOS File.touch with integer seconds is unreliable on directories;
+    # shell out to /usr/bin/touch -t which works portably.
+    defp backdate(path, days_ago) do
+      stamp =
+        DateTime.utc_now()
+        |> DateTime.add(-days_ago * 86_400, :second)
+        |> Calendar.strftime("%Y%m%d%H%M")
+
+      {_, 0} = System.cmd("touch", ["-t", stamp, path])
+      :ok
+    end
+
+    test "removes workspaces older than the cutoff and keeps fresh ones" do
+      root = Path.join(System.tmp_dir!(), "cymphony-clean-stale-#{System.unique_integer([:positive])}")
+      File.mkdir_p!(root)
+
+      try do
+        old_path = Path.join(root, "ABC-OLD")
+        fresh_path = Path.join(root, "ABC-FRESH")
+        File.mkdir_p!(old_path)
+        File.mkdir_p!(fresh_path)
+        backdate(old_path, 10)
+
+        assert {:ok, removed} = Workspace.clean_stale(root, days: 7)
+        assert removed == [old_path]
+        refute File.exists?(old_path)
+        assert File.exists?(fresh_path)
+      after
+        File.rm_rf(root)
+      end
+    end
+
+    test "dry_run returns candidates without deleting" do
+      root = Path.join(System.tmp_dir!(), "cymphony-clean-dry-#{System.unique_integer([:positive])}")
+      File.mkdir_p!(root)
+
+      try do
+        old_path = Path.join(root, "ABC-OLD")
+        File.mkdir_p!(old_path)
+        backdate(old_path, 10)
+
+        assert {:dry_run, [^old_path]} = Workspace.clean_stale(root, days: 7, dry_run: true)
+        assert File.exists?(old_path)
+      after
+        File.rm_rf(root)
+      end
+    end
+
+    test "skips paths in exclude_paths even when stale" do
+      root = Path.join(System.tmp_dir!(), "cymphony-clean-exclude-#{System.unique_integer([:positive])}")
+      File.mkdir_p!(root)
+
+      try do
+        running = Path.join(root, "RUNNING-OLD")
+        idle = Path.join(root, "IDLE-OLD")
+        File.mkdir_p!(running)
+        File.mkdir_p!(idle)
+        backdate(running, 10)
+        backdate(idle, 10)
+
+        assert {:ok, [^idle]} = Workspace.clean_stale(root, days: 7, exclude_paths: [running])
+        assert File.exists?(running)
+        refute File.exists?(idle)
+      after
+        File.rm_rf(root)
+      end
+    end
+
+    test "missing root returns empty result" do
+      missing = Path.join(System.tmp_dir!(), "cymphony-clean-missing-#{System.unique_integer([:positive])}")
+      assert {:ok, []} = Workspace.clean_stale(missing, days: 7)
+      assert {:dry_run, []} = Workspace.clean_stale(missing, days: 7, dry_run: true)
+    end
+  end
 end

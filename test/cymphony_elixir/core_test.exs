@@ -546,7 +546,7 @@ defmodule CymphonyElixir.CoreTest do
     state = :sys.get_state(pid)
 
     refute Map.has_key?(state.running, issue_id)
-    assert MapSet.member?(state.completed, issue_id)
+    assert Enum.any?(state.recent_completed, &(&1.issue_id == issue_id))
     assert %{attempt: 1, due_at_ms: due_at_ms} = state.retry_attempts[issue_id]
     assert is_integer(due_at_ms)
     assert_due_in_range(due_at_ms, 500, 1_100)

@@ -97,7 +97,7 @@ CLI → CymphonyConfig → WorkflowStore → Orchestrator (GenServer, per-projec
 6. **AgentRunner** (`agent_runner.ex`) — Spawns a Task per issue. Creates workspace, runs lifecycle hooks, then calls `Claude.AppServer` for multi-turn execution. Accepts `provider_override` opt to use a specific provider for this session.
 7. **ShellProvider** (`cymphony/shell_provider.ex`) — Reads provider env vars (API keys, model config) from shell functions in `~/.cld`, `~/.zshrc`, or `~/.bashrc`. Sources the rc files in a zsh subprocess with `claude` noop'd, calls the provider function, and captures the resulting `ANTHROPIC_*`/`CLAUDE_CODE_*` env vars. Results are cached via `persistent_term`.
 8. **Claude.AppServer** (`claude/app_server.ex`) — Spawns `claude` CLI as a Port process. Manages session start/turn/resume lifecycle. Parses JSON and stream-json output. Uses `ShellProvider` to inject provider env vars into the spawned process.
-9. **Workspace** (`workspace.ex`) — Isolated per-issue directories with path safety validation, lifecycle hooks (after_create, before_run, after_run, before_remove), and SSH worker support.
+9. **Workspace** (`workspace.ex`) — Isolated per-issue directories with path safety validation, lifecycle hooks (after_create, before_run, after_run, before_remove), and SSH worker support. Optional retention sweep (`workspace.retention_days` in config) deletes stale workspaces every 6 hours, skipping currently-running ones.
 10. **Tracker** (`tracker.ex`) — Behaviour-based adapter for issue trackers. `Linear.Adapter` is the production implementation; `Tracker.Memory` is for testing.
 
 ### Concurrency
@@ -146,6 +146,7 @@ The Phoenix LiveView dashboard (`lib/cymphony_elixir_web/live/dashboard_live.ex`
 - **Rate limits** — Primary/Secondary/Credits buckets with remaining/limit and reset timers
 - **Running sessions** — Per-session cards with issue ID, state, stall badge, worker host, provider badge, project badge, runtime, tokens, session ID (copyable), workspace path (copyable), collapsible recent logs
 - **Retry queue** — Per-retry cards with attempt number, due-at countdown, error details, Retry Now button
+- **Recent completions** — Last 100 sessions that wrapped up: identifier, runtime, total tokens, ended-at timestamp. In-memory ring buffer; cleared on daemon restart.
 
 ### User actions
 
@@ -158,11 +159,23 @@ The Phoenix LiveView dashboard (`lib/cymphony_elixir_web/live/dashboard_live.ex`
 | `retry_issue` | Immediately retry a queued issue |
 | `refresh_now` | Trigger Linear refresh from dashboard |
 | `set_provider` | Change provider for a running session (kills and restarts with new provider) |
+| `pause_dispatch` / `resume_dispatch` | Stop/start dispatching new issues; running sessions complete normally |
 
 ### Refresh behavior
 
 - Runtime tick: every 1 second
-- Full payload refresh: every 3 seconds (async via Task.Supervisor)
+- Pubsub-driven payload reload on orchestrator updates (real-time via `ObservabilityPubSub`)
+- Periodic payload refresh: every 3 seconds (async via Task.Supervisor)
+
+### Auth (optional)
+
+Set `CYMPHONY_API_TOKEN=<secret>` in the environment before starting the daemon to require a bearer token on all dashboard and API routes. When unset, all routes are public (default for backward compat).
+
+- API: `Authorization: Bearer <secret>` header.
+- Browser: open `http://host:port/?token=<secret>` once — token is stored in the session cookie and the URL is cleaned up via redirect.
+- 401 JSON response when missing/wrong.
+
+Plug: `lib/cymphony_elixir_web/plugs/api_auth.ex`. Applied via `:browser` and `:api` pipelines in `router.ex`.
 
 ### API endpoints
 
@@ -175,6 +188,9 @@ Routes defined in `lib/cymphony_elixir_web/router.ex`:
 | `/api/v1/projects` | GET | Project list with running/retrying counts |
 | `/api/v1/:issue_identifier` | GET | Single issue details (optional `?project=` filter) |
 | `/api/v1/refresh` | POST | Trigger Linear refresh (returns 202) |
+| `/api/v1/pause` | POST | Stop dispatching new issues; running sessions continue. Returns 202. |
+| `/api/v1/resume` | POST | Resume dispatching new issues. Returns 202. |
+| `/api/v1/completed` | GET | Recent completed sessions (last 100, in-memory ring buffer). Optional `?project=<name>` and `?limit=N`. |
 
 All other methods return 405; all other paths return 404.
 

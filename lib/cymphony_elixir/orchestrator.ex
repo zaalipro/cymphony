@@ -38,14 +38,17 @@ defmodule CymphonyElixir.Orchestrator do
       :poll_check_in_progress,
       :tick_timer_ref,
       :tick_token,
+      paused: false,
       running: %{},
-      completed: MapSet.new(),
+      recent_completed: [],
       claimed: MapSet.new(),
       retry_attempts: %{},
       claude_totals: nil,
       claude_rate_limits: nil
     ]
   end
+
+  @max_recent_completed 100
 
   @spec start_link(keyword()) :: GenServer.on_start()
   def start_link(opts \\ []) do
@@ -76,6 +79,7 @@ defmodule CymphonyElixir.Orchestrator do
 
     run_terminal_workspace_cleanup(state)
     state = schedule_tick(state, 0)
+    schedule_workspace_sweep(state.config)
 
     {:ok, state}
   end
@@ -145,7 +149,7 @@ defmodule CymphonyElixir.Orchestrator do
               Logger.info("Agent task completed for issue_id=#{issue_id} session_id=#{session_id}; scheduling active-state continuation check")
 
               state
-              |> complete_issue(issue_id)
+              |> complete_issue(issue_id, running_entry)
               |> schedule_issue_retry(issue_id, 1, %{
                 identifier: running_entry.identifier,
                 delay_type: :continuation,
@@ -231,9 +235,19 @@ defmodule CymphonyElixir.Orchestrator do
 
   def handle_info({:retry_issue, _issue_id}, state), do: {:noreply, state}
 
+  def handle_info(:workspace_sweep, state) do
+    run_workspace_sweep(state)
+    schedule_workspace_sweep(state.config)
+    {:noreply, state}
+  end
+
   def handle_info(msg, state) do
     Logger.debug("Orchestrator ignored message: #{inspect(msg)}")
     {:noreply, state}
+  end
+
+  defp maybe_dispatch(%State{paused: true} = state) do
+    reconcile_running_issues(state)
   end
 
   defp maybe_dispatch(%State{} = state) do
@@ -862,11 +876,36 @@ defmodule CymphonyElixir.Orchestrator do
 
   defp revalidate_issue_for_dispatch(issue, _issue_fetcher, _terminal_states), do: {:ok, issue}
 
-  defp complete_issue(%State{} = state, issue_id) do
+  defp complete_issue(%State{} = state, issue_id, running_entry) do
+    record = build_completed_record(issue_id, running_entry, state.project_name)
+    recent = [record | state.recent_completed] |> Enum.take(@max_recent_completed)
+
     %{
       state
-      | completed: MapSet.put(state.completed, issue_id),
+      | recent_completed: recent,
         retry_attempts: Map.delete(state.retry_attempts, issue_id)
+    }
+  end
+
+  defp build_completed_record(issue_id, running_entry, project_name) do
+    started = Map.get(running_entry, :started_at)
+    ended = DateTime.utc_now()
+    runtime = if is_struct(started, DateTime), do: DateTime.diff(ended, started, :second), else: nil
+
+    %{
+      issue_id: issue_id,
+      identifier: Map.get(running_entry, :identifier),
+      project_name: project_name,
+      ended_at: ended,
+      started_at: started,
+      runtime_seconds: runtime,
+      claude_input_tokens: Map.get(running_entry, :claude_input_tokens, 0),
+      claude_output_tokens: Map.get(running_entry, :claude_output_tokens, 0),
+      claude_total_tokens: Map.get(running_entry, :claude_total_tokens, 0),
+      last_event: Map.get(running_entry, :last_claude_event),
+      last_message: Map.get(running_entry, :last_claude_message),
+      worker_host: Map.get(running_entry, :worker_host),
+      workspace_path: Map.get(running_entry, :workspace_path)
     }
   end
 
@@ -988,6 +1027,49 @@ defmodule CymphonyElixir.Orchestrator do
   defp run_terminal_workspace_cleanup(%State{} = state) do
     terminal_states = state.config.tracker.terminal_states
     do_terminal_workspace_cleanup(terminal_states, state.config)
+  end
+
+  # Sweep stale workspaces every 6 hours when `workspace.retention_days` is set.
+  @workspace_sweep_interval_ms 6 * 60 * 60 * 1_000
+
+  defp schedule_workspace_sweep(config) do
+    if is_integer(config.workspace.retention_days) do
+      Process.send_after(self(), :workspace_sweep, @workspace_sweep_interval_ms)
+    end
+
+    :ok
+  end
+
+  defp run_workspace_sweep(%State{} = state) do
+    days = state.config.workspace.retention_days
+
+    if is_integer(days) do
+      root = state.config.workspace.root
+      exclude = running_workspace_paths(state)
+
+      case Workspace.clean_stale(root, days: days, exclude_paths: exclude) do
+        {:ok, []} ->
+          :ok
+
+        {:ok, removed} ->
+          Logger.info("Workspace sweep removed #{length(removed)} stale workspace(s)")
+
+        {:error, reason} ->
+          Logger.warning("Workspace sweep failed: #{inspect(reason)}")
+      end
+    end
+
+    :ok
+  end
+
+  defp running_workspace_paths(%State{running: running}) do
+    running
+    |> Enum.flat_map(fn {_id, metadata} ->
+      case Map.get(metadata, :workspace_path) do
+        path when is_binary(path) -> [path]
+        _ -> []
+      end
+    end)
   end
 
   defp do_terminal_workspace_cleanup(terminal_states, config) do
@@ -1232,6 +1314,20 @@ defmodule CymphonyElixir.Orchestrator do
     end
   end
 
+  @spec pause(GenServer.server()) :: :ok | :unavailable
+  def pause(server) do
+    GenServer.call(server, :pause)
+  catch
+    :exit, _ -> :unavailable
+  end
+
+  @spec resume(GenServer.server()) :: :ok | :unavailable
+  def resume(server) do
+    GenServer.call(server, :resume)
+  catch
+    :exit, _ -> :unavailable
+  end
+
   @spec snapshot() :: map() | :timeout | :unavailable
   def snapshot, do: snapshot(__MODULE__, 15_000)
 
@@ -1295,14 +1391,28 @@ defmodule CymphonyElixir.Orchestrator do
        project_name: state.project_name,
        running: running,
        retrying: retrying,
+       recent_completed: state.recent_completed,
        claude_totals: state.claude_totals,
        rate_limits: Map.get(state, :claude_rate_limits),
        polling: %{
          checking?: state.poll_check_in_progress == true,
          next_poll_in_ms: next_poll_in_ms(state.next_poll_due_at_ms, now_ms),
-         poll_interval_ms: state.poll_interval_ms
+         poll_interval_ms: state.poll_interval_ms,
+         paused: state.paused
        }
      }, state}
+  end
+
+  def handle_call(:pause, _from, state) do
+    state = %{state | paused: true}
+    notify_dashboard()
+    {:reply, :ok, state}
+  end
+
+  def handle_call(:resume, _from, state) do
+    state = %{state | paused: false}
+    notify_dashboard()
+    {:reply, :ok, state}
   end
 
   def handle_call(:request_refresh, _from, state) do

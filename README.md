@@ -341,6 +341,43 @@ The observability UI runs on a minimal Phoenix stack:
 - Bandit as the HTTP server
 - Phoenix dependency static assets for the LiveView client bootstrap
 
+### Workspace retention
+
+Workspaces accumulate under `workspace.root` indefinitely by default — issues that close cleanly trigger a delete, but archived/abandoned ones leave their workspace behind. To enable automatic cleanup, set `workspace.retention_days` in `WORKFLOW.md`:
+
+```yaml
+workspace:
+  root: ~/code/workspaces
+  retention_days: 14    # delete workspaces idle for >14 days
+```
+
+Cymphony sweeps the workspace root every 6 hours, deleting only directories whose last-modified time is older than the cutoff and that aren't currently in use by a running session. The `before_remove` hook runs before each deletion. Local-only — SSH worker workspaces are not swept.
+
+### Pause / resume
+
+Click **Pause** in the dashboard's Polling section to stop dispatching new issues. Running sessions complete normally; queued retries wait until you click **Resume**. Useful before deploys, during rate-limit cool-downs, or when you want to look at the dashboard without new chaos arriving.
+
+Scriptable via the API:
+
+```bash
+curl -X POST http://localhost:4089/api/v1/pause     # stop new dispatches
+curl -X POST http://localhost:4089/api/v1/resume    # resume
+```
+
+Pause state is in-memory and clears on daemon restart.
+
+### Auth (optional)
+
+By default the dashboard and API are unauthenticated — anyone with network access to the configured port can read state and trigger actions like killing a session. To require a bearer token, set `CYMPHONY_API_TOKEN` in the environment before starting the daemon:
+
+```bash
+CYMPHONY_API_TOKEN=secret123 cymphony port 4089
+```
+
+- **API**: pass `Authorization: Bearer secret123` on each request.
+- **Browser**: open `http://localhost:4089/?token=secret123` once — the token is stored in the session cookie and the URL is cleaned up via redirect.
+- Without the env var set, auth is disabled (backward compatible).
+
 ## Project Layout
 
 - `lib/`: application code and Mix tasks

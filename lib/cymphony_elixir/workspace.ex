@@ -128,6 +128,78 @@ defmodule CymphonyElixir.Workspace do
     end
   end
 
+  @doc """
+  Sweeps `workspace_root` for top-level directories whose last-modified time is older than
+  `:days`. Skips paths in `:exclude_paths` (e.g. currently-running workspaces).
+
+  Returns `{:ok, removed}` after deletion, or `{:dry_run, would_remove}` when `dry_run: true`.
+  Both `removed` and `would_remove` are lists of absolute paths.
+  Local-only — does not touch SSH worker hosts.
+  """
+  @spec clean_stale(Path.t(), keyword()) ::
+          {:ok, [String.t()]} | {:dry_run, [String.t()]} | {:error, term()}
+  def clean_stale(workspace_root, opts) when is_binary(workspace_root) do
+    days = Keyword.fetch!(opts, :days)
+    dry_run = Keyword.get(opts, :dry_run, false)
+    exclude = Keyword.get(opts, :exclude_paths, []) |> MapSet.new()
+
+    cutoff = DateTime.utc_now() |> DateTime.add(-days * 86_400, :second)
+
+    case File.ls(workspace_root) do
+      {:ok, entries} ->
+        candidates =
+          entries
+          |> Enum.map(&Path.join(workspace_root, &1))
+          |> Enum.filter(fn path ->
+            File.dir?(path) and not MapSet.member?(exclude, path) and stale?(path, cutoff)
+          end)
+
+        if dry_run do
+          {:dry_run, candidates}
+        else
+          removed =
+            Enum.flat_map(candidates, fn path ->
+              # Sanity-check: refuse to delete anything that isn't a direct child of workspace_root.
+              # (Defense in depth — Path.join above already enforces this.)
+              if Path.dirname(path) == Path.expand(workspace_root) do
+                maybe_run_before_remove_hook(path, nil)
+
+                case File.rm_rf(path) do
+                  {:ok, _} ->
+                    [path]
+
+                  {:error, reason, _} ->
+                    Logger.warning("Workspace cleanup failed for #{path}: #{inspect(reason)}")
+                    []
+                end
+              else
+                Logger.warning("Workspace cleanup refused for #{path}: not a direct child of #{workspace_root}")
+                []
+              end
+            end)
+
+          {:ok, removed}
+        end
+
+      {:error, :enoent} ->
+        if dry_run, do: {:dry_run, []}, else: {:ok, []}
+
+      {:error, reason} ->
+        {:error, reason}
+    end
+  end
+
+  defp stale?(path, cutoff) do
+    case File.stat(path, time: :posix) do
+      {:ok, %File.Stat{mtime: mtime}} ->
+        mtime_dt = DateTime.from_unix!(mtime)
+        DateTime.compare(mtime_dt, cutoff) == :lt
+
+      _ ->
+        false
+    end
+  end
+
   @spec remove_issue_workspaces(term()) :: :ok
   def remove_issue_workspaces(identifier), do: remove_issue_workspaces(identifier, nil)
 
