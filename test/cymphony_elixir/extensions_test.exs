@@ -586,7 +586,7 @@ defmodule CymphonyElixir.ExtensionsTest do
     start_test_endpoint(orchestrator: orchestrator_name, snapshot_timeout_ms: 50)
 
     {:ok, view, html} = live(build_conn(), "/")
-    assert html =~ "Operations Dashboard"
+    assert html =~ "CYMPHONY"
     assert html =~ "MT-HTTP"
     assert html =~ "MT-RETRY"
     assert html =~ "rendered"

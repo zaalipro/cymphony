@@ -1,176 +1,337 @@
 # Cymphony
 
-> A rewrite of [openai/symphony](https://github.com/openai/symphony) that uses **Claude Code** instead of Codex as the underlying coding agent.
+> A modern rewrite of [openai/symphony](https://github.com/openai/symphony), using **Claude Code** instead of Codex.
 
-Cymphony turns project work into isolated, autonomous implementation runs, allowing teams to manage work instead of supervising coding agents.
-
-## Screenshot
+Cymphony turns Linear tickets into autonomous coding sessions. Drop a ticket into "Todo" and Cymphony picks it up, spins up a sandboxed workspace, and lets Claude Code work on it until the issue closes. You manage **work**, not agents.
 
 ![Cymphony screenshot](.github/media/elixir-screenshot.png)
 
-## Background
+---
 
-Cymphony is a reimagining of the original Cymphony project from OpenAI. Where Cymphony was built around OpenAI's Codex agent, Cymphony leverages Anthropic's Claude Code — offering a modern, production-ready foundation for orchestrating autonomous coding agents against your issue tracker.
+## Why Cymphony?
 
-## Requirements
+If you've used [openai/symphony](https://github.com/openai/symphony), the core idea is the same. Cymphony adds the bits that turn it from a single-developer toy into something a small team can lean on:
 
-Cymphony works best in codebases that have adopted [harness engineering](https://openai.com/index/harness-engineering/). Cymphony is the next step — moving from managing coding agents to managing work that needs to get done.
+| | openai/symphony | **Cymphony** |
+|---|---|---|
+| Coding agent | Codex | **Claude Code** |
+| Concurrency | one project, fixed | **multi-project, per-project `cr` cap** |
+| Providers | one API endpoint | **rotate across many** (`c cv1,cz2,ck1`) — works around rate limits |
+| Live UI | terminal-only | **Phoenix LiveView dashboard** with kill / retry / pause / set-provider per running session |
+| HTTP API | — | `/api/v1/*` for state, pause, concurrency, providers, refresh |
+| Workspace lifecycle | clone-on-create | **after_create / before_run / after_run / before_remove hooks**, optional retention sweep |
+| Setup | edit a YAML file | `cymphony setup` wizard, all config in `~/.cymphony/config.json` |
+| Hot reload | restart | edit `WORKFLOW.md`, picked up next tick |
+| Distribution | source build | **Homebrew tap + standalone macOS/Linux binaries** (Erlang bundled — no system deps) |
+| Auth | — | optional `CYMPHONY_API_TOKEN` bearer auth on dashboard + API |
 
-## Quick Start
+If you're already running `symphony`, switching is mostly: install `cymphony`, run `cymphony setup`, paste your Linear API key.
 
-### Install the CLI (macOS)
+---
 
-Two formulas — pick one:
+## Install
+
+### macOS — Homebrew
 
 ```bash
 brew tap zaalipro/cymphony
 
-# Recommended: self-contained (Erlang/Elixir bundled, no system deps)
+# Recommended: bundles Erlang/Elixir, zero system deps
 brew install cymphony
 
-# Or: smaller binary that uses Homebrew's Elixir/Erlang
-# (useful if you already have Elixir installed for other projects)
+# Or: smaller binary, uses your existing Homebrew Elixir/Erlang
 brew install cymphony-lite
-
-cymphony
 ```
 
-The two formulas conflict — install only one. Switching is just `brew uninstall <one> && brew install <other>`; your config and workspaces are untouched.
+The two formulas conflict — pick one. To switch: `brew uninstall <one> && brew install <other>`. Your config and workspaces are untouched.
 
-First run triggers an interactive setup (GitHub repo URL, Linear project slug, API key).
+### Ubuntu / Debian
 
-### Install the CLI (Ubuntu / Debian)
-
-#### Prerequisites
-
-Cymphony requires the `claude` CLI from Anthropic. Install it first if you haven't already:
+Cymphony needs the Anthropic `claude` CLI in your `$PATH`:
 
 ```bash
-# Via npm (requires Node.js 18+)
 npm install -g @anthropic-ai/claude-code
-
-# Or follow the latest instructions at:
-# https://docs.anthropic.com/en/docs/agents-and-tools/claude-code/overview
+# or follow https://docs.anthropic.com/en/docs/agents-and-tools/claude-code/overview
 ```
 
-#### Install
-
-Download the latest `.deb` from [GitHub Releases](https://github.com/zaalipro/cymphony/releases) and install it:
+Then download the latest `.deb` from [GitHub Releases](https://github.com/zaalipro/cymphony/releases):
 
 ```bash
-# Download the latest release (amd64 only)
-wget https://github.com/zaalipro/cymphony/releases/download/v0.4.2/cymphony_0.4.2_amd64.deb
+wget https://github.com/zaalipro/cymphony/releases/latest/download/cymphony_amd64.deb
+sudo dpkg -i cymphony_amd64.deb
+```
 
-# Install
-sudo dpkg -i cymphony_0.4.2_amd64.deb
+The `.deb` bundles the Erlang VM — no separate Elixir install required. Upgrade by re-running `dpkg -i` with a newer file. Uninstall with `sudo dpkg -r cymphony`.
 
-# Run setup
+### From source
+
+If you'd rather build it yourself, see [Run from source](#run-from-source).
+
+---
+
+## First run
+
+```bash
 cymphony
 ```
 
-First run triggers an interactive setup (GitHub repo URL, Linear project slug, API key).
+The first time you run `cymphony`, it walks you through an interactive setup. Everything goes into `~/.cymphony/config.json`. You can re-run it any time with `cymphony setup`, or add another project with `cymphony add`.
 
-#### Upgrade
+Below is each step the wizard asks you, and exactly where to find the answer.
 
-```bash
-wget https://github.com/zaalipro/cymphony/releases/download/v0.4.2/cymphony_0.4.2_amd64.deb
-sudo dpkg -i cymphony_0.4.2_amd64.deb
+### Step 1 — Project name
+
+```
+Project name:
 ```
 
-#### Uninstall
+A nickname for this codebase. Just pick something memorable — `MyApp`, `Backend`, `WebStore`. You'll see this in the dashboard and in the CLI output. If you'll have multiple projects later, this is how you tell them apart.
 
-```bash
-sudo dpkg -r cymphony
+### Step 2 — GitHub repo URL
+
+```
+GitHub repo URL (e.g. git@github.com:user/repo.git):
 ```
 
-> **Note:** The `.deb` bundles the Erlang VM, so no separate Erlang/Elixir installation is required.
+Cymphony clones a fresh copy of your repo into a workspace each time it picks up an issue, so it needs the clone URL.
 
-### Run Commands
+**Where to find it:**
 
-```bash
-cymphony                       # Run with saved config
-cymphony project frontend      # Run only the "frontend" project
-cymphony c cz                  # Run with a different Claude provider (e.g. cz, ck, cm)
-cymphony cr 3                  # Limit to 3 concurrent sessions
-cymphony c cv1,cz2,ck1         # Rotate across multiple providers (round-robin random)
-cymphony port 4089             # Set dashboard / HTTP server port
-cymphony project AgentFarm cr 5 c cv1,cz2 port 4089  # Combine: project + concurrency + providers + dashboard
-cymphony start                 # Run in background
-cymphony stop                  # Stop background process
-cymphony restart               # Restart background process
-cymphony logs                  # Show log (use `logs 50` for last 50 lines)
-cymphony setup                 # Re-run setup
-cymphony add                   # Add a project
-cymphony list                  # List projects
-cymphony v                     # Show version
-cymphony h                     # Show help
+1. Open your repo on GitHub
+2. Click the green **`< > Code`** button
+3. Pick the **SSH** tab (recommended — uses your existing SSH key, no token to manage) and copy the URL
+
+It looks like `git@github.com:your-org/your-repo.git`.
+
+> If your machine isn't set up for SSH access yet, follow GitHub's [SSH setup guide](https://docs.github.com/en/authentication/connecting-to-github-with-ssh) — it takes about two minutes. The HTTPS URL also works (`https://github.com/your-org/your-repo.git`) but you'll then need a personal access token to clone private repos.
+
+### Step 3 — Linear project slug
+
+```
+Linear project slug (e.g. myteam-ab12cd34ef56):
 ```
 
-Flags (long form):
+The slug is how Cymphony identifies your project inside Linear. It's part of the project's URL.
 
-- `--setup` — force onboarding wizard
-- `--project <name>` — run a specific project
-- `--concurrency <n>` — limit concurrent Claude sessions
-- `--provider <name>` — override the Claude provider for this run
-- `--claude-command <cmd>` — override the Claude command for this run
-- `--logs-root <path>` — override log directory
-- `--port <port>` — override HTTP server port
-- `--help`, `-h` — show help
-- `--version` — show version
+**Where to find it:**
 
-### Concurrency Control
+1. Open Linear in your browser
+2. Click into the **project** you want Cymphony to watch
+3. Look at the URL bar — it'll look like:
 
-By default Cymphony runs up to 10 concurrent Claude sessions. Use `cr N` to change this:
+   ```
+   https://linear.app/your-team/project/myteam-ab12cd34ef56/issues
+                                       ^^^^^^^^^^^^^^^^^^^^
+                                       this is the slug
+   ```
+4. Copy that part (between `/project/` and `/issues`)
 
-```bash
-cymphony cr 3          # Only 3 sessions at a time
-cymphony cr 1          # Run one at a time (sequential)
-cymphony project backend cr 5  # 5 sessions for the "backend" project
+Alternatively, right-click the project in the sidebar and **Copy URL** — same slug, just trim it from the URL.
+
+> Cymphony watches one project per entry. If you want to orchestrate multiple Linear projects, run the wizard again (`cymphony add`) and add a second one — they run side-by-side in the same daemon.
+
+### Step 4 — Linear API key
+
+```
+Linear API key:
 ```
 
-How it works:
+A personal API key that lets Cymphony read issues and post comments on your behalf. Cymphony uses it to poll the project, pick up "Todo" issues, and let Claude reply with progress comments.
 
-- Cymphony polls Linear for candidate issues and dispatches up to N concurrent sessions
-- When a session finishes, the next waiting issue is automatically dispatched
-- You can change concurrency at runtime via the dashboard or by restarting with a new `cr` value
+**How to create one:**
 
-### Provider Rotation
+1. Open Linear → click your avatar (top-right) → **Settings**
+2. In the left sidebar: **Security & access**
+3. Scroll to **Personal API keys**
+4. Click **Create key**, give it a label like "Cymphony", and copy the value (starts with `lin_api_...`)
+5. Paste it into the wizard
 
-When running multiple concurrent sessions against the same Claude backend, you can hit rate limits. Provider rotation distributes sessions across multiple backends:
+> The key is stored in plain text in `~/.cymphony/config.json`. If you'd rather not have it on disk, set `LINEAR_API_KEY` in your environment instead — the wizard offers it as a default when set.
 
-```bash
-cymphony c cv1,cz2,ck1    # Use three different providers
+### Step 5 — Workspace root  *(optional, has a default)*
+
+```
+Workspace root [~/.cymphony/workspaces/MyApp]:
 ```
 
-How it works:
+Where Cymphony clones each issue's working copy. Press **Enter** to accept the default — `~/.cymphony/workspaces/<your-project-name>`. You'll usually only override this if your home is on a small disk and you want workspaces on an external drive.
 
-- Comma-separated provider names are parsed from the `c` command
-- Each new session is randomly assigned a provider from the list
-- Providers must be configured in `~/.cymphony/config.json` (see Provider Configuration below)
-- Example: with `cr 6 c cv1,cz2,ck1`, you get 6 sessions randomly split across 3 providers (~2 each)
+### Step 6 — Polling interval *(optional)*
 
-You can also change a session's provider live from the web dashboard:
+```
+Polling interval in seconds [5]:
+```
 
-1. Open the dashboard (enable with `cymphony port 4089`)
-2. Find the running session card
-3. Type a new provider name in the provider input field
-4. Click **Set** — the session is killed and restarted with the new provider
+How often Cymphony checks Linear for new "Todo" issues. The default of 5 seconds is fine for almost everything. Press **Enter**.
 
-### Provider Configuration
+### Step 7 — Claude command *(optional)*
 
-Cymphony supports **providers** — named environment variable sets that let you switch between Claude backends (e.g., Anthropic, Kimi, OpenRouter) without shell functions.
+```
+Claude command [claude]:
+```
 
-Providers are stored in `~/.cymphony/config.json` under the top-level `providers` key. Each provider is a name mapped to a set of environment variables that Cymphony injects when spawning Claude Code.
+The command Cymphony spawns to run an agent. The default `claude` is correct if you installed Claude Code via npm, the official installer, or you have a shell function in `~/.cld` / `~/.zshrc` (see [Multiple Claude providers](#multiple-claude-providers) below). Press **Enter** unless you want a per-project override.
 
-**Example `config.json`:**
+### Step 8 — Add another project? *(optional)*
+
+```
+Add another project? [y/N]:
+```
+
+Press **Enter** to finish, or `y` to loop back to step 1 for a second project.
+
+When the wizard exits you'll see:
+
+```
+Configuration saved to /Users/you/.cymphony/config.json
+```
+
+That's it. Run `cymphony` again to start the daemon.
+
+---
+
+## Running
+
+Once configured, start the daemon and dashboard:
+
+```bash
+cymphony port 4089           # foreground, dashboard at http://localhost:4089
+cymphony start               # background daemon
+cymphony stop                # stop background daemon
+cymphony restart             # bounce
+cymphony logs 100            # tail the last 100 lines of the log
+```
+
+Without `port`, Cymphony runs without the web UI — useful for headless servers. With `port`, you get a real-time dashboard showing every running session, token usage, retry queue, rate limits, and per-project controls.
+
+### The `port` flag
+
+```bash
+cymphony port 4089          # most common
+cymphony port 8080          # use any free port
+cymphony --port 4089        # long form, identical
+```
+
+Pick any port you have free. The dashboard is at `http://localhost:<port>/` and the JSON API is under `http://localhost:<port>/api/v1/`. By default the dashboard is **unauthenticated**, so don't expose it publicly without setting `CYMPHONY_API_TOKEN` (see [Auth](#auth-optional) below).
+
+### Common commands
+
+```bash
+cymphony                                # run with saved config
+cymphony project MyApp                  # run only the "MyApp" project
+cymphony cr 3                           # cap concurrent sessions at 3
+cymphony c cv1,cz2                      # rotate across providers cv1 and cz2
+cymphony port 4089                      # enable dashboard
+cymphony project MyApp cr 5 c cv1,cz port 4089  # combine flags
+cymphony setup                          # re-run the wizard
+cymphony add                            # add a new project to existing config
+cymphony list                           # list configured projects
+cymphony v                              # version
+cymphony h                              # help
+```
+
+Long-form flags also work: `--project`, `--concurrency`, `--provider`, `--claude-command`, `--port`, `--setup`, `--logs-root`, `--help`, `--version`.
+
+---
+
+## Multiple Claude providers
+
+When you run a few sessions in parallel, the upstream API hits rate limits fast. Cymphony solves this by letting you spread sessions across multiple Claude-compatible backends. Each is just a different `ANTHROPIC_BASE_URL` + `ANTHROPIC_API_KEY` combo — Anthropic's official API, [z.ai](https://z.ai/) (GLM), [Kimi](https://kimi.com/) (Moonshot), [OpenRouter](https://openrouter.ai/), or any vendor that exposes an Anthropic-compatible API.
+
+You can configure providers two ways. **Pick whichever fits how you already work.**
+
+### Option A — Shell functions (recommended for power users)
+
+If you already manage API credentials in `.zshrc` or a private dotfiles repo, this is the most natural fit. Define a tiny shell function per provider — Cymphony picks them up automatically.
+
+#### 1. Create `~/.cld`
+
+A new file that holds your Cymphony provider functions, kept separate from your main shell config. Cymphony sources it before `.zshrc` so the functions are guaranteed to be visible.
+
+```bash
+touch ~/.cld
+```
+
+#### 2. Add a helper to clear stale env vars
+
+Stick this at the top of `~/.cld` — every provider function calls it first to make sure leftover variables from a previous switch don't bleed in:
+
+```bash
+# ~/.cld
+
+_unset() {
+  unset ANTHROPIC_BASE_URL ANTHROPIC_API_KEY ANTHROPIC_MODEL ANTHROPIC_AUTH_TOKEN
+  unset CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC CLAUDE_CODE_USE_BEDROCK CLAUDE_CODE_USE_VERTEX
+}
+```
+
+#### 3. Define one function per provider
+
+The function name **must start with a lowercase `c`** (Cymphony's discovery rule), e.g. `cz`, `ck1`, `cv1`, `cm`. Each one clears the env, then exports the credentials for that backend.
+
+```bash
+# z.ai (GLM)
+cz() {
+  _unset
+  export ANTHROPIC_BASE_URL="https://api.z.ai/api/anthropic"
+  export ANTHROPIC_API_KEY="sk-zai-..."
+  export ANTHROPIC_MODEL="glm-4.6"
+}
+
+# Kimi (Moonshot)
+ck() {
+  _unset
+  export ANTHROPIC_BASE_URL="https://api.moonshot.ai/anthropic"
+  export ANTHROPIC_API_KEY="sk-kimi-..."
+  export ANTHROPIC_MODEL="kimi-k2-0905-preview"
+}
+
+# A second Anthropic key for parallel slots
+cv1() {
+  _unset
+  export ANTHROPIC_API_KEY="sk-ant-..."
+}
+
+# Anthropic default (the bare claude binary)
+cm() {
+  _unset
+  # uses the Claude Code subscription — no env vars needed
+}
+```
+
+#### 4. Source `~/.cld` from your shell rc
+
+Add this near the top of `~/.zshrc` (or `~/.bashrc`):
+
+```bash
+[ -f "$HOME/.cld" ] && source "$HOME/.cld"
+```
+
+Open a new terminal and `cz`, `ck`, `cv1`, etc. should all be defined as shell functions. You can run them by hand to manually switch credentials — `cz && claude -p "hello"` will route that single Claude call through z.ai.
+
+#### 5. Use them in Cymphony
+
+Now reference them by name:
+
+```bash
+cymphony c cz                  # all sessions use z.ai
+cymphony c cv1,cz,ck           # rotate across three providers
+cymphony project MyApp c cv1,cz   # rotate, but only for MyApp
+```
+
+Cymphony spawns each session in a sub-shell, sources your rc files, calls your function, captures the resulting `ANTHROPIC_*` env, and hands them to Claude Code. The result is cached so it's only resolved once per provider per daemon run.
+
+### Option B — Config-based providers (simpler, no shell editing)
+
+If you'd rather keep everything in one file and skip shell-function gymnastics, define providers directly in `~/.cymphony/config.json`:
 
 ```json
 {
   "projects": [
     {
-      "name": "myproject",
-      "github_repo_url": "git@github.com:your-org/repo.git",
-      "linear_project_slug": "yourteam-ab12cd34ef56",
+      "name": "MyApp",
+      "github_repo_url": "git@github.com:you/myapp.git",
+      "linear_project_slug": "myteam-ab12cd34ef56",
       "linear_api_key": "lin_api_...",
       "claude_command": "claude",
       "provider": "cz"
@@ -178,313 +339,229 @@ Providers are stored in `~/.cymphony/config.json` under the top-level `providers
   ],
   "providers": {
     "cz": {
-      "ANTHROPIC_BASE_URL": "https://api.z.ai/coding/v4",
+      "ANTHROPIC_BASE_URL": "https://api.z.ai/api/anthropic",
       "ANTHROPIC_API_KEY": "sk-zai-...",
-      "ANTHROPIC_MODEL": "glm5-.1",
-      "CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC": "1"
+      "ANTHROPIC_MODEL": "glm-4.6"
     },
     "ck": {
-      "ANTHROPIC_BASE_URL": "https://api.kimi.com/coding",
+      "ANTHROPIC_BASE_URL": "https://api.moonshot.ai/anthropic",
       "ANTHROPIC_API_KEY": "sk-kimi-...",
-      "ANTHROPIC_MODEL": "kimi-k2.6"
+      "ANTHROPIC_MODEL": "kimi-k2-0905-preview"
     }
   }
 }
 ```
 
-- Set `provider` on a project to use that provider by default.
-- Override per-run with `cymphony c <provider>` or `cymphony --provider <name>`.
-- If a provider is not found, `cymphony c <cmd>` falls back to treating it as a raw Claude command override.
+Same usage from the CLI — `cymphony c cz`, `cymphony c cv1,cz` — Cymphony just reads the env vars from the JSON file instead of from a shell function.
 
-Providers are configured interactively during `cymphony s` setup, or you can edit `config.json` directly.
+### How rotation works
 
-### Reconfigure
+When you list multiple providers, Cymphony picks one **at random** for each new session — so 6 sessions across 3 providers averages roughly 2 each. There's no central queue: each dispatch is independent. If one backend goes down, only the sessions assigned to it fail (and retry with backoff).
 
-```bash
-cymphony setup
+You can change a project's provider list **at runtime** without restarting:
+
+- **Dashboard**: in each project's section header, edit the `claude command` input (e.g. `cv1,cz`) and press Enter. Persisted to `config.json`, applied to the next dispatch.
+- **API**: `curl -X POST 'http://localhost:4089/api/v1/providers?project=MyApp' -d '{"value":"cv1,cz"}'`
+- **Per-session live switch**: expand any running session row, type a provider in the per-session form, click **Set** — Cymphony kills that session and immediately re-dispatches it with the new provider.
+
+### Per-project providers
+
+Different projects can use different providers. Either edit `~/.cymphony/config.json` directly:
+
+```json
+"projects": [
+  { "name": "Frontend", "providers": ["cv1", "cz"], ... },
+  { "name": "Backend",  "providers": ["ck", "cm"], ... }
+]
 ```
 
-### Upgrade
+Or set them per-project from the dashboard's project header (the `claude command` input is per-project — each project section has its own).
 
-```bash
-brew upgrade zaalipro/cymphony/cymphony       # bundled
-brew upgrade zaalipro/cymphony/cymphony-lite  # source-built
-```
-
-## Run from Source
-
-We recommend using [mise](https://mise.jdx.dev/) to manage Elixir/Erlang versions.
-
-```bash
-git clone https://github.com/zaalipro/cymphony
-cd cymphony
-mise trust
-mise install
-mise exec -- mix setup
-mise exec -- mix build
-mise exec -- ./bin/cymphony ./WORKFLOW.md --i-understand-that-this-will-be-running-without-the-usual-guardrails
-```
-
-You can also ask your favorite coding agent to help with the setup:
-
-> Set up Cymphony for my repository based on
-> https://github.com/zaalipro/cymphony/blob/main/README.md
-
-## How it works
-
-1. Polls Linear for candidate work
-2. Creates a workspace per issue
-3. Launches Claude Code in headless mode (`claude -p`) inside the workspace
-4. Sends a workflow prompt to Claude Code
-5. Keeps Claude Code working on the issue until the work is done
-
-Claude Code has built-in Read, Edit, and Bash tools. For Linear GraphQL operations, Claude Code can use `curl` directly when the `LINEAR_API_KEY` environment variable is available.
-
-If a claimed issue moves to a terminal state (`Done`, `Closed`, `Cancelled`, or `Duplicate`), Cymphony stops the active agent for that issue and cleans up matching workspaces.
-
-## How to use it
-
-1. Make sure your codebase is set up to work well with agents: see [Harness engineering](https://openai.com/index/harness-engineering/).
-2. Get a new personal token in Linear via Settings → Security & access → Personal API keys, and set it as the `LINEAR_API_KEY` environment variable.
-3. Copy this repo's `WORKFLOW.md` to your repo.
-4. Optionally copy the `commit`, `push`, `pull`, `land`, and `linear` skills to your repo.
-   - The `linear` skill uses Bash `curl` for raw Linear GraphQL operations such as comment editing or upload flows.
-5. Customize the copied `WORKFLOW.md` file for your project.
-   - To get your project's slug, right-click the project and copy its URL. The slug is part of the URL.
-   - When creating a workflow based on this repo, note that it depends on non-standard Linear issue statuses: "Rework", "Human Review", and "Merging". You can customize them in Team Settings → Workflow in Linear.
-6. Follow the instructions below to install the required runtime dependencies and start the service.
-
-## Configuration
-
-Pass a custom workflow file path to `./bin/cymphony` when starting the service:
-
-```bash
-./bin/cymphony /path/to/custom/WORKFLOW.md
-```
-
-If no path is passed, Cymphony defaults to `./WORKFLOW.md`.
-
-Optional flags:
-
-- `--logs-root` tells Cymphony to write logs under a different directory (default: `./log`)
-- `--port` also starts the Phoenix observability service (default: disabled)
-
-The `WORKFLOW.md` file uses YAML front matter for configuration, plus a Markdown body used as the Claude Code session prompt.
-
-Minimal example:
-
-```md
----
-tracker:
-  kind: linear
-  project_slug: "..."
-workspace:
-  root: ~/code/workspaces
-hooks:
-  after_create: |
-    git clone git@github.com:your-org/your-repo.git .
-agent:
-  max_concurrent_agents: 10
-  max_turns: 20
-claude:
-  command: claude -p
 ---
 
-You are working on a Linear issue {{ issue.identifier }}.
+## Multi-project mode
 
-Title: {{ issue.title }} Body: {{ issue.description }}
+Cymphony runs as many projects as you have configured, all in one daemon. Each project gets:
+
+- its own poll loop against Linear (independent intervals)
+- its own concurrency cap (set globally with `cr N`, or per-project via dashboard)
+- its own provider list (set globally with `c ...`, or per-project)
+- its own pause/resume toggle
+- its own dashboard section with the running sessions and retry queue
+
+Add a project after the fact:
+
+```bash
+cymphony add        # interactive — same wizard as setup, just for one new project
+cymphony list       # show what's configured
 ```
 
-Notes:
+Or run a single project on demand:
 
-- If a value is missing, defaults are used.
-- Safer Claude Code defaults are used when policy fields are omitted:
-  - `claude.approval_policy` defaults to `{"reject":{"sandbox_approval":true,"rules":true,"mcp_elicitations":true}}`
-  - `claude.permission_mode` defaults to `acceptEdits`
-  - `claude.allowed_tools` defaults to `Bash,Read,Edit`
-  - `claude.thread_sandbox` defaults to `workspace-write`
-- Supported `claude.approval_policy` values map to Claude Code `--permission-mode` and `--allowedTools` flags.
-- Supported `claude.permission_mode` values: `acceptEdits`, `plan`, `acceptAll`.
-- `agent.max_turns` caps how many back-to-back Claude Code turns Cymphony will run in a single agent invocation when a turn completes normally but the issue is still in an active state. Default: `20`.
-- If the Markdown body is blank, Cymphony uses a default prompt template that includes the issue identifier, title, and body.
-- Use `hooks.after_create` to bootstrap a fresh workspace. For a Git-backed repo, you can run `git clone ... .` there, along with any other setup commands you need.
-- If a hook needs `mise exec` inside a freshly cloned workspace, trust the repo config and fetch the project dependencies in `hooks.after_create` before invoking `mise` later from other hooks.
-- `tracker.api_key` reads from `LINEAR_API_KEY` when unset or when value is `$LINEAR_API_KEY`.
-- For path values, `~` is expanded to the home directory.
-- For env-backed path values, use `$VAR`. `workspace.root` resolves `$VAR` before path handling, while `claude.command` stays a shell command string and any `$VAR` expansion there happens in the launched shell.
-
-```yaml
-tracker:
-  api_key: $LINEAR_API_KEY
-workspace:
-  root: $CYMPHONY_WORKSPACE_ROOT
-hooks:
-  after_create: |
-    git clone --depth 1 "$SOURCE_REPO_URL" .
-claude:
-  command: "$CLAUDE_BIN -p --model claude-sonnet-4-6"
+```bash
+cymphony project Backend                   # only Backend, ignore the others this run
+cymphony project Backend cr 5 c cv1,cz     # ...with a custom concurrency + provider list
 ```
 
-**Providers in `WORKFLOW.md`:**
-
-When using config-based mode (`cymphony` without a `WORKFLOW.md` path), providers from `~/.cymphony/config.json` are automatically included in the generated workflow. You can also define providers directly in `WORKFLOW.md` for legacy mode:
-
-```yaml
-claude:
-  command: claude
-  provider: cz
-providers:
-  cz:
-    ANTHROPIC_BASE_URL: "https://api.z.ai/coding/v4"
-    ANTHROPIC_API_KEY: "sk-zai-..."
-    ANTHROPIC_MODEL: "glm5-.1"
-```
-
-- If `WORKFLOW.md` is missing or has invalid YAML at startup, Cymphony does not boot.
-- If a later reload fails, Cymphony keeps running with the last known good workflow and logs the reload error until the file is fixed.
-- `server.port` or CLI `--port` enables the optional Phoenix LiveView dashboard and JSON API at `/`, `/api/v1/state`, `/api/v1/<issue_identifier>`, and `/api/v1/refresh`.
+---
 
 ## Web dashboard
 
-The observability UI runs on a minimal Phoenix stack:
+Start with `cymphony port 4089`, open `http://localhost:4089`.
 
-- LiveView for the dashboard at `/`
-- JSON API for operational debugging under `/api/v1/*`
-- Bandit as the HTTP server
-- Phoenix dependency static assets for the LiveView client bootstrap
+The dashboard shows:
 
-### Workspace retention
+- **Command bar (top)** — running / retry / token / runtime / throughput counters; polling cadence; rate-limit remaining; global Pause-all / Resume-all
+- **Per-project sections** — one card per project. Header has the project name, "X/Y running" count, paused state, inline `concurrency` and `claude command` inputs, and Pause/Resume button
+- **Compact session rows** — Linear ID, title, state, provider, host, runtime, total tokens, Kill button. Click a row to expand: session ID, workspace path, recent log events, per-session provider override
+- **Retry queue** — inline at the bottom of each project section
+- **Recent completions** — global ring buffer of the last 100 finished sessions
 
-Workspaces accumulate under `workspace.root` indefinitely by default — issues that close cleanly trigger a delete, but archived/abandoned ones leave their workspace behind. To enable automatic cleanup, set `workspace.retention_days` in `WORKFLOW.md`:
-
-```yaml
-workspace:
-  root: ~/code/workspaces
-  retention_days: 14    # delete workspaces idle for >14 days
-```
-
-Cymphony sweeps the workspace root every 6 hours, deleting only directories whose last-modified time is older than the cutoff and that aren't currently in use by a running session. The `before_remove` hook runs before each deletion. Local-only — SSH worker workspaces are not swept.
-
-### Pause / resume
-
-Click **Pause** in the dashboard's Polling section to stop dispatching new issues across all projects. Running sessions complete normally; queued retries wait until you click **Resume**. Each project mini-card also has its own Pause/Resume button if you only want to halt one project. Useful before deploys, during rate-limit cool-downs, or when you want to look at the dashboard without new chaos arriving.
-
-Scriptable via the API:
-
-```bash
-curl -X POST http://localhost:4089/api/v1/pause                        # all projects
-curl -X POST 'http://localhost:4089/api/v1/pause?project=AgentFarm'    # one project
-curl -X POST http://localhost:4089/api/v1/resume                       # all
-```
-
-Pause state is in-memory and clears on daemon restart.
-
-### Concurrency control
-
-The dashboard's Polling section has a numeric input for `max_concurrent_agents`. Submitting a new value updates each running orchestrator immediately and persists to `~/.cymphony/config.json`, so it survives daemon restarts.
-
-Scriptable via the API:
-
-```bash
-curl -X POST -H 'Content-Type: application/json' \
-     -d '{"value": 5}' \
-     'http://localhost:4089/api/v1/concurrency?project=AgentFarm'
-```
-
-### Per-session details
-
-Each running session card shows the Linear issue identifier (linked to the issue), the issue title, a priority badge (Urgent/High/Medium/Low), and the current turn number — pulled from the Linear `%Issue{}` struct that's already cached on the running entry.
+Live updates are pushed via Phoenix Channels — no manual refresh.
 
 ### Auth (optional)
 
-By default the dashboard and API are unauthenticated — anyone with network access to the configured port can read state and trigger actions like killing a session. To require a bearer token, set `CYMPHONY_API_TOKEN` in the environment before starting the daemon:
+By default the dashboard and API are open to anyone with network access — `kill_issue` and `set_provider` work without authentication. To require a bearer token, set `CYMPHONY_API_TOKEN` before starting the daemon:
 
 ```bash
 CYMPHONY_API_TOKEN=secret123 cymphony port 4089
 ```
 
-- **API**: pass `Authorization: Bearer secret123` on each request.
-- **Browser**: open `http://localhost:4089/?token=secret123` once — the token is stored in the session cookie and the URL is cleaned up via redirect.
-- Without the env var set, auth is disabled (backward compatible).
+- **API**: send `Authorization: Bearer secret123` on every request
+- **Browser**: open `http://localhost:4089/?token=secret123` once — the token is stored in the session cookie and the URL is cleaned up via redirect
 
-## Project Layout
+### API endpoints
 
-- `lib/`: application code and Mix tasks
-- `test/`: ExUnit coverage for runtime behavior
-- `WORKFLOW.md`: in-repo workflow contract used by local runs
-- `.claude/`: repository-local Claude Code skills and setup helpers
+All under `/api/v1/`:
 
-## Testing
+| Method | Path | Description |
+|---|---|---|
+| `GET` | `/state` | full snapshot JSON |
+| `GET` | `/projects` | one-line summary per project |
+| `GET` | `/<issue_identifier>` | one running session's details |
+| `POST` | `/refresh` | force a Linear poll right now |
+| `POST` | `/pause` `?project=Name` | stop dispatching new issues |
+| `POST` | `/resume` `?project=Name` | resume |
+| `POST` | `/concurrency` `?project=Name` | body `{"value": 5}` |
+| `POST` | `/providers` `?project=Name` | body `{"value": "cv1,cz"}` |
+| `GET` | `/completed` `?limit=N` | recent completions ring buffer |
+
+---
+
+## Run from source
+
+We use [mise](https://mise.jdx.dev/) to manage Elixir/Erlang versions:
 
 ```bash
-make all
+git clone https://github.com/zaalipro/cymphony
+cd cymphony
+mise trust && mise install
+mix setup
+make build
+./bin/cymphony port 4089
 ```
 
-Run the real external end-to-end test only when you want Cymphony to create disposable Linear resources and launch a real `claude -p` session:
+Or ask your favorite agent:
+
+> Set up Cymphony for my repo using https://github.com/zaalipro/cymphony/blob/main/README.md
+
+### Tests
+
+```bash
+make all    # full CI gate: build, fmt, lint, coverage, dialyzer
+make test   # ExUnit only
+```
+
+The live end-to-end test creates real Linear issues and runs an actual Claude Code session — gated behind `make e2e` and an env var:
 
 ```bash
 export LINEAR_API_KEY=...
 make e2e
 ```
 
-Optional environment variables:
+---
 
-- `CYMPHONY_LIVE_LINEAR_TEAM_KEY` defaults to `SYME2E`
-- `CYMPHONY_LIVE_SSH_WORKER_HOSTS` uses those SSH hosts when set, as a comma-separated list
+## How it works
 
-`make e2e` runs two live scenarios:
+```
+Linear  ──poll──>  Cymphony  ──spawn──>  Workspace  ──exec──>  Claude Code
+   ^                  │                       │                     │
+   │                  │                       │                     │
+   └──── close ───────┴── status ───────── result ───── tool ───────┘
+```
 
-- one with a local worker
-- one with SSH workers
+1. **Poll** — every 5 seconds, Cymphony fetches each project's "Todo" issues from Linear
+2. **Dispatch** — for each unclaimed issue, Cymphony picks an available concurrency slot, picks a provider (random from the rotation list), and spawns an `AgentRunner` task
+3. **Workspace** — the runner creates a fresh per-issue directory, runs your `after_create` hook (e.g. `git clone`), then your `before_run` hook
+4. **Agent** — the runner launches Claude Code with the workflow prompt as the user message, streams stdout, parses tool-use events, and updates the dashboard live
+5. **Termination** — when the issue moves to `Done`, `Closed`, `Cancelled`, or `Duplicate`, Cymphony kills the agent and runs `before_remove` + `after_run` hooks
+6. **Retry** — if the agent crashes or times out, the issue goes into the retry queue with exponential backoff
 
-If `CYMPHONY_LIVE_SSH_WORKER_HOSTS` is unset, the SSH scenario uses `docker compose` to start two disposable SSH workers on `localhost:<port>`. The live test generates a temporary SSH keypair, mounts the host `~/.claude/auth.json` into each worker, verifies that Cymphony can talk to them over real SSH, then runs the same orchestration flow against those worker addresses. This keeps the transport representative without depending on long-lived external machines.
+Per-issue workspaces are persistent across runs (deterministic re-runs), and there's an optional retention sweep that deletes idle workspaces after N days:
 
-Set `CYMPHONY_LIVE_SSH_WORKER_HOSTS` if you want `make e2e` to target real SSH hosts instead.
+```yaml
+# WORKFLOW.md
+workspace:
+  root: ~/code/workspaces
+  retention_days: 14
+```
 
-The live test creates a temporary Linear project and issue, writes a temporary `WORKFLOW.md`, runs a real agent turn, verifies the workspace side effect, requires Claude Code to comment on and close the Linear issue, then marks the project completed so the run remains visible in Linear.
+---
 
 ## Architecture
 
-Cymphony is composed of several key layers:
+```
+CymphonyElixir.Supervisor (one_for_one)
+├── Phoenix.PubSub
+├── Registry (ProjectRegistry)
+├── Task.Supervisor (AgentRunner tasks)
+├── DynamicSupervisor (ProjectDynamicSupervisor)
+│   └── ProjectSupervisor (one per project)
+│       ├── WorkflowStore   ──── hot-reloads WORKFLOW.md
+│       └── Orchestrator    ──── poll loop, dispatch, retry, snapshot
+├── HttpServer (Bandit + Phoenix LiveView)
+└── StatusDashboard (terminal)
+```
 
-- **Workflow Loader** — Reads `WORKFLOW.md` and parses YAML front matter + prompt body
-- **Config Layer** — Typed getters for workflow config with environment variable indirection
-- **Orchestrator** — Poll tick, in-memory runtime state, dispatch/retry/reconciliation logic
-- **Workspace Manager** — Per-issue isolated workspaces with lifecycle hooks
-- **Agent Runner** — Launches Claude Code via app-server protocol over stdio
-- **Issue Tracker Client** — Fetches candidates, refreshes states, normalizes payloads (Linear in this version)
+Layered:
 
-### Key Features
+- **CLI** (`cli.ex`) — flag parsing, multi-project entry point, background daemon controls
+- **Config** (`cymphony/config.ex`) — reads `~/.cymphony/config.json`, generates per-project `WORKFLOW.md` in `tmp/`, writes runtime updates back
+- **Workflow store** (`workflow_store.ex`) — owns the parsed workflow per project, supports hot reload
+- **Orchestrator** (`orchestrator.ex`) — heart of the dispatch loop, holds `running:` map and `retrying:` queue, enforces concurrency, picks providers, surfaces snapshots
+- **Agent runner** (`agent_runner.ex`) — per-task process, runs lifecycle hooks, calls `Claude.AppServer`
+- **Shell provider** (`cymphony/shell_provider.ex`) — sources `~/.cld` / `.zshrc` / `.bashrc` in a zsh subprocess to resolve `cz`, `cv1`, etc. into env-var maps; cached in `:persistent_term`
+- **Workspace** (`workspace.ex`) — path-safety validation, lifecycle hooks, optional SSH worker, retention sweep
+- **Tracker** (`tracker.ex`) — adapter behaviour; `Linear.Adapter` is the production impl, `Tracker.Memory` for tests
 
-- **Poll-based dispatch** with configurable concurrency (`cr N`) and exponential backoff retries
-- **Provider rotation** (`c cv1,cz2,ck1`) to distribute sessions across multiple Claude backends and avoid rate limits
-- **Per-issue workspaces** that persist across runs for deterministic behavior
-- **In-repo workflow control** via `WORKFLOW.md` — version your agent prompt with your code
-- **Tracker reconciliation** — stops runs when issues transition to terminal states
-- **Observability** — structured logs with issue/session context
+If you want to port the design somewhere else, [`SPEC.md`](SPEC.md) is the source of truth.
 
-## Build Your Own
-
-Tell your favorite coding agent to build Cymphony in a programming language of your choice:
-
-> Implement Cymphony according to the following spec:
-> https://github.com/zaalipro/cymphony/blob/main/SPEC.md
+---
 
 ## FAQ
 
-### Why Elixir?
+**Q. Why Elixir?**
+BEAM/OTP is built for supervising thousands of long-running processes that occasionally crash. That's exactly the workload — every agent is its own task, isolated from the others. Hot-code reload during development is a bonus.
 
-Elixir is built on Erlang/BEAM/OTP, which is great for supervising long-running processes. It has an active ecosystem of tools and libraries. It also supports hot code reloading without stopping actively running subagents, which is very useful during development.
+**Q. Can I use it with my Anthropic Claude Code subscription?**
+Yes. Use the bare `claude` command (no provider override) and it goes through your subscription credentials. Use a provider only when you want to route around rate limits.
 
-### What's the easiest way to set this up for my own codebase?
+**Q. Will it work with a different issue tracker?**
+The tracker layer is behaviour-based (`tracker.ex`). Linear is the only built-in adapter, but the surface is small — implement `list_issues/2`, `update_state/3`, `add_comment/3`, register your adapter in the workflow YAML, you're done. PRs welcome.
 
-Launch `claude` in your repo, give it the URL to the Cymphony repo, and ask it to set things up for you.
+**Q. Does it eat my Anthropic budget?**
+With sensible `cr` and `agent.max_turns` (default: 20) caps it's bounded. The dashboard's token counter and rate-limit panel make blow-ups easy to spot. For dry-runs, comment out the post-action hooks.
+
+**Q. Easiest setup?**
+Run `cymphony` and follow the wizard, or paste this README's link into a Claude Code session and ask it to set things up for you.
+
+---
 
 ## Status
 
 > [!WARNING]
-> Cymphony is a low-key engineering preview for testing in trusted environments.
+> Cymphony is a low-key engineering preview. Run it in environments you trust, with credentials scoped to projects you're OK with an autonomous agent touching.
 
 ## License
 
-This project is licensed under the [Apache License 2.0](LICENSE).
+[Apache 2.0](LICENSE).

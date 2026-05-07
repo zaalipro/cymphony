@@ -1742,8 +1742,8 @@ defmodule CymphonyElixir.Orchestrator do
           state
           | config: config,
             poll_interval_ms: config.polling.interval_ms,
-            max_concurrent_agents: config.agent.max_concurrent_agents,
-            providers: extract_providers(config)
+            max_concurrent_agents: state.max_concurrent_agents || config.agent.max_concurrent_agents,
+            providers: preserve_providers(state.providers, config)
         }
 
       {:error, _} ->
@@ -1762,10 +1762,13 @@ defmodule CymphonyElixir.Orchestrator do
       state
       | config: config,
         poll_interval_ms: config.polling.interval_ms,
-        max_concurrent_agents: config.agent.max_concurrent_agents,
-        providers: extract_providers(config)
+        max_concurrent_agents: state.max_concurrent_agents || config.agent.max_concurrent_agents,
+        providers: preserve_providers(state.providers, config)
     }
   end
+
+  defp preserve_providers([_ | _] = providers, _config), do: providers
+  defp preserve_providers(_, config), do: extract_providers(config)
 
   defp retry_candidate_issue?(%Issue{} = issue, active_states, terminal_states) do
     candidate_issue?(issue, active_states, terminal_states) and

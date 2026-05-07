@@ -232,17 +232,14 @@ defmodule CymphonyElixirWeb.DashboardLive do
   def render(assigns) do
     ~H"""
     <section class="dashboard-shell">
-      <header class="hero-card">
-        <div class="hero-grid">
-          <div>
-            <p class="eyebrow">Cymphony Observability</p>
-            <h1 class="hero-title">Operations Dashboard</h1>
-            <p class="hero-copy">
-              Live view of orchestration: dispatch state, retry pressure, token usage, and per-project controls.
-            </p>
+      <header class="command-bar">
+        <div class="command-bar-row command-bar-row--brand">
+          <div class="command-bar-brand">
+            <span class="brand-mark" aria-hidden="true"></span>
+            <span class="brand-wordmark">CYMPHONY</span>
+            <span class="brand-tagline">Operations</span>
           </div>
-
-          <div class="status-stack">
+          <div class="command-bar-meta">
             <span class="status-badge status-badge-live">
               <span class="status-badge-dot"></span>
               Live
@@ -262,6 +259,91 @@ defmodule CymphonyElixirWeb.DashboardLive do
             <button type="button" class="subtle-button" phx-click="refresh_now">Refresh</button>
           </div>
         </div>
+
+        <%= unless @payload[:error] do %>
+          <div class="command-bar-row command-bar-row--metrics">
+            <div class="metric-pill">
+              <span class="metric-pill-label">Run</span>
+              <span class="metric-pill-value numeric"><%= @payload.counts.running %></span>
+            </div>
+            <div class="metric-pill">
+              <span class="metric-pill-label">Retry</span>
+              <span class="metric-pill-value numeric"><%= @payload.counts.retrying %></span>
+            </div>
+            <div class="metric-pill">
+              <span class="metric-pill-label">Tokens</span>
+              <span class="metric-pill-value numeric"><%= format_int(@payload.claude_totals.total_tokens) %></span>
+              <span class="metric-pill-detail numeric" title="input / output">
+                in <%= format_int(@payload.claude_totals.input_tokens) %> · out <%= format_int(@payload.claude_totals.output_tokens) %>
+              </span>
+            </div>
+            <div class="metric-pill">
+              <span class="metric-pill-label">Runtime</span>
+              <span class="metric-pill-value numeric"><%= format_runtime_seconds(total_runtime_seconds(@payload, @now)) %></span>
+            </div>
+            <div class="metric-pill metric-pill--throughput">
+              <span class="metric-pill-label">Tput</span>
+              <span class="metric-pill-value numeric"><%= format_tps(current_tps(@token_samples)) %></span>
+              <span class="metric-pill-spark numeric"><%= tps_sparkline(@token_samples) %></span>
+            </div>
+          </div>
+
+          <div class="command-bar-row command-bar-row--ops">
+            <%= if @payload.polling do %>
+              <div class="ops-cluster">
+                <span class="ops-label">Polling</span>
+                <span class="ops-value">
+                  <%= cond do %>
+                    <% Map.get(@payload.polling, :paused, false) -> %>
+                      <span class="ops-pulse">Paused</span>
+                    <% @payload.polling.checking? -> %>
+                      <span class="ops-pulse">Checking…</span>
+                    <% true -> %>
+                      next <%= format_poll_countdown(@payload.polling.next_poll_in_ms, @now) %>
+                  <% end %>
+                </span>
+                <%= if @payload.polling.poll_interval_ms do %>
+                  <span class="ops-divider" aria-hidden="true">·</span>
+                  <span class="ops-value muted">every <%= div(@payload.polling.poll_interval_ms, 1_000) %>s</span>
+                <% end %>
+              </div>
+            <% end %>
+
+            <%= if @payload.rate_limits do %>
+              <%= case Presenter.format_rate_limits_for_web(@payload.rate_limits) do %>
+                <% nil -> %>
+                <% formatted -> %>
+                  <div class="ops-cluster">
+                    <span class="ops-label">Limits</span>
+                    <%= if formatted.primary do %>
+                      <span class="ops-value">primary <%= formatted.primary.summary %></span>
+                      <%= if formatted.primary.reset_in_seconds do %>
+                        <span class="ops-value muted">resets <%= formatted.primary.reset_in_seconds %>s</span>
+                      <% end %>
+                    <% end %>
+                    <%= if formatted.secondary do %>
+                      <span class="ops-divider" aria-hidden="true">·</span>
+                      <span class="ops-value">secondary <%= formatted.secondary.summary %></span>
+                    <% end %>
+                    <%= if formatted.credits do %>
+                      <span class="ops-divider" aria-hidden="true">·</span>
+                      <span class="ops-value">credits <%= formatted.credits.summary %></span>
+                    <% end %>
+                  </div>
+              <% end %>
+            <% end %>
+
+            <%= if @payload.polling do %>
+              <div class="ops-cluster ops-cluster--push">
+                <%= if Map.get(@payload.polling, :paused, false) do %>
+                  <button type="button" class="subtle-button subtle-button--accent" phx-click="resume_dispatch">Resume all</button>
+                <% else %>
+                  <button type="button" class="subtle-button" phx-click="pause_dispatch">Pause all</button>
+                <% end %>
+              </div>
+            <% end %>
+          </div>
+        <% end %>
       </header>
 
       <%= if info = @flash["info"] do %>
@@ -279,133 +361,6 @@ defmodule CymphonyElixirWeb.DashboardLive do
           </p>
         </section>
       <% else %>
-        <section class="metric-grid">
-          <article class="metric-card">
-            <p class="metric-label">Running</p>
-            <p class="metric-value numeric"><%= @payload.counts.running %></p>
-            <p class="metric-detail">Active issue sessions in the current runtime.</p>
-          </article>
-
-          <article class="metric-card">
-            <p class="metric-label">Retrying</p>
-            <p class="metric-value numeric"><%= @payload.counts.retrying %></p>
-            <p class="metric-detail">Issues waiting for the next retry window.</p>
-          </article>
-
-          <article class="metric-card">
-            <p class="metric-label">Total tokens</p>
-            <p class="metric-value numeric"><%= format_int(@payload.claude_totals.total_tokens) %></p>
-            <p class="metric-detail numeric">
-              In <%= format_int(@payload.claude_totals.input_tokens) %> / Out <%= format_int(@payload.claude_totals.output_tokens) %>
-            </p>
-          </article>
-
-          <article class="metric-card">
-            <p class="metric-label">Runtime</p>
-            <p class="metric-value numeric"><%= format_runtime_seconds(total_runtime_seconds(@payload, @now)) %></p>
-            <p class="metric-detail">Total Claude runtime across completed and active sessions.</p>
-          </article>
-
-          <article class="metric-card">
-            <p class="metric-label">Throughput</p>
-            <p class="metric-value numeric"><%= format_tps(current_tps(@token_samples)) %></p>
-            <p class="metric-detail"><%= tps_sparkline(@token_samples) %></p>
-          </article>
-        </section>
-
-        <section class="section-card">
-          <div class="section-header">
-            <div>
-              <h2 class="section-title">Polling</h2>
-              <p class="section-copy">Linear refresh cadence and global dispatch control.</p>
-            </div>
-            <div class="polling-controls">
-              <%= if @payload.polling do %>
-                <%= if Map.get(@payload.polling, :paused, false) do %>
-                  <button type="button" class="subtle-button" phx-click="resume_dispatch">Resume all</button>
-                <% else %>
-                  <button type="button" class="subtle-button" phx-click="pause_dispatch">Pause all</button>
-                <% end %>
-              <% end %>
-            </div>
-          </div>
-
-          <%= if @payload.polling do %>
-            <div class="polling-grid">
-              <div class="polling-item">
-                <span class="polling-label">Next poll</span>
-                <span class="polling-value">
-                  <%= cond do %>
-                    <% Map.get(@payload.polling, :paused, false) -> %>
-                      <span class="polling-live">Paused — new dispatches stopped</span>
-                    <% @payload.polling.checking? -> %>
-                      <span class="polling-live">Checking now…</span>
-                    <% true -> %>
-                      <%= format_poll_countdown(@payload.polling.next_poll_in_ms, @now) %>
-                  <% end %>
-                </span>
-              </div>
-              <%= if @payload.polling.poll_interval_ms do %>
-                <div class="polling-item">
-                  <span class="polling-label">Interval</span>
-                  <span class="polling-value"><%= div(@payload.polling.poll_interval_ms, 1_000) %>s</span>
-                </div>
-              <% end %>
-            </div>
-          <% else %>
-            <p class="empty-state">Polling status unavailable.</p>
-          <% end %>
-        </section>
-
-        <section class="section-card">
-          <div class="section-header">
-            <div>
-              <h2 class="section-title">Rate limits</h2>
-              <p class="section-copy">Latest upstream rate-limit snapshot, when available.</p>
-            </div>
-          </div>
-
-          <%= if @payload.rate_limits do %>
-            <%= case Presenter.format_rate_limits_for_web(@payload.rate_limits) do %>
-              <% nil -> %>
-                <p class="empty-state">Rate limit data unavailable.</p>
-              <% formatted -> %>
-                <div class="rate-limit-grid">
-                  <div class="rate-limit-card">
-                    <span class="rate-limit-id"><%= formatted.limit_id %></span>
-                    <div class="rate-limit-buckets">
-                      <%= if formatted.primary do %>
-                        <div class="rate-limit-bucket">
-                          <span class="rate-limit-bucket-label">Primary</span>
-                          <span class="rate-limit-bucket-value"><%= formatted.primary.summary %></span>
-                          <%= if formatted.primary.reset_in_seconds do %>
-                            <span class="rate-limit-bucket-reset">resets in <%= formatted.primary.reset_in_seconds %>s</span>
-                          <% end %>
-                        </div>
-                      <% end %>
-                      <%= if formatted.secondary do %>
-                        <div class="rate-limit-bucket">
-                          <span class="rate-limit-bucket-label">Secondary</span>
-                          <span class="rate-limit-bucket-value"><%= formatted.secondary.summary %></span>
-                          <%= if formatted.secondary.reset_in_seconds do %>
-                            <span class="rate-limit-bucket-reset">resets in <%= formatted.secondary.reset_in_seconds %>s</span>
-                          <% end %>
-                        </div>
-                      <% end %>
-                      <%= if formatted.credits do %>
-                        <div class="rate-limit-bucket">
-                          <span class="rate-limit-bucket-label">Credits</span>
-                          <span class="rate-limit-bucket-value"><%= formatted.credits.summary %></span>
-                        </div>
-                      <% end %>
-                    </div>
-                  </div>
-                </div>
-            <% end %>
-          <% else %>
-            <p class="empty-state">No rate-limit data available.</p>
-          <% end %>
-        </section>
 
         <% stalled_entries = stalled_running_entries(@payload.running) %>
         <%= if stalled_entries != [] and not @stalled_alert_dismissed do %>
@@ -449,7 +404,7 @@ defmodule CymphonyElixirWeb.DashboardLive do
               <div class="project-section-controls">
                 <form phx-submit="set_project_concurrency" class="inline-form">
                   <input type="hidden" name="project" value={project.name} />
-                  <label class="inline-label" for={"concurrency-#{project.name}"}>cr</label>
+                  <label class="inline-label" for={"concurrency-#{project.name}"}>concurrency</label>
                   <input
                     id={"concurrency-#{project.name}"}
                     type="number"
@@ -457,13 +412,13 @@ defmodule CymphonyElixirWeb.DashboardLive do
                     min="1"
                     value={Map.get(project, :max_concurrent_agents) || ""}
                     class="inline-input inline-input--narrow"
-                    title="Max concurrent agents"
+                    title="Max concurrent agents (cli alias: cr)"
                   />
                 </form>
 
                 <form phx-submit="set_project_providers" class="inline-form inline-form--wide">
                   <input type="hidden" name="project" value={project.name} />
-                  <label class="inline-label" for={"providers-#{project.name}"}>c</label>
+                  <label class="inline-label" for={"providers-#{project.name}"}>claude command</label>
                   <input
                     id={"providers-#{project.name}"}
                     type="text"
@@ -471,7 +426,7 @@ defmodule CymphonyElixirWeb.DashboardLive do
                     value={Enum.join(Map.get(project, :providers, []), ",")}
                     placeholder="cv1,cz2,ck1"
                     class="inline-input"
-                    title="Comma-separated provider aliases"
+                    title="Comma-separated provider aliases (cli alias: c)"
                   />
                 </form>
 
