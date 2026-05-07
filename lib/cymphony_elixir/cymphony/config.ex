@@ -203,10 +203,7 @@ defmodule CymphonyElixir.Cymphony.Config do
       if github_repo != "" do
         "\nhooks:\n" <>
           "  after_create: |\n" <>
-          "    git clone --depth 1 #{github_repo} .\n" <>
-          "    if command -v mise >/dev/null 2>&1; then\n" <>
-          "      cd elixir && mise trust && mise exec -- mix deps.get\n" <>
-          "    fi\n"
+          "    git clone --depth 1 #{github_repo} .\n"
       else
         ""
       end

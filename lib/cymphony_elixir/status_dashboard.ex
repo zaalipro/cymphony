@@ -446,7 +446,7 @@ defmodule CymphonyElixir.StatusDashboard do
         name_cell = String.pad_trailing(p.name, name_width)
 
         cr_cell =
-          colorize("cr ", @ansi_dim) <>
+          colorize("Concurrency ", @ansi_dim) <>
             colorize("#{p.running_count}", @ansi_green) <>
             colorize("/", @ansi_gray) <>
             colorize("#{p.max_concurrent_agents || "?"}", @ansi_gray)
