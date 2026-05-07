@@ -334,7 +334,8 @@ defmodule CymphonyElixir.StatusDashboard do
     case snapshot_data do
       {:ok, %{running: running, retrying: retrying, claude_totals: claude_totals} = snapshot} ->
         rate_limits = Map.get(snapshot, :rate_limits)
-        project_link_lines = format_project_link_lines()
+        per_project = Map.get(snapshot, :per_project, [])
+        project_link_lines = format_project_link_lines(per_project)
         project_refresh_line = format_project_refresh_line(Map.get(snapshot, :polling))
         claude_input_tokens = Map.get(claude_totals, :input_tokens, 0)
         claude_output_tokens = Map.get(claude_totals, :output_tokens, 0)
@@ -346,6 +347,7 @@ defmodule CymphonyElixir.StatusDashboard do
         running_rows = format_running_rows(running, running_event_width)
         running_to_backoff_spacer = if(running == [], do: [], else: ["│"])
         backoff_rows = format_retry_rows(retrying)
+        rate_limits_line = format_rate_limits_line(rate_limits)
 
         ([
            colorize("╭─ CYMPHONY STATUS", @ansi_bold),
@@ -362,13 +364,11 @@ defmodule CymphonyElixir.StatusDashboard do
              colorize("out #{format_count(claude_output_tokens)}", @ansi_yellow) <>
              colorize(" | ", @ansi_gray) <>
              colorize("total #{format_count(claude_total_tokens)}", @ansi_yellow),
-           colorize("│ Rate Limits: ", @ansi_bold) <> format_rate_limits(rate_limits),
+           rate_limits_line,
            project_link_lines,
            project_refresh_line,
            colorize("├─ Running", @ansi_bold),
-           "│",
-           running_table_header_row(running_event_width),
-           running_table_separator_row(running_event_width)
+           "│"
          ] ++
            running_rows ++
            running_to_backoff_spacer ++
@@ -392,8 +392,8 @@ defmodule CymphonyElixir.StatusDashboard do
     end
   end
 
-  defp format_project_link_lines do
-    project_lines = format_multi_project_lines()
+  defp format_project_link_lines(per_project \\ []) do
+    project_lines = format_multi_project_lines(per_project)
 
     case dashboard_url() do
       url when is_binary(url) ->
@@ -404,7 +404,7 @@ defmodule CymphonyElixir.StatusDashboard do
     end
   end
 
-  defp format_multi_project_lines do
+  defp format_multi_project_lines(per_project) do
     project_names = CymphonyElixir.ProjectSupervisor.list_project_names()
 
     case project_names do
@@ -425,14 +425,67 @@ defmodule CymphonyElixir.StatusDashboard do
 
         [colorize("│ Project: ", @ansi_bold) <> project_part]
 
-      [single] ->
-        [colorize("│ Project: ", @ansi_bold) <> colorize(single, @ansi_cyan)]
-
-      many ->
-        label = colorize("│ Projects: ", @ansi_bold)
-        names = many |> Enum.join(", ") |> colorize(@ansi_cyan)
-        [label <> names]
+      _names ->
+        format_per_project_meta_lines(per_project)
     end
+  end
+
+  defp format_per_project_meta_lines([]) do
+    [colorize("│ Projects: ", @ansi_bold) <> colorize("(loading…)", @ansi_gray)]
+  end
+
+  defp format_per_project_meta_lines(per_project) do
+    sorted = Enum.sort_by(per_project, & &1.name)
+    name_width = sorted |> Enum.map(&String.length(&1.name)) |> Enum.max(fn -> 0 end)
+
+    header = colorize("│ Projects:", @ansi_bold)
+
+    rows =
+      Enum.map(sorted, fn p ->
+        name_cell = String.pad_trailing(p.name, name_width)
+
+        cr_cell =
+          colorize("cr ", @ansi_dim) <>
+            colorize("#{p.running_count}", @ansi_green) <>
+            colorize("/", @ansi_gray) <>
+            colorize("#{p.max_concurrent_agents || "?"}", @ansi_gray)
+
+        claude_cell =
+          colorize("claude ", @ansi_dim) <>
+            colorize(p.claude_command || "claude", @ansi_yellow)
+
+        providers_cell =
+          case p.providers do
+            [] ->
+              ""
+
+            list ->
+              colorize(" · ", @ansi_gray) <>
+                colorize("providers ", @ansi_dim) <>
+                colorize(Enum.join(list, ", "), @ansi_cyan)
+          end
+
+        paused_cell =
+          if p.paused, do: colorize(" · ", @ansi_gray) <> colorize("paused", @ansi_red), else: ""
+
+        "│   " <>
+          colorize(name_cell, @ansi_cyan) <>
+          colorize(" · ", @ansi_gray) <>
+          cr_cell <>
+          colorize(" · ", @ansi_gray) <>
+          claude_cell <>
+          providers_cell <>
+          paused_cell
+      end)
+
+    [header | rows]
+  end
+
+  defp format_rate_limits_line(nil), do: []
+  defp format_rate_limits_line(rate_limits) when is_map(rate_limits) and map_size(rate_limits) == 0, do: []
+
+  defp format_rate_limits_line(rate_limits) do
+    colorize("│ Rate Limits: ", @ansi_bold) <> format_rate_limits(rate_limits)
   end
 
   defp format_project_refresh_line(%{checking?: true}) do
@@ -652,12 +705,27 @@ defmodule CymphonyElixir.StatusDashboard do
     # Use first snapshot's rate_limits and polling as representative
     first_snap = hd(snapshots).snapshot
 
+    per_project =
+      Enum.map(snapshots, fn %{project_name: name, snapshot: snap} ->
+        polling = Map.get(snap, :polling, %{})
+
+        %{
+          name: name,
+          max_concurrent_agents: Map.get(polling, :max_concurrent_agents),
+          paused: Map.get(polling, :paused, false),
+          running_count: length(Map.get(snap, :running, [])),
+          claude_command: Map.get(snap, :claude_command),
+          providers: Map.get(snap, :providers, [])
+        }
+      end)
+
     %{
       running: all_running,
       retrying: all_retrying,
       claude_totals: merged_totals,
       rate_limits: Map.get(first_snap, :rate_limits),
-      polling: Map.get(first_snap, :polling)
+      polling: Map.get(first_snap, :polling),
+      per_project: per_project
     }
   end
 
@@ -707,10 +775,30 @@ defmodule CymphonyElixir.StatusDashboard do
         "│"
       ]
     else
-      running
-      |> Enum.sort_by(& &1.identifier)
-      |> Enum.map(&format_running_summary(&1, running_event_width))
+      groups =
+        running
+        |> Enum.group_by(&Map.get(&1, :project_name))
+        |> Enum.sort_by(fn {name, _} -> name || "" end)
+
+      single_project? = length(groups) <= 1
+
+      Enum.flat_map(groups, fn {project_name, rows} ->
+        rows = Enum.sort_by(rows, & &1.identifier)
+        header = [running_table_header_row(running_event_width), running_table_separator_row(running_event_width)]
+        body = Enum.map(rows, &format_running_summary(&1, running_event_width))
+
+        if single_project? do
+          header ++ body
+        else
+          [project_subheader(project_name) | header] ++ body ++ ["│"]
+        end
+      end)
     end
+  end
+
+  defp project_subheader(name) do
+    label = name || "(unassigned)"
+    "│ " <> colorize("── #{label} ──", @ansi_bold)
   end
 
   # credo:disable-for-next-line
@@ -776,10 +864,25 @@ defmodule CymphonyElixir.StatusDashboard do
     if retrying == [] do
       ["│  " <> colorize("No queued retries", @ansi_gray)]
     else
-      retrying
-      |> Enum.sort_by(& &1.due_in_ms)
-      |> Enum.map_join(", ", &format_retry_summary/1)
-      |> String.split(", ")
+      groups =
+        retrying
+        |> Enum.group_by(&Map.get(&1, :project_name))
+        |> Enum.sort_by(fn {name, _} -> name || "" end)
+
+      single_project? = length(groups) <= 1
+
+      Enum.flat_map(groups, fn {project_name, rows} ->
+        body =
+          rows
+          |> Enum.sort_by(& &1.due_in_ms)
+          |> Enum.map(&format_retry_summary/1)
+
+        if single_project? do
+          body
+        else
+          [project_subheader(project_name) | body] ++ ["│"]
+        end
+      end)
     end
   end
 

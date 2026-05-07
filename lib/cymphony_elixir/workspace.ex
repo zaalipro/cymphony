@@ -303,12 +303,22 @@ defmodule CymphonyElixir.Workspace do
             :ok
 
           command ->
-            run_hook(command, workspace, issue_context, "after_create", worker_host, config)
+            with_after_create_lock(config, fn ->
+              run_hook(command, workspace, issue_context, "after_create", worker_host, config)
+            end)
         end
 
       false ->
         :ok
     end
+  end
+
+  # Serialize after_create per project so the storm of `git clone`s on the first
+  # poll tick doesn't race on SSH agent / known_hosts / GitHub burst limits.
+  # Scoped by workspace root: different projects stay independent.
+  defp with_after_create_lock(config, fun) do
+    lock_id = {{:cymphony_after_create, workspace_root(config)}, self()}
+    :global.trans(lock_id, fun, [Node.self()], :infinity)
   end
 
   defp maybe_run_before_remove_hook(workspace, nil) do

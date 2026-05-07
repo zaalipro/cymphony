@@ -1416,6 +1416,7 @@ defmodule CymphonyElixir.Orchestrator do
        claude_totals: state.claude_totals,
        rate_limits: Map.get(state, :claude_rate_limits),
        providers: state.providers || [],
+       claude_command: state.config.claude.command,
        polling: %{
          checking?: state.poll_check_in_progress == true,
          next_poll_in_ms: next_poll_in_ms(state.next_poll_due_at_ms, now_ms),

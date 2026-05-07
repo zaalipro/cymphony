@@ -4,7 +4,13 @@
 
 Cymphony turns Linear tickets into autonomous coding sessions. Drop a ticket into "Todo" and Cymphony picks it up, spins up a sandboxed workspace, and lets Claude Code work on it until the issue closes. You manage **work**, not agents.
 
-![Cymphony screenshot](.github/media/elixir-screenshot.png)
+**Live web dashboard** — per-project sections, kill/retry/pause/set-provider per session, real-time activity:
+
+![Cymphony web dashboard](.github/media/webui.png)
+
+**Terminal status** — same data, no browser, grouped by project:
+
+![Cymphony terminal status](.github/media/tui.png)
 
 ---
 
