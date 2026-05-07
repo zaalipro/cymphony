@@ -296,7 +296,7 @@ defmodule CymphonyElixir.CLI do
   end
 
   defp cymphony_mode?(args) do
-    {opts, positional, _invalid} = OptionParser.parse(args, strict: @switches)
+    {opts, positional, invalid} = OptionParser.parse(args, strict: @switches)
 
     # Daemon-internal processes are always spawned by cymphony itself
     # and should always use config-based cymphony mode.
@@ -306,9 +306,10 @@ defmodule CymphonyElixir.CLI do
       Keyword.has_key?(opts, :claude_command) or
       Keyword.has_key?(opts, :provider) or
       Keyword.has_key?(opts, :concurrency) or
-      (positional == [] and
+      (positional == [] and invalid == [] and
          not Keyword.has_key?(opts, @acknowledgement_switch) and
-         not File.regular?(Path.expand("WORKFLOW.md")))
+         (CymphonyConfig.exists?() or
+            not File.regular?(Path.expand("WORKFLOW.md"))))
   end
 
   defp list_projects do
