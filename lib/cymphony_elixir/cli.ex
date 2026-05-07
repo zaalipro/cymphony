@@ -79,6 +79,9 @@ defmodule CymphonyElixir.CLI do
       restart_requested?(args) ->
         restart_background(args, deps)
 
+      webui_requested?(args) ->
+        open_webui()
+
       background_requested?(args) ->
         run_background(args, deps)
 
@@ -157,6 +160,8 @@ defmodule CymphonyElixir.CLI do
 
   defp log_requested?(["log" | _]), do: true
   defp log_requested?(_), do: false
+
+  defp webui_requested?(args), do: args == ["webui"]
 
   defp show_log(args) do
     tail_count =
@@ -265,6 +270,7 @@ defmodule CymphonyElixir.CLI do
       cymphony start                 Run in background
       cymphony stop                  Stop background process
       cymphony restart               Restart background process
+      cymphony webui                 Open the dashboard in your browser
       cymphony setup                 Run setup / onboarding wizard
       cymphony add                   Add a project to existing config
       cymphony list                  List configured projects
@@ -713,6 +719,40 @@ defmodule CymphonyElixir.CLI do
     run_background(args, deps)
   end
 
+  defp open_webui do
+    alias CymphonyElixir.Cymphony.UrlFile
+
+    with {:ok, url} <- UrlFile.read(),
+         :ok <- launch_browser(url) do
+      IO.puts("Opening #{url}")
+      :done
+    else
+      {:error, :not_running} ->
+        {:error, "No dashboard URL recorded. Is cymphony running with a port? Try `cymphony port 4089 start`."}
+
+      {:error, reason} ->
+        {:error, "Failed to open browser: #{inspect(reason)}"}
+    end
+  end
+
+  defp launch_browser(url) do
+    opener =
+      case :os.type() do
+        {:unix, :darwin} -> {"open", [url]}
+        {:unix, _} -> {"xdg-open", [url]}
+        {:win32, _} -> {"cmd", ["/c", "start", "", url]}
+      end
+
+    {cmd, args} = opener
+
+    case System.cmd(cmd, args, stderr_to_stdout: true) do
+      {_out, 0} -> :ok
+      {output, status} -> {:error, "#{cmd} exited #{status}: #{String.trim(output)}"}
+    end
+  rescue
+    error in [ErlangError] -> {:error, Exception.message(error)}
+  end
+
   # ─── Pidfile helpers ───
 
   defp pidfile_path do
@@ -751,6 +791,7 @@ defmodule CymphonyElixir.CLI do
       {:ok, pid} ->
         if pid == System.pid() do
           remove_pidfile()
+          CymphonyElixir.Cymphony.UrlFile.delete()
         end
 
       :error ->

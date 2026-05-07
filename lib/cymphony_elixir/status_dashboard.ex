@@ -506,7 +506,9 @@ defmodule CymphonyElixir.StatusDashboard do
   defp linear_project_url(project_slug), do: "https://linear.app/project/#{project_slug}/issues"
 
   defp dashboard_url do
-    dashboard_url(Config.settings!().server.host, Config.server_port(), HttpServer.bound_port())
+    url = dashboard_url(Config.settings!().server.host, Config.server_port(), HttpServer.bound_port())
+    if is_binary(url), do: maybe_persist_dashboard_url(url)
+    url
   end
 
   defp dashboard_url(_host, nil, _bound_port), do: nil
@@ -518,6 +520,18 @@ defmodule CymphonyElixir.StatusDashboard do
       "http://#{dashboard_url_host(host)}:#{port}/"
     else
       nil
+    end
+  end
+
+  # Write the dashboard URL to ~/.cymphony/dashboard.url so `cymphony webui`
+  # (a separate CLI process) can find it. Idempotent; only writes when the
+  # value would change.
+  defp maybe_persist_dashboard_url(url) do
+    path = CymphonyElixir.Cymphony.UrlFile.path()
+
+    case File.read(path) do
+      {:ok, ^url} -> :ok
+      _ -> CymphonyElixir.Cymphony.UrlFile.write(url)
     end
   end
 

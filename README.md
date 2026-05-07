@@ -231,6 +231,9 @@ cymphony cr 3                           # cap concurrent sessions at 3
 cymphony c cv1,cz2                      # rotate across providers cv1 and cz2
 cymphony port 4089                      # enable dashboard
 cymphony project MyApp cr 5 c cv1,cz port 4089  # combine flags
+cymphony start                          # run as a background daemon
+cymphony stop                           # stop the background daemon
+cymphony webui                          # open the dashboard in your browser
 cymphony setup                          # re-run the wizard
 cymphony add                            # add a new project to existing config
 cymphony list                           # list configured projects
@@ -239,6 +242,22 @@ cymphony h                              # help
 ```
 
 Long-form flags also work: `--project`, `--concurrency`, `--provider`, `--claude-command`, `--port`, `--setup`, `--logs-root`, `--help`, `--version`.
+
+---
+
+## Iterating with the agent
+
+Cymphony isn't a one-shot dispatcher — you stay in the loop the same way you would with a human teammate.
+
+Here's the natural flow:
+
+1. You drop a ticket into your Linear "Todo" (or any active state). Cymphony picks it up on the next poll, spins up an isolated workspace, and the agent gets to work.
+2. When it's done it pushes a branch, opens a **pull request**, and moves the ticket to "Done" (or whatever terminal state your workflow uses).
+3. You review the PR. If something's off — wrong approach, missed edge case, code style nit, anything — **don't open another ticket**. Just **comment on the same Linear issue** describing what to change, then **move the ticket back to an active state** ("Todo", "In Progress", or "Rework").
+4. On the next poll, Cymphony notices the ticket is active again and **resumes the same workspace and same branch**. The agent reads your new comment alongside the original ticket, applies your feedback, and force-pushes to the existing PR.
+5. Repeat until you're happy and you merge it.
+
+Because Cymphony reuses the workspace per-issue, the agent keeps full context across rounds — your comment lands on top of everything it already knows about the ticket, and you don't pay for a fresh re-read of the codebase every iteration.
 
 ---
 
