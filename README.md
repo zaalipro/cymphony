@@ -15,8 +15,9 @@ If you've used [openai/symphony](https://github.com/openai/symphony), the core i
 | | openai/symphony | **Cymphony** |
 |---|---|---|
 | Coding agent | Codex | **Claude Code** |
-| Concurrency | one project, fixed | **multi-project, per-project `cr` cap** |
-| Providers | one API endpoint | **rotate across many** (`c cv1,cz2,ck1`) — works around rate limits |
+| Concurrency | one project, fixed | **Multi-project orchestration**, with a per-project cap on how many sessions may run at once (default 10, change live from the dashboard or CLI) |
+| Claude command | one binary | **Custom Claude command per project** — point one project at the official `claude` CLI, another at a wrapper that swaps in z.ai / Kimi / OpenRouter credentials, etc. |
+| Providers | one API endpoint | **Rotate across multiple Claude-compatible backends** — list two or more providers and Cymphony spreads new sessions across them randomly. Avoids hitting any single backend's rate limit. |
 | Live UI | terminal-only | **Phoenix LiveView dashboard** with kill / retry / pause / set-provider per running session |
 | HTTP API | — | `/api/v1/*` for state, pause, concurrency, providers, refresh |
 | Workspace lifecycle | clone-on-create | **after_create / before_run / after_run / before_remove hooks**, optional retention sweep |
