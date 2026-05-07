@@ -277,7 +277,7 @@ cz() {
   _unset
   export ANTHROPIC_BASE_URL="https://api.z.ai/api/anthropic"
   export ANTHROPIC_API_KEY="sk-zai-..."
-  export ANTHROPIC_MODEL="glm-4.6"
+  export ANTHROPIC_MODEL="glm-5.1"
 }
 
 # Kimi (Moonshot)
@@ -285,7 +285,7 @@ ck() {
   _unset
   export ANTHROPIC_BASE_URL="https://api.moonshot.ai/anthropic"
   export ANTHROPIC_API_KEY="sk-kimi-..."
-  export ANTHROPIC_MODEL="kimi-k2-0905-preview"
+  export ANTHROPIC_MODEL="kimi-k2.6"
 }
 
 # A second Anthropic key for parallel slots
@@ -343,12 +343,12 @@ If you'd rather keep everything in one file and skip shell-function gymnastics, 
     "cz": {
       "ANTHROPIC_BASE_URL": "https://api.z.ai/api/anthropic",
       "ANTHROPIC_API_KEY": "sk-zai-...",
-      "ANTHROPIC_MODEL": "glm-4.6"
+      "ANTHROPIC_MODEL": "glm-5.1"
     },
     "ck": {
       "ANTHROPIC_BASE_URL": "https://api.moonshot.ai/anthropic",
       "ANTHROPIC_API_KEY": "sk-kimi-...",
-      "ANTHROPIC_MODEL": "kimi-k2-0905-preview"
+      "ANTHROPIC_MODEL": "kimi-k2.6"
     }
   }
 }
