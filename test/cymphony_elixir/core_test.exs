@@ -96,6 +96,9 @@ defmodule CymphonyElixir.CoreTest do
     assert {:ok, %{config: config, prompt: prompt}} = Workflow.load()
     assert is_map(config)
 
+    # In-repo WORKFLOW.md is a generic dev/test default. Per-project hooks live
+    # in ~/.cymphony/config.json and are projected into per-project temp
+    # WORKFLOW.md files at runtime — not asserted here.
     tracker = Map.get(config, "tracker", %{})
     assert is_map(tracker)
     assert Map.get(tracker, "kind") == "linear"
@@ -103,16 +106,11 @@ defmodule CymphonyElixir.CoreTest do
     assert is_list(Map.get(tracker, "active_states"))
     assert is_list(Map.get(tracker, "terminal_states"))
 
-    hooks = Map.get(config, "hooks", %{})
-    assert is_map(hooks)
-    assert Map.get(hooks, "after_create") =~ "git clone --depth 1"
-    assert Map.get(hooks, "after_create") =~ "cd elixir && mise trust"
-    assert Map.get(hooks, "after_create") =~ "mise exec -- mix deps.get"
-    assert Map.get(hooks, "before_remove") =~ "cd elixir && mise exec -- mix workspace.before_remove"
-
-    assert String.trim(prompt) != ""
+    # Prompt body in the in-repo default may be empty; PromptBuilder falls
+    # back to the rich PromptTemplate when the workflow prompt is blank.
+    assert is_binary(prompt)
     assert is_binary(Config.workflow_prompt())
-    assert Config.workflow_prompt() == prompt
+    assert String.trim(Config.workflow_prompt()) != ""
   end
 
   test "linear api token resolves from LINEAR_API_KEY env var" do
@@ -937,7 +935,7 @@ defmodule CymphonyElixir.CoreTest do
     end
   end
 
-  test "in-repo WORKFLOW.md renders correctly" do
+  test "in-repo WORKFLOW.md falls back to PromptTemplate when prompt body is empty" do
     workflow_path = Workflow.workflow_file_path()
     Workflow.set_workflow_file_path(Path.expand("WORKFLOW.md", File.cwd!()))
 
@@ -954,23 +952,11 @@ defmodule CymphonyElixir.CoreTest do
 
     prompt = PromptBuilder.build_prompt(issue, attempt: 2)
 
-    assert prompt =~ "You are working on a Linear ticket `MT-616`"
-    assert prompt =~ "Issue context:"
-    assert prompt =~ "Identifier: MT-616"
-    assert prompt =~ "Title: Use rich templates for WORKFLOW.md"
-    assert prompt =~ "Current status: In Progress"
-    assert prompt =~ "https://example.org/issues/MT-616/use-rich-templates-for-workflowmd"
-    assert prompt =~ "This is an unattended orchestration session."
-    assert prompt =~ "Only stop early for a true blocker"
-    assert prompt =~ "Do not include \"next steps for user\""
-    assert prompt =~ "open and follow `.claude/skills/land/SKILL.md`"
-    assert prompt =~ "Do not call `gh pr merge` directly"
-    assert prompt =~ "Review re-entry and human comment intake"
-    assert prompt =~ "A Linear comment by itself is not the trigger"
-    assert prompt =~ "Last processed human comment: <comment id or timestamp>"
-    assert prompt =~ "please fix merge conflicts on PR"
-    assert prompt =~ "Continuation context:"
-    assert prompt =~ "retry attempt #2"
+    # Generic in-repo WORKFLOW.md has an empty prompt body, so PromptBuilder
+    # falls back to Config.workflow_prompt() which renders issue context.
+    assert is_binary(prompt)
+    assert prompt =~ "MT-616"
+    assert prompt =~ "Use rich templates for WORKFLOW.md"
   end
 
   test "generated default workflow prompt includes review re-entry comment handling" do

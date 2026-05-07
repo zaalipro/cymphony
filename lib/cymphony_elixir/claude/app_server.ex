@@ -189,32 +189,59 @@ defmodule CymphonyElixir.Claude.AppServer do
   defp start_port_for_command(command, workspace, worker_host, config)
 
   defp start_port_for_command(command, workspace, nil, config) do
-    executable = System.find_executable("bash")
+    case pick_local_shell() do
+      {:ok, shell} ->
+        port =
+          Port.open(
+            {:spawn_executable, String.to_charlist(shell)},
+            [
+              :binary,
+              :exit_status,
+              :stderr_to_stdout,
+              args: [~c"-c", String.to_charlist(local_launch_script(command))],
+              cd: String.to_charlist(workspace),
+              line: @port_line_bytes,
+              env: claude_env(config)
+            ]
+          )
 
-    if is_nil(executable) do
-      {:error, :bash_not_found}
-    else
-      port =
-        Port.open(
-          {:spawn_executable, String.to_charlist(executable)},
-          [
-            :binary,
-            :exit_status,
-            :stderr_to_stdout,
-            args: [~c"-lc", String.to_charlist(command)],
-            cd: String.to_charlist(workspace),
-            line: @port_line_bytes,
-            env: claude_env(config)
-          ]
-        )
+        {:ok, port}
 
-      {:ok, port}
+      {:error, _} = err ->
+        err
     end
   end
 
   defp start_port_for_command(command, workspace, worker_host, config) when is_binary(worker_host) do
     remote_command = remote_launch_command(workspace, command, config)
     SSH.start_port(worker_host, remote_command, line: @port_line_bytes)
+  end
+
+  # Wrap the user's command so shell-function aliases (e.g. `cz`, `cm`, `cv1`
+  # defined in ~/.cld) resolve when used as claude_command. Sourcing only
+  # happens when the first word of the command isn't already on $PATH, so
+  # plain binary commands (`claude`, `bash`, etc.) don't trigger rc-file
+  # sourcing — that would otherwise override env vars (LINEAR_API_KEY,
+  # ANTHROPIC_*, etc.) that we explicitly pass via Port.open's :env option.
+  defp local_launch_script(command) do
+    cmd_name = command |> String.split(" ", parts: 2) |> List.first() || ""
+
+    """
+    if ! command -v #{shell_escape(cmd_name)} >/dev/null 2>&1; then
+      for __cymphony_rc in "$HOME/.cld" "$HOME/.zshrc" "$HOME/.bashrc"; do
+        [ -f "$__cymphony_rc" ] && . "$__cymphony_rc" 2>/dev/null || true
+      done
+      unset __cymphony_rc
+    fi
+    exec #{command}
+    """
+  end
+
+  defp pick_local_shell do
+    case System.find_executable("zsh") || System.find_executable("bash") do
+      nil -> {:error, :shell_not_found}
+      path -> {:ok, path}
+    end
   end
 
   defp remote_launch_command(workspace, command, config) when is_binary(workspace) do

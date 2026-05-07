@@ -52,3 +52,7 @@ status.txt
 
 # Ignore package tarball (built via "mix hex.build").
 cymphony_elixir-*.tar
+
+# Per-user cymphony config (kept in ~/.cymphony/config.json, never in repo).
+# The tracked WORKFLOW.md is a generic dev/test default — do NOT replace it
+# with personal Linear/GitHub config, that lives in ~/.cymphony/config.json.
