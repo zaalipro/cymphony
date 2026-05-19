@@ -7,7 +7,17 @@ defmodule CymphonyElixir.Orchestrator do
   require Logger
   import Bitwise, only: [<<<: 2]
 
-  alias CymphonyElixir.{AgentRunner, Config, ProjectSupervisor, StatusDashboard, Tracker, WorkflowStore, Workspace}
+  alias CymphonyElixir.{
+    AgentRunner,
+    CompletionStore,
+    Config,
+    ProjectSupervisor,
+    StatusDashboard,
+    Tracker,
+    WorkflowStore,
+    Workspace
+  }
+
   alias CymphonyElixirWeb.ObservabilityPubSub
   alias CymphonyElixir.Linear.Issue
 
@@ -73,6 +83,7 @@ defmodule CymphonyElixir.Orchestrator do
       poll_check_in_progress: false,
       tick_timer_ref: nil,
       tick_token: nil,
+      recent_completed: load_recent_completed(project_name),
       claude_totals: @empty_claude_totals,
       claude_rate_limits: nil
     }
@@ -657,6 +668,16 @@ defmodule CymphonyElixir.Orchestrator do
 
   defp issue_routable_to_worker?(_issue), do: true
 
+  # Implements the dispatch rule from openai/symphony SPEC §8.2:
+  # > "If state is `Todo`, do not dispatch when any blocker is non-terminal."
+  #
+  # A blocker is considered non-terminal when its state name (case-insensitive,
+  # normalized via `normalize_issue_state/1`) is not in `terminal_states`. The
+  # rule applies only when the issue itself is in the Todo state — issues
+  # already in progress are allowed to run even when blockers remain open, so
+  # an in-flight worker can finish what it started.
+  #
+  # Returns `true` when the issue should NOT be dispatched, `false` otherwise.
   defp todo_issue_blocked_by_non_terminal?(
          %Issue{state: issue_state, blocked_by: blockers},
          terminal_states
@@ -878,6 +899,7 @@ defmodule CymphonyElixir.Orchestrator do
 
   defp complete_issue(%State{} = state, issue_id, running_entry) do
     record = build_completed_record(issue_id, running_entry, state.project_name)
+    _ = persist_completed_record(record)
     recent = [record | state.recent_completed] |> Enum.take(@max_recent_completed)
 
     %{
@@ -886,6 +908,23 @@ defmodule CymphonyElixir.Orchestrator do
         retry_attempts: Map.delete(state.retry_attempts, issue_id)
     }
   end
+
+  defp persist_completed_record(record) do
+    CompletionStore.put_async(record)
+  rescue
+    exception ->
+      Logger.warning("event=\"completion_store.write\" status=error reason=#{inspect(exception)}")
+
+      :ok
+  end
+
+  defp load_recent_completed(project_name) when is_binary(project_name) do
+    CompletionStore.recent(project_name, @max_recent_completed)
+  rescue
+    _ -> []
+  end
+
+  defp load_recent_completed(_project_name), do: []
 
   defp build_completed_record(issue_id, running_entry, project_name) do
     started = Map.get(running_entry, :started_at)

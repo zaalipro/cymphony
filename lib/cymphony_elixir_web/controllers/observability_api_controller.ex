@@ -6,9 +6,12 @@ defmodule CymphonyElixirWeb.ObservabilityApiController do
   use Phoenix.Controller, formats: [:json]
 
   alias CymphonyElixir.Cymphony.Config, as: CymphonyConfig
-  alias CymphonyElixir.{Orchestrator, ProjectSupervisor}
+  alias CymphonyElixir.{CompletionStore, Orchestrator, ProjectSupervisor}
   alias CymphonyElixirWeb.{Endpoint, Presenter}
   alias Plug.Conn
+
+  @completed_default_limit 100
+  @completed_max_limit 1_000
 
   @spec state(Conn.t(), map()) :: Conn.t()
   def state(conn, _params) do
@@ -48,30 +51,56 @@ defmodule CymphonyElixirWeb.ObservabilityApiController do
 
   @spec completed(Conn.t(), map()) :: Conn.t()
   def completed(conn, params) do
-    payload = Presenter.state_payload(orchestrator(), snapshot_timeout_ms())
-    entries = Map.get(payload, :recent_completed, [])
+    project_filter = normalize_project(params["project"])
 
     entries =
-      case params["project"] do
-        nil -> entries
-        "" -> entries
-        project -> Enum.filter(entries, &(&1.project_name == project))
-      end
+      case parse_limit(params["limit"]) do
+        {:explicit, limit} ->
+          load_completed_from_store(project_filter, limit)
 
-    entries =
-      case params["limit"] do
-        nil ->
-          entries
-
-        value ->
-          case Integer.parse(value) do
-            {n, ""} when n > 0 -> Enum.take(entries, n)
-            _ -> entries
-          end
+        :default ->
+          load_completed_from_snapshot(project_filter)
       end
 
     json(conn, %{recent_completed: entries})
   end
+
+  defp load_completed_from_store(project_filter, limit) do
+    selector = project_filter || :all
+
+    CompletionStore.recent(selector, limit)
+    |> Enum.map(&Presenter.completed_entry_payload/1)
+  end
+
+  defp load_completed_from_snapshot(project_filter) do
+    payload = Presenter.state_payload(orchestrator(), snapshot_timeout_ms())
+    entries = Map.get(payload, :recent_completed, [])
+
+    case project_filter do
+      nil -> entries
+      project -> Enum.filter(entries, &(&1.project_name == project))
+    end
+  end
+
+  defp normalize_project(nil), do: nil
+  defp normalize_project(""), do: nil
+  defp normalize_project(project) when is_binary(project), do: project
+  defp normalize_project(_), do: nil
+
+  defp parse_limit(nil), do: :default
+  defp parse_limit(""), do: :default
+
+  defp parse_limit(value) when is_binary(value) do
+    case Integer.parse(String.trim(value)) do
+      {n, ""} when n > 0 -> {:explicit, min(n, @completed_max_limit)}
+      _ -> {:explicit, @completed_default_limit}
+    end
+  end
+
+  defp parse_limit(value) when is_integer(value) and value > 0,
+    do: {:explicit, min(value, @completed_max_limit)}
+
+  defp parse_limit(_), do: :default
 
   @spec pause(Conn.t(), map()) :: Conn.t()
   def pause(conn, params) do

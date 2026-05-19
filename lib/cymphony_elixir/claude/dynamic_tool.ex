@@ -1,11 +1,19 @@
 defmodule CymphonyElixir.Claude.DynamicTool do
   @moduledoc """
-  Placeholder for dynamic tool support with Claude Code.
+  Backward-compatibility placeholder for dynamic tool support.
 
-  Claude Code has built-in Read, Edit, and Bash tools. Custom tools like
-  `linear_graphql` are no longer needed as callbacks because Claude can
-  execute `curl` commands directly via Bash when `LINEAR_API_KEY` is available
-  in the environment.
+  In Cymphony's first revision, custom tools like `linear_graphql` were
+  expected to be served as orchestrator-side callbacks. That mechanism was
+  superseded once Claude Code's MCP integration matured: the canonical path
+  for `linear_graphql` is now a per-session stdio MCP server (see
+  `CymphonyElixir.Mcp.LinearGraphqlServer` and the descriptor produced by
+  `CymphonyElixir.Mcp.ConfigWriter`).
+
+  This module is retained so the legacy `execute/3` and `tool_specs/0`
+  contract remains callable. Both are no-ops — the real tool lives in the
+  MCP server.
+
+  Reference: openai/symphony SPEC §10.5 (`linear_graphql` tool contract).
   """
 
   @spec execute(String.t() | nil, term(), keyword()) :: map()

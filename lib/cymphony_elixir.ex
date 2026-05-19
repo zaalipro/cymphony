@@ -31,6 +31,7 @@ defmodule CymphonyElixir.Application do
     [
       {Phoenix.PubSub, name: CymphonyElixir.PubSub},
       {Registry, keys: :unique, name: CymphonyElixir.ProjectRegistry},
+      CymphonyElixir.CompletionStore,
       {Task.Supervisor, name: CymphonyElixir.TaskSupervisor},
       {DynamicSupervisor, name: CymphonyElixir.ProjectDynamicSupervisor, strategy: :one_for_one},
       CymphonyElixir.HttpServer,

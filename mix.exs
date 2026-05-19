@@ -4,7 +4,7 @@ defmodule CymphonyElixir.MixProject do
   def project do
     [
       app: :cymphony_elixir,
-      version: "1.5.6",
+      version: "1.6.0",
       elixir: "~> 1.19",
       compilers: [:phoenix_live_view] ++ Mix.compilers(),
       start_permanent: Mix.env() == :prod,
@@ -14,6 +14,7 @@ defmodule CymphonyElixir.MixProject do
         ],
         ignore_modules: [
           CymphonyElixir.Config,
+          CymphonyElixir.CompletionStore,
           CymphonyElixir.Linear.Client,
           CymphonyElixir.SpecsCheck,
           CymphonyElixir.Orchestrator,
@@ -23,6 +24,7 @@ defmodule CymphonyElixir.MixProject do
           CymphonyElixir.Claude.AppServer,
           CymphonyElixir.Claude.DynamicTool,
           CymphonyElixir.HttpServer,
+          CymphonyElixir.Mcp.LinearGraphqlServer,
           CymphonyElixir.StatusDashboard,
           CymphonyElixir.LogFile,
           CymphonyElixir.Workspace,
@@ -36,7 +38,8 @@ defmodule CymphonyElixir.MixProject do
           CymphonyElixirWeb.StaticAssetController,
           CymphonyElixirWeb.StaticAssets,
           CymphonyElixirWeb.Router,
-          CymphonyElixirWeb.Router.Helpers
+          CymphonyElixirWeb.Router.Helpers,
+          Mix.Tasks.Cymphony.Mcp.LinearGraphql
         ]
       ],
       test_ignore_filters: [
@@ -83,6 +86,7 @@ defmodule CymphonyElixir.MixProject do
       {:yaml_elixir, "~> 2.12"},
       {:solid, "~> 1.2"},
       {:ecto, "~> 3.13"},
+      {:exqlite, "~> 0.27"},
       {:credo, "~> 1.7", only: [:dev, :test], runtime: false},
       {:dialyxir, "~> 1.4", only: [:dev], runtime: false},
       {:burrito, "~> 1.2"}

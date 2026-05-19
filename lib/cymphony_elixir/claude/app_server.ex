@@ -140,12 +140,15 @@ defmodule CymphonyElixir.Claude.AppServer do
   end
 
   defp spawn_claude_turn(workspace, worker_host, prompt, issue, session_id, config) do
-    with {:ok, command} <- build_claude_command(prompt, issue, session_id, config) do
+    with {:ok, command} <- build_claude_command(prompt, issue, session_id, config, workspace, worker_host) do
       start_port_for_command(command, workspace, worker_host, config)
     end
   end
 
-  defp build_claude_command(prompt, _issue, session_id, config) do
+  @doc false
+  @spec build_claude_command(String.t(), map(), String.t() | nil, term(), Path.t() | nil, String.t() | nil) ::
+          {:ok, String.t()}
+  def build_claude_command(prompt, _issue, session_id, config, workspace \\ nil, worker_host \\ nil) do
     settings = if config, do: config.claude, else: Config.settings!().claude
 
     args =
@@ -161,6 +164,7 @@ defmodule CymphonyElixir.Claude.AppServer do
       |> maybe_add_flag(settings.fallback_model, "--fallback-model", settings.fallback_model)
       |> maybe_add_flag(settings.max_turns, "--max-turns", settings.max_turns)
       |> maybe_add_flag(settings.max_budget_usd, "--max-budget-usd", settings.max_budget_usd)
+      |> maybe_add_mcp_config(workspace, worker_host, config)
       |> maybe_add_resume_flag(session_id)
 
     command =
@@ -172,6 +176,18 @@ defmodule CymphonyElixir.Claude.AppServer do
     full_command = Enum.join([command | args], " ")
     {:ok, full_command}
   end
+
+  defp maybe_add_mcp_config(args, workspace, nil, %{tracker: %{kind: "linear", api_key: key} = tracker})
+       when is_binary(workspace) and is_binary(key) and key != "" do
+    descriptor = %{api_key: key, endpoint: Map.get(tracker, :endpoint)}
+
+    case CymphonyElixir.Mcp.ConfigWriter.write(workspace, descriptor) do
+      {:ok, path} -> args ++ ["--mcp-config", shell_escape(path)]
+      {:error, _reason} -> args
+    end
+  end
+
+  defp maybe_add_mcp_config(args, _workspace, _worker_host, _config), do: args
 
   defp maybe_add_flag(args, nil, _flag), do: args
   defp maybe_add_flag(args, false, _flag), do: args
