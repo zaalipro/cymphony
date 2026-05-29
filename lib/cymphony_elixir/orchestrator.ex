@@ -20,7 +20,7 @@ defmodule CymphonyElixir.Orchestrator do
 
   alias CymphonyElixirWeb.ObservabilityPubSub
   alias CymphonyElixir.Linear.Issue
-  alias CymphonyElixir.Orchestrator.Tokens
+  alias CymphonyElixir.Orchestrator.{Stall, Tokens}
 
   @continuation_retry_delay_ms 1_000
   @failure_retry_base_ms 10_000
@@ -488,14 +488,8 @@ defmodule CymphonyElixir.Orchestrator do
     end
   end
 
-  defp reconcile_stalled_running_issues(%State{config: nil} = state) do
-    timeout_ms = load_config().claude.stall_timeout_ms
-    do_reconcile_stalled(state, timeout_ms)
-  end
-
   defp reconcile_stalled_running_issues(%State{} = state) do
-    timeout_ms = state.config.claude.stall_timeout_ms
-    do_reconcile_stalled(state, timeout_ms)
+    do_reconcile_stalled(state, state_config(state).claude.stall_timeout_ms)
   end
 
   defp do_reconcile_stalled(state, timeout_ms) do
@@ -516,9 +510,8 @@ defmodule CymphonyElixir.Orchestrator do
   end
 
   defp restart_stalled_issue(state, issue_id, running_entry, now, timeout_ms) do
-    elapsed_ms = stall_elapsed_ms(running_entry, now)
-
-    if is_integer(elapsed_ms) and elapsed_ms > timeout_ms do
+    if Stall.stalled?(running_entry, now, timeout_ms) do
+      elapsed_ms = Stall.elapsed_ms(running_entry, now)
       identifier = Map.get(running_entry, :identifier, issue_id)
       session_id = running_entry_session_id(running_entry)
 
@@ -540,24 +533,6 @@ defmodule CymphonyElixir.Orchestrator do
       state
     end
   end
-
-  defp stall_elapsed_ms(running_entry, now) do
-    running_entry
-    |> last_activity_timestamp()
-    |> case do
-      %DateTime{} = timestamp ->
-        max(0, DateTime.diff(now, timestamp, :millisecond))
-
-      _ ->
-        nil
-    end
-  end
-
-  defp last_activity_timestamp(running_entry) when is_map(running_entry) do
-    Map.get(running_entry, :last_claude_timestamp) || Map.get(running_entry, :started_at)
-  end
-
-  defp last_activity_timestamp(_running_entry), do: nil
 
   defp terminate_task(pid) when is_pid(pid) do
     case Task.Supervisor.terminate_child(CymphonyElixir.TaskSupervisor, pid) do
@@ -623,15 +598,8 @@ defmodule CymphonyElixir.Orchestrator do
 
   defp should_dispatch_issue?(_issue, _state, _active_states, _terminal_states), do: false
 
-  defp state_slots_available?(%Issue{state: issue_state}, running, %State{config: nil}) when is_map(running) do
-    config = load_config()
-    limit = Map.get(config.agent.max_concurrent_agents_by_state, normalize_issue_state(issue_state), config.agent.max_concurrent_agents)
-    used = running_issue_count_for_state(running, issue_state)
-    limit > used
-  end
-
   defp state_slots_available?(%Issue{state: issue_state}, running, %State{} = state) when is_map(running) do
-    config = state.config
+    config = state_config(state)
     limit = Map.get(config.agent.max_concurrent_agents_by_state, normalize_issue_state(issue_state), config.agent.max_concurrent_agents)
     used = running_issue_count_for_state(running, issue_state)
     limit > used
@@ -716,12 +684,8 @@ defmodule CymphonyElixir.Orchestrator do
     String.downcase(String.trim(state_name))
   end
 
-  defp terminal_state_set(%State{config: nil}) do
-    terminal_state_set()
-  end
-
   defp terminal_state_set(%State{} = state) do
-    state.config.tracker.terminal_states
+    state_config(state).tracker.terminal_states
     |> Enum.map(&normalize_issue_state/1)
     |> Enum.filter(&(&1 != ""))
     |> MapSet.new()
@@ -734,12 +698,8 @@ defmodule CymphonyElixir.Orchestrator do
     |> MapSet.new()
   end
 
-  defp active_state_set(%State{config: nil}) do
-    active_state_set()
-  end
-
   defp active_state_set(%State{} = state) do
-    state.config.tracker.active_states
+    state_config(state).tracker.active_states
     |> Enum.map(&normalize_issue_state/1)
     |> Enum.filter(&(&1 != ""))
     |> MapSet.new()
@@ -1071,14 +1031,9 @@ defmodule CymphonyElixir.Orchestrator do
 
   defp cleanup_issue_workspace(_identifier, _worker_host), do: :ok
 
-  defp run_terminal_workspace_cleanup(%State{config: nil}) do
-    terminal_states = load_config().tracker.terminal_states
-    do_terminal_workspace_cleanup(terminal_states, load_config())
-  end
-
   defp run_terminal_workspace_cleanup(%State{} = state) do
-    terminal_states = state.config.tracker.terminal_states
-    do_terminal_workspace_cleanup(terminal_states, state.config)
+    config = state_config(state)
+    do_terminal_workspace_cleanup(config.tracker.terminal_states, config)
   end
 
   # Sweep stale workspaces every 6 hours when `workspace.retention_days` is set.
@@ -1287,12 +1242,8 @@ defmodule CymphonyElixir.Orchestrator do
     Map.put(running_entry, key, value)
   end
 
-  defp select_worker_host(%State{config: nil} = state, preferred_worker_host) do
-    select_worker_host_with_hosts(state, preferred_worker_host, load_config().worker.ssh_hosts)
-  end
-
   defp select_worker_host(%State{} = state, preferred_worker_host) do
-    select_worker_host_with_hosts(state, preferred_worker_host, state.config.worker.ssh_hosts)
+    select_worker_host_with_hosts(state, preferred_worker_host, state_config(state).worker.ssh_hosts)
   end
 
   defp select_worker_host_with_hosts(state, preferred_worker_host, hosts) do
@@ -1347,18 +1298,8 @@ defmodule CymphonyElixir.Orchestrator do
     select_worker_host(state, preferred_worker_host) != :no_worker_capacity
   end
 
-  defp worker_host_slots_available?(%State{config: nil} = state, worker_host) when is_binary(worker_host) do
-    case load_config().worker.max_concurrent_agents_per_host do
-      limit when is_integer(limit) and limit > 0 ->
-        running_worker_host_count(state.running, worker_host) < limit
-
-      _ ->
-        true
-    end
-  end
-
   defp worker_host_slots_available?(%State{} = state, worker_host) when is_binary(worker_host) do
-    case state.config.worker.max_concurrent_agents_per_host do
+    case state_config(state).worker.max_concurrent_agents_per_host do
       limit when is_integer(limit) and limit > 0 ->
         running_worker_host_count(state.running, worker_host) < limit
 
@@ -1393,17 +1334,9 @@ defmodule CymphonyElixir.Orchestrator do
     "issue_id=#{issue_id} issue_identifier=#{identifier}"
   end
 
-  defp available_slots(%State{config: nil} = state) do
-    max(
-      (state.max_concurrent_agents || load_config().agent.max_concurrent_agents) -
-        map_size(state.running),
-      0
-    )
-  end
-
   defp available_slots(%State{} = state) do
     max(
-      (state.max_concurrent_agents || state.config.agent.max_concurrent_agents) -
+      (state.max_concurrent_agents || state_config(state).agent.max_concurrent_agents) -
         map_size(state.running),
       0
     )
