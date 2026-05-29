@@ -487,7 +487,7 @@ defmodule CymphonyElixir.WorkspaceAndConfigTest do
     }
 
     sorted =
-      Orchestrator.sort_issues_for_dispatch_for_test([
+      Orchestrator.Dispatch.sort_for_dispatch([
         issue_lower_priority_older,
         issue_same_priority_newer,
         issue_same_priority_older
