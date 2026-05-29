@@ -4,6 +4,7 @@ defmodule CymphonyElixir.CLI do
   """
 
   alias CymphonyElixir.LogFile
+  alias CymphonyElixir.Shell
 
   alias CymphonyElixir.Cymphony.Config, as: CymphonyConfig
   alias CymphonyElixir.Cymphony.Onboarding
@@ -672,9 +673,11 @@ defmodule CymphonyElixir.CLI do
     log_file = Path.join(CymphonyConfig.config_dir(), "cymphony.log")
 
     # Use nohup to detach from terminal; the inner & backgrounds the process
-    # so the outer sh exits immediately.
-    cmd =
-      "nohup #{escript} #{Enum.join(filtered_args, " ")} > #{log_file} 2>&1 </dev/null &"
+    # so the outer sh exits immediately. Each token is shell-escaped so paths
+    # or args containing spaces/metacharacters are treated literally.
+    escaped_command = Enum.map_join([escript | filtered_args], " ", &Shell.escape/1)
+
+    cmd = "nohup #{escaped_command} > #{Shell.escape(log_file)} 2>&1 </dev/null &"
 
     _ = System.cmd("sh", ["-c", cmd], stderr_to_stdout: true)
 

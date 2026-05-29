@@ -627,6 +627,67 @@ defmodule CymphonyElixir.CoreTest do
     assert_due_in_range(due_at_ms, 9_000, 10_500)
   end
 
+  test "abandons an issue after exceeding max_retry_attempts and reclaims its workspace" do
+    test_root = Path.join(System.tmp_dir!(), "cymphony_abandon_#{System.unique_integer([:positive])}")
+    issue_id = "issue-abandon"
+    issue_identifier = "MT-562"
+    ref = make_ref()
+
+    write_workflow_file!(Workflow.workflow_file_path(),
+      tracker_kind: "memory",
+      workspace_root: test_root,
+      max_retry_attempts: 2,
+      poll_interval_ms: 30_000
+    )
+
+    Application.put_env(:cymphony_elixir, :memory_tracker_recipient, self())
+
+    orchestrator_name = Module.concat(__MODULE__, :AbandonOrchestrator)
+    {:ok, pid} = Orchestrator.start_link(name: orchestrator_name)
+
+    on_exit(fn ->
+      Application.delete_env(:cymphony_elixir, :memory_tracker_recipient)
+      File.rm_rf(test_root)
+      if Process.alive?(pid), do: Process.exit(pid, :normal)
+    end)
+
+    assert {:ok, workspace} =
+             CymphonyElixir.PathSafety.canonicalize(Path.join(test_root, issue_identifier))
+
+    File.mkdir_p!(workspace)
+
+    initial_state = :sys.get_state(pid)
+
+    # failure_count: 2 means the next crash is the 3rd consecutive failure,
+    # which exceeds max_retry_attempts: 2 and should trigger abandonment.
+    running_entry = %{
+      pid: self(),
+      ref: ref,
+      identifier: issue_identifier,
+      failure_count: 2,
+      issue: %Issue{id: issue_id, identifier: issue_identifier, state: "In Progress"},
+      started_at: DateTime.utc_now()
+    }
+
+    :sys.replace_state(pid, fn _ ->
+      initial_state
+      |> Map.put(:running, %{issue_id => running_entry})
+      |> Map.put(:claimed, MapSet.new([issue_id]))
+      |> Map.put(:retry_attempts, %{})
+    end)
+
+    send(pid, {:DOWN, ref, :process, self(), :boom})
+
+    assert_receive {:memory_tracker_comment, ^issue_id, body}, 1_000
+    assert body =~ "abandoned"
+    assert body =~ "3 consecutive"
+
+    state = :sys.get_state(pid)
+    refute MapSet.member?(state.claimed, issue_id)
+    refute Map.has_key?(state.retry_attempts, issue_id)
+    refute File.exists?(workspace)
+  end
+
   test "stale retry timer messages do not consume newer retry entries" do
     issue_id = "issue-stale-retry"
     orchestrator_name = Module.concat(__MODULE__, :StaleRetryOrchestrator)

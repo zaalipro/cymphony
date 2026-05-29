@@ -370,7 +370,7 @@ defmodule CymphonyElixir.Claude.AppServer do
 
   defp await_process_completion(port, on_message, metadata) do
     config = Map.get(metadata, :config)
-    output = collect_output(port, "", config)
+    output = collect_output(port, config)
 
     case output do
       {:ok, lines} ->
@@ -381,24 +381,30 @@ defmodule CymphonyElixir.Claude.AppServer do
     end
   end
 
-  defp collect_output(port, buffer, config) do
+  defp collect_output(port, config) do
+    collect_output(port, "", [], config)
+  end
+
+  # Tail-recursive: accumulates completed lines in reverse and reverses once at
+  # the end, so a long stream-json turn (thousands of events) does not grow the
+  # call stack proportionally to the number of output lines.
+  defp collect_output(port, buffer, acc, config) do
     timeout_ms = if config, do: config.claude.turn_timeout_ms, else: Config.settings!().claude.turn_timeout_ms
 
     receive do
       {^port, {:data, {:eol, chunk}}} ->
         line = buffer <> to_string(chunk)
         log_stream_line(line)
-
-        with {:ok, lines} <- collect_output(port, "", config),
-             do: {:ok, [line | lines]}
+        collect_output(port, "", [line | acc], config)
 
       {^port, {:data, {:noeol, chunk}}} ->
-        collect_output(port, buffer <> to_string(chunk), config)
+        collect_output(port, buffer <> to_string(chunk), acc, config)
 
       {^port, {:exit_status, 0}} ->
         remaining = buffer |> to_string() |> String.trim()
         if remaining != "", do: log_stream_line(remaining)
-        {:ok, if(remaining != "", do: [remaining], else: [])}
+        lines = if remaining != "", do: [remaining | acc], else: acc
+        {:ok, Enum.reverse(lines)}
 
       {^port, {:exit_status, status}} ->
         remaining = buffer |> to_string() |> String.trim()
@@ -622,7 +628,5 @@ defmodule CymphonyElixir.Claude.AppServer do
 
   defp default_on_message(_message), do: :ok
 
-  defp shell_escape(value) when is_binary(value) do
-    "'" <> String.replace(value, "'", "'\"'\"'") <> "'"
-  end
+  defp shell_escape(value) when is_binary(value), do: CymphonyElixir.Shell.escape(value)
 end

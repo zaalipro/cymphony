@@ -59,28 +59,24 @@ defmodule CymphonyElixir.Linear.Adapter do
 
   @spec create_comment(String.t(), String.t()) :: :ok | {:error, term()}
   def create_comment(issue_id, body) when is_binary(issue_id) and is_binary(body) do
-    with {:ok, response} <- client_module().graphql(@create_comment_mutation, %{issueId: issue_id, body: body}),
-         true <- get_in(response, ["data", "commentCreate", "success"]) == true do
-      :ok
-    else
-      false -> {:error, :comment_create_failed}
-      {:error, reason} -> {:error, reason}
-      _ -> {:error, :comment_create_failed}
-    end
+    client_module().graphql(@create_comment_mutation, %{issueId: issue_id, body: body})
+    |> interpret_mutation(["data", "commentCreate", "success"])
+  end
+
+  @spec create_comment(String.t(), String.t(), term()) :: :ok | {:error, term()}
+  def create_comment(issue_id, body, config) when is_binary(issue_id) and is_binary(body) do
+    graphql_fun = graphql_with_config(config)
+
+    graphql_fun.(@create_comment_mutation, %{issueId: issue_id, body: body})
+    |> interpret_mutation(["data", "commentCreate", "success"])
   end
 
   @spec update_issue_state(String.t(), String.t()) :: :ok | {:error, term()}
   def update_issue_state(issue_id, state_name)
       when is_binary(issue_id) and is_binary(state_name) do
-    with {:ok, state_id} <- resolve_state_id(issue_id, state_name),
-         {:ok, response} <-
-           client_module().graphql(@update_state_mutation, %{issueId: issue_id, stateId: state_id}),
-         true <- get_in(response, ["data", "issueUpdate", "success"]) == true do
-      :ok
-    else
-      false -> {:error, :issue_update_failed}
-      {:error, reason} -> {:error, reason}
-      _ -> {:error, :issue_update_failed}
+    with {:ok, state_id} <- resolve_state_id(issue_id, state_name) do
+      client_module().graphql(@update_state_mutation, %{issueId: issue_id, stateId: state_id})
+      |> interpret_mutation(["data", "issueUpdate", "success"])
     end
   end
 
@@ -89,16 +85,25 @@ defmodule CymphonyElixir.Linear.Adapter do
       when is_binary(issue_id) and is_binary(state_name) do
     graphql_fun = graphql_with_config(config)
 
-    with {:ok, state_id} <- resolve_state_id(issue_id, state_name, config),
-         {:ok, response} <- graphql_fun.(@update_state_mutation, %{issueId: issue_id, stateId: state_id}),
-         true <- get_in(response, ["data", "issueUpdate", "success"]) == true do
-      :ok
-    else
-      false -> {:error, :issue_update_failed}
-      {:error, reason} -> {:error, reason}
-      _ -> {:error, :issue_update_failed}
+    with {:ok, state_id} <- resolve_state_id(issue_id, state_name, config) do
+      graphql_fun.(@update_state_mutation, %{issueId: issue_id, stateId: state_id})
+      |> interpret_mutation(["data", "issueUpdate", "success"])
     end
   end
+
+  # Distinguish "API returned success: true" from "API errored or returned an
+  # unexpected/missing field". The previous `get_in(...) == true` form collapsed
+  # all of those into one opaque error; preserving the raw response (or the
+  # unexpected return value) aids debugging when Linear's schema shifts.
+  defp interpret_mutation({:ok, response}, path) do
+    case get_in(response, path) do
+      true -> :ok
+      _ -> {:error, {:linear_unexpected_response, response}}
+    end
+  end
+
+  defp interpret_mutation({:error, reason}, _path), do: {:error, reason}
+  defp interpret_mutation(other, _path), do: {:error, {:linear_unexpected_response, other}}
 
   defp client_module do
     Application.get_env(:cymphony_elixir, :linear_client_module, Client)

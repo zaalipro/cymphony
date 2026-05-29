@@ -6,8 +6,8 @@ defmodule CymphonyElixirWeb.ObservabilityApiController do
   use Phoenix.Controller, formats: [:json]
 
   alias CymphonyElixir.Cymphony.Config, as: CymphonyConfig
-  alias CymphonyElixir.{CompletionStore, Orchestrator, ProjectSupervisor}
-  alias CymphonyElixirWeb.{Endpoint, Presenter}
+  alias CymphonyElixir.CompletionStore
+  alias CymphonyElixirWeb.{Control, Endpoint, Presenter}
   alias Plug.Conn
 
   @completed_default_limit 100
@@ -104,13 +104,13 @@ defmodule CymphonyElixirWeb.ObservabilityApiController do
 
   @spec pause(Conn.t(), map()) :: Conn.t()
   def pause(conn, params) do
-    apply_pause(:pause, params["project"])
+    Control.pause(Control.scope(params["project"]))
     conn |> put_status(202) |> json(%{paused: true, project: params["project"]})
   end
 
   @spec resume(Conn.t(), map()) :: Conn.t()
   def resume(conn, params) do
-    apply_pause(:resume, params["project"])
+    Control.resume(Control.scope(params["project"]))
     conn |> put_status(202) |> json(%{paused: false, project: params["project"]})
   end
 
@@ -118,9 +118,9 @@ defmodule CymphonyElixirWeb.ObservabilityApiController do
   def concurrency(conn, params) do
     project = params["project"]
 
-    case parse_concurrency(params["value"]) do
+    case Control.parse_concurrency(params["value"]) do
       {:ok, n} ->
-        apply_concurrency(n, project)
+        Control.set_concurrency(Control.scope(project), n)
 
         conn
         |> put_status(202)
@@ -142,7 +142,7 @@ defmodule CymphonyElixirWeb.ObservabilityApiController do
 
     case parse_providers(params["value"]) do
       {:ok, list} ->
-        apply_providers(list, project)
+        Control.set_providers(Control.scope(project), list)
 
         conn
         |> put_status(202)
@@ -180,112 +180,6 @@ defmodule CymphonyElixirWeb.ObservabilityApiController do
 
   defp snapshot_timeout_ms do
     Endpoint.config(:snapshot_timeout_ms) || 15_000
-  end
-
-  defp apply_pause(action, nil), do: apply_pause_to_all(action)
-  defp apply_pause(action, ""), do: apply_pause_to_all(action)
-
-  defp apply_pause(action, project_name) when is_binary(project_name) do
-    case ProjectSupervisor.lookup(project_name, :orchestrator) do
-      pid when is_pid(pid) ->
-        case action do
-          :pause -> Orchestrator.pause(pid)
-          :resume -> Orchestrator.resume(pid)
-        end
-
-      _ ->
-        :unavailable
-    end
-  end
-
-  defp apply_pause_to_all(action) do
-    case ProjectSupervisor.list_orchestrators() do
-      [] ->
-        # Legacy single-orchestrator mode.
-        case action do
-          :pause -> Orchestrator.pause(orchestrator())
-          :resume -> Orchestrator.resume(orchestrator())
-        end
-
-      orchestrators ->
-        Enum.each(orchestrators, fn {_project, pid} ->
-          case action do
-            :pause -> Orchestrator.pause(pid)
-            :resume -> Orchestrator.resume(pid)
-          end
-        end)
-    end
-  end
-
-  defp apply_concurrency(n, nil), do: apply_concurrency_to_all(n)
-  defp apply_concurrency(n, ""), do: apply_concurrency_to_all(n)
-
-  defp apply_concurrency(n, project_name) when is_binary(project_name) do
-    case ProjectSupervisor.lookup(project_name, :orchestrator) do
-      pid when is_pid(pid) ->
-        Orchestrator.set_concurrency(pid, n)
-        _ = CymphonyConfig.update_concurrency(project_name, n)
-        :ok
-
-      _ ->
-        :unavailable
-    end
-  end
-
-  defp apply_concurrency_to_all(n) do
-    case ProjectSupervisor.list_orchestrators() do
-      [] ->
-        Orchestrator.set_concurrency(orchestrator(), n)
-        _ = CymphonyConfig.update_concurrency(nil, n)
-        :ok
-
-      orchestrators ->
-        Enum.each(orchestrators, fn {project, pid} ->
-          Orchestrator.set_concurrency(pid, n)
-          _ = CymphonyConfig.update_concurrency(project, n)
-        end)
-    end
-  end
-
-  defp parse_concurrency(value) when is_integer(value) and value > 0, do: {:ok, value}
-
-  defp parse_concurrency(value) when is_binary(value) do
-    case Integer.parse(String.trim(value)) do
-      {n, ""} when n > 0 -> {:ok, n}
-      _ -> :error
-    end
-  end
-
-  defp parse_concurrency(_), do: :error
-
-  defp apply_providers(providers, nil), do: apply_providers_to_all(providers)
-  defp apply_providers(providers, ""), do: apply_providers_to_all(providers)
-
-  defp apply_providers(providers, project_name) when is_binary(project_name) do
-    case ProjectSupervisor.lookup(project_name, :orchestrator) do
-      pid when is_pid(pid) ->
-        Orchestrator.set_providers(pid, providers)
-        _ = CymphonyConfig.update_providers(project_name, providers)
-        :ok
-
-      _ ->
-        :unavailable
-    end
-  end
-
-  defp apply_providers_to_all(providers) do
-    case ProjectSupervisor.list_orchestrators() do
-      [] ->
-        Orchestrator.set_providers(orchestrator(), providers)
-        _ = CymphonyConfig.update_providers(nil, providers)
-        :ok
-
-      orchestrators ->
-        Enum.each(orchestrators, fn {project, pid} ->
-          Orchestrator.set_providers(pid, providers)
-          _ = CymphonyConfig.update_providers(project, providers)
-        end)
-    end
   end
 
   defp parse_providers(value) when is_binary(value) do

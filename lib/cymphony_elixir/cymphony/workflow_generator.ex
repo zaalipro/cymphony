@@ -6,10 +6,13 @@ defmodule CymphonyElixir.Cymphony.WorkflowGenerator do
 
   @spec generate(map()) :: String.t()
   def generate(config) do
-    yaml = Config.to_workflow_yaml(config)
+    # Serialize the structured config map as JSON, which is valid YAML, so the
+    # `WORKFLOW.md` front matter round-trips losslessly (Jason handles all
+    # escaping) instead of relying on hand-built, unescaped YAML.
+    front_matter = Jason.encode!(Config.to_schema_map(config), pretty: true)
     template = PromptTemplate.get()
 
-    "---\n#{yaml}\n---\n\n#{template}"
+    "---\n#{front_matter}\n---\n\n#{template}"
   end
 
   @spec write_temp(map()) :: {:ok, String.t()} | {:error, term()}

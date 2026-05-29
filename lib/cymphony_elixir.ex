@@ -22,6 +22,7 @@ defmodule CymphonyElixir.Application do
   @impl true
   def start(_type, _args) do
     :ok = CymphonyElixir.LogFile.configure()
+    :ok = CymphonyElixirWeb.Plugs.ApiAuth.cache_from_env()
     Supervisor.start_link(children(), strategy: :one_for_one, name: CymphonyElixir.Supervisor)
   end
 

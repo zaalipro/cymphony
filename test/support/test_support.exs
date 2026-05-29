@@ -121,6 +121,8 @@ defmodule CymphonyElixir.TestSupport do
           max_concurrent_agents: 10,
           max_turns: 20,
           max_retry_backoff_ms: 300_000,
+          max_retry_attempts: 30,
+          failure_state: nil,
           max_concurrent_agents_by_state: %{},
           claude_command: "claude",
           claude_approval_policy: %{reject: %{sandbox_approval: true, rules: true, mcp_elicitations: true}},
@@ -166,6 +168,8 @@ defmodule CymphonyElixir.TestSupport do
     max_concurrent_agents = Keyword.get(config, :max_concurrent_agents)
     max_turns = Keyword.get(config, :max_turns)
     max_retry_backoff_ms = Keyword.get(config, :max_retry_backoff_ms)
+    max_retry_attempts = Keyword.get(config, :max_retry_attempts)
+    failure_state = Keyword.get(config, :failure_state)
     max_concurrent_agents_by_state = Keyword.get(config, :max_concurrent_agents_by_state)
     claude_command = Keyword.get(config, :claude_command)
     claude_approval_policy = Keyword.get(config, :claude_approval_policy)
@@ -214,6 +218,8 @@ defmodule CymphonyElixir.TestSupport do
         "  max_concurrent_agents: #{yaml_value(max_concurrent_agents)}",
         "  max_turns: #{yaml_value(max_turns)}",
         "  max_retry_backoff_ms: #{yaml_value(max_retry_backoff_ms)}",
+        "  max_retry_attempts: #{yaml_value(max_retry_attempts)}",
+        "  failure_state: #{yaml_value(failure_state)}",
         "  max_concurrent_agents_by_state: #{yaml_value(max_concurrent_agents_by_state)}",
         "claude:",
         "  command: #{yaml_value(claude_command)}",

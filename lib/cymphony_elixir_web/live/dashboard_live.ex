@@ -6,7 +6,7 @@ defmodule CymphonyElixirWeb.DashboardLive do
   use Phoenix.LiveView, layout: {CymphonyElixirWeb.Layouts, :app}
 
   alias CymphonyElixir.Cymphony.Config, as: CymphonyConfig
-  alias CymphonyElixirWeb.{Endpoint, ObservabilityPubSub, Presenter}
+  alias CymphonyElixirWeb.{Control, Endpoint, ObservabilityPubSub, Presenter}
 
   @version Mix.Project.config()[:version]
   @runtime_tick_ms 1_000
@@ -87,21 +87,21 @@ defmodule CymphonyElixirWeb.DashboardLive do
 
   @impl true
   def handle_event("pause_dispatch", _params, socket) do
-    apply_pause_to_all(:pause)
+    Control.pause(:all)
     {:noreply, reload_payload_now(put_flash(socket, :info, "Dispatch paused — running sessions will complete normally"))}
   end
 
   @impl true
   def handle_event("resume_dispatch", _params, socket) do
-    apply_pause_to_all(:resume)
+    Control.resume(:all)
     {:noreply, reload_payload_now(put_flash(socket, :info, "Dispatch resumed"))}
   end
 
   @impl true
   def handle_event("set_concurrency", %{"value" => raw_value}, socket) do
-    case parse_concurrency(raw_value) do
+    case Control.parse_concurrency(raw_value) do
       {:ok, n} ->
-        apply_concurrency_to_all(n)
+        Control.set_concurrency(:all, n)
 
         {:noreply, reload_payload_now(put_flash(socket, :info, "Concurrency set to #{n}; persisted to ~/.cymphony/config.json"))}
 
@@ -116,9 +116,9 @@ defmodule CymphonyElixirWeb.DashboardLive do
         %{"project" => project_name, "value" => raw_value},
         socket
       ) do
-    case parse_concurrency(raw_value) do
+    case Control.parse_concurrency(raw_value) do
       {:ok, n} ->
-        case apply_project_concurrency(project_name, n) do
+        case Control.set_concurrency({:project, project_name}, n) do
           :ok ->
             {:noreply, reload_payload_now(put_flash(socket, :info, "#{project_name}: concurrency set to #{n}"))}
 
@@ -139,7 +139,7 @@ defmodule CymphonyElixirWeb.DashboardLive do
       ) do
     case CymphonyConfig.parse_providers_csv(raw_value) do
       {:ok, list} ->
-        case apply_project_providers(project_name, list) do
+        case Control.set_providers({:project, project_name}, list) do
           :ok ->
             {:noreply, reload_payload_now(put_flash(socket, :info, "#{project_name}: providers set to #{Enum.join(list, ", ")}"))}
 
@@ -693,90 +693,6 @@ defmodule CymphonyElixirWeb.DashboardLive do
   defp orchestrator do
     Endpoint.config(:orchestrator) || CymphonyElixir.Orchestrator
   end
-
-  defp apply_pause_to_all(action) do
-    case CymphonyElixir.ProjectSupervisor.list_orchestrators() do
-      [] ->
-        case action do
-          :pause -> CymphonyElixir.Orchestrator.pause(orchestrator())
-          :resume -> CymphonyElixir.Orchestrator.resume(orchestrator())
-        end
-
-      orchestrators ->
-        Enum.each(orchestrators, fn {_project, pid} ->
-          case action do
-            :pause -> CymphonyElixir.Orchestrator.pause(pid)
-            :resume -> CymphonyElixir.Orchestrator.resume(pid)
-          end
-        end)
-    end
-  end
-
-  defp apply_concurrency_to_all(n) do
-    case CymphonyElixir.ProjectSupervisor.list_orchestrators() do
-      [] ->
-        CymphonyElixir.Orchestrator.set_concurrency(orchestrator(), n)
-        _ = CymphonyConfig.update_concurrency(nil, n)
-        :ok
-
-      orchestrators ->
-        Enum.each(orchestrators, fn {project, pid} ->
-          CymphonyElixir.Orchestrator.set_concurrency(pid, n)
-          _ = CymphonyConfig.update_concurrency(project, n)
-        end)
-    end
-  end
-
-  defp apply_project_concurrency(project_name, n) do
-    case CymphonyElixir.ProjectSupervisor.lookup(project_name, :orchestrator) do
-      pid when is_pid(pid) ->
-        CymphonyElixir.Orchestrator.set_concurrency(pid, n)
-        _ = CymphonyConfig.update_concurrency(project_name, n)
-        :ok
-
-      _ ->
-        case CymphonyElixir.ProjectSupervisor.list_orchestrators() do
-          [] ->
-            CymphonyElixir.Orchestrator.set_concurrency(orchestrator(), n)
-            _ = CymphonyConfig.update_concurrency(nil, n)
-            :ok
-
-          _ ->
-            {:error, :not_found}
-        end
-    end
-  end
-
-  defp apply_project_providers(project_name, list) do
-    case CymphonyElixir.ProjectSupervisor.lookup(project_name, :orchestrator) do
-      pid when is_pid(pid) ->
-        CymphonyElixir.Orchestrator.set_providers(pid, list)
-        _ = CymphonyConfig.update_providers(project_name, list)
-        :ok
-
-      _ ->
-        case CymphonyElixir.ProjectSupervisor.list_orchestrators() do
-          [] ->
-            CymphonyElixir.Orchestrator.set_providers(orchestrator(), list)
-            _ = CymphonyConfig.update_providers(nil, list)
-            :ok
-
-          _ ->
-            {:error, :not_found}
-        end
-    end
-  end
-
-  defp parse_concurrency(value) when is_integer(value) and value > 0, do: {:ok, value}
-
-  defp parse_concurrency(value) when is_binary(value) do
-    case Integer.parse(String.trim(value)) do
-      {n, ""} when n > 0 -> {:ok, n}
-      _ -> :error
-    end
-  end
-
-  defp parse_concurrency(_), do: :error
 
   defp toggle_project_pause(payload, project_name) do
     case CymphonyElixir.ProjectSupervisor.lookup(project_name, :orchestrator) do

@@ -20,6 +20,7 @@ defmodule CymphonyElixir.Orchestrator do
 
   alias CymphonyElixirWeb.ObservabilityPubSub
   alias CymphonyElixir.Linear.Issue
+  alias CymphonyElixir.Orchestrator.Tokens
 
   @continuation_retry_delay_ms 1_000
   @failure_retry_base_ms 10_000
@@ -172,12 +173,14 @@ defmodule CymphonyElixir.Orchestrator do
               Logger.warning("Agent task exited for issue_id=#{issue_id} session_id=#{session_id} reason=#{inspect(reason)}; scheduling retry")
 
               next_attempt = next_retry_attempt_from_running(running_entry)
+              failures = running_entry_failure_count(running_entry) + 1
 
-              schedule_issue_retry(state, issue_id, next_attempt, %{
+              maybe_retry_or_abandon(state, issue_id, next_attempt, failures, %{
                 identifier: running_entry.identifier,
                 error: "agent exited: #{inspect(reason)}",
                 worker_host: Map.get(running_entry, :worker_host),
-                workspace_path: Map.get(running_entry, :workspace_path)
+                workspace_path: Map.get(running_entry, :workspace_path),
+                failures: failures
               })
           end
 
@@ -522,12 +525,16 @@ defmodule CymphonyElixir.Orchestrator do
       Logger.warning("Issue stalled: issue_id=#{issue_id} issue_identifier=#{identifier} session_id=#{session_id} elapsed_ms=#{elapsed_ms}; restarting with backoff")
 
       next_attempt = next_retry_attempt_from_running(running_entry)
+      failures = running_entry_failure_count(running_entry) + 1
 
       state
       |> terminate_running_issue(issue_id, false)
-      |> schedule_issue_retry(issue_id, next_attempt, %{
+      |> maybe_retry_or_abandon(issue_id, next_attempt, failures, %{
         identifier: identifier,
-        error: "stalled for #{elapsed_ms}ms without claude activity"
+        error: "stalled for #{elapsed_ms}ms without claude activity",
+        worker_host: Map.get(running_entry, :worker_host),
+        workspace_path: Map.get(running_entry, :workspace_path),
+        failures: failures
       })
     else
       state
@@ -773,11 +780,11 @@ defmodule CymphonyElixir.Orchestrator do
     end
   end
 
-  defp dispatch_issue(%State{} = state, issue, attempt \\ nil, preferred_worker_host \\ nil) do
+  defp dispatch_issue(%State{} = state, issue, attempt \\ nil, preferred_worker_host \\ nil, opts \\ []) do
     case revalidate_issue_for_dispatch(issue, &Tracker.fetch_issue_states_by_ids(&1, state.config), terminal_state_set(state)) do
       {:ok, %Issue{} = refreshed_issue} ->
         transition_to_in_progress(refreshed_issue, state)
-        do_dispatch_issue(state, refreshed_issue, attempt, preferred_worker_host)
+        do_dispatch_issue(state, refreshed_issue, attempt, preferred_worker_host, opts)
 
       {:skip, :missing} ->
         Logger.info("Skipping dispatch; issue no longer active or visible: #{issue_context(issue)}")
@@ -794,7 +801,7 @@ defmodule CymphonyElixir.Orchestrator do
     end
   end
 
-  defp do_dispatch_issue(%State{} = state, issue, attempt, preferred_worker_host, opts \\ []) do
+  defp do_dispatch_issue(%State{} = state, issue, attempt, preferred_worker_host, opts) do
     recipient = self()
 
     case select_worker_host(state, preferred_worker_host) do
@@ -850,6 +857,7 @@ defmodule CymphonyElixir.Orchestrator do
                 claude_last_reported_total_tokens: 0,
                 turn_count: 0,
                 retry_attempt: normalize_retry_attempt(attempt),
+                failure_count: Keyword.get(opts, :failures, 0),
                 started_at: DateTime.utc_now(),
                 log_events: []
               },
@@ -868,11 +876,13 @@ defmodule CymphonyElixir.Orchestrator do
       {:error, reason} ->
         Logger.error("Unable to spawn agent for #{issue_context(issue)}: #{inspect(reason)}")
         next_attempt = if is_integer(attempt), do: attempt + 1, else: nil
+        failures = Keyword.get(opts, :failures, 0) + 1
 
-        schedule_issue_retry(state, issue.id, next_attempt, %{
+        maybe_retry_or_abandon(state, issue.id, next_attempt, failures, %{
           identifier: issue.identifier,
           error: "failed to spawn agent: #{inspect(reason)}",
-          worker_host: worker_host
+          worker_host: worker_host,
+          failures: failures
         })
     end
   end
@@ -961,6 +971,7 @@ defmodule CymphonyElixir.Orchestrator do
     error = pick_retry_error(previous_retry, metadata)
     worker_host = pick_retry_worker_host(previous_retry, metadata)
     workspace_path = pick_retry_workspace_path(previous_retry, metadata)
+    failures = metadata[:failures] || Map.get(previous_retry, :failures, 0)
 
     if is_reference(old_timer) do
       Process.cancel_timer(old_timer)
@@ -983,7 +994,8 @@ defmodule CymphonyElixir.Orchestrator do
             identifier: identifier,
             error: error,
             worker_host: worker_host,
-            workspace_path: workspace_path
+            workspace_path: workspace_path,
+            failures: failures
           })
     }
   end
@@ -995,7 +1007,8 @@ defmodule CymphonyElixir.Orchestrator do
           identifier: Map.get(retry_entry, :identifier),
           error: Map.get(retry_entry, :error),
           worker_host: Map.get(retry_entry, :worker_host),
-          workspace_path: Map.get(retry_entry, :workspace_path)
+          workspace_path: Map.get(retry_entry, :workspace_path),
+          failures: Map.get(retry_entry, :failures, 0)
         }
 
         {:ok, attempt, metadata, %{state | retry_attempts: Map.delete(state.retry_attempts, issue_id)}}
@@ -1136,7 +1149,7 @@ defmodule CymphonyElixir.Orchestrator do
     if retry_candidate_issue?(issue, active_state_set(state), terminal_state_set(state)) and
          dispatch_slots_available?(issue, state) and
          worker_slots_available?(state, metadata[:worker_host]) do
-      {:noreply, dispatch_issue(state, issue, attempt, metadata[:worker_host])}
+      {:noreply, dispatch_issue(state, issue, attempt, metadata[:worker_host], failures: metadata[:failures] || 0)}
     else
       Logger.debug("No available slots for retrying #{issue_context(issue)}; retrying again")
 
@@ -1155,6 +1168,78 @@ defmodule CymphonyElixir.Orchestrator do
 
   defp release_issue_claim(%State{} = state, issue_id) do
     %{state | claimed: MapSet.delete(state.claimed, issue_id)}
+  end
+
+  defp running_entry_failure_count(running_entry) do
+    Map.get(running_entry, :failure_count, 0)
+  end
+
+  defp state_config(%State{config: nil}), do: load_config()
+  defp state_config(%State{config: config}), do: config
+
+  defp max_retry_attempts(%State{} = state), do: state_config(state).agent.max_retry_attempts
+
+  # Reschedule a failed issue, or abandon it once it has failed
+  # `max_retry_attempts` times in a row without making progress. Only genuine
+  # agent failures (crash, spawn failure, stall) increment `failures`;
+  # backpressure ("no slots") and transient poll failures preserve it, so a
+  # healthy-but-slot-starved issue is never abandoned.
+  defp maybe_retry_or_abandon(%State{} = state, issue_id, attempt, failures, metadata)
+       when is_integer(failures) do
+    if failures > max_retry_attempts(state) do
+      abandon_issue(state, issue_id, failures, metadata)
+    else
+      schedule_issue_retry(state, issue_id, attempt, metadata)
+    end
+  end
+
+  defp abandon_issue(%State{} = state, issue_id, failures, metadata) do
+    identifier = metadata[:identifier] || issue_id
+
+    Logger.error("Abandoning issue_id=#{issue_id} issue_identifier=#{identifier} after #{failures} consecutive failed attempts; last error=#{inspect(metadata[:error])}")
+
+    post_abandon_comment(state, issue_id, identifier, failures, metadata[:error])
+    move_to_failure_state(state, issue_id, identifier)
+    cleanup_issue_workspace(identifier, metadata[:worker_host])
+
+    %{
+      state
+      | claimed: MapSet.delete(state.claimed, issue_id),
+        retry_attempts: Map.delete(state.retry_attempts, issue_id)
+    }
+  end
+
+  defp post_abandon_comment(state, issue_id, identifier, failures, error) do
+    body =
+      "🛑 Cymphony abandoned this issue after #{failures} consecutive failed agent attempts. " <>
+        "Last error: #{inspect(error)}. Move it back to an active state to retry."
+
+    safe_tracker_call(identifier, "comment", fn ->
+      Tracker.create_comment(issue_id, body, state_config(state))
+    end)
+  end
+
+  defp move_to_failure_state(state, issue_id, identifier) do
+    case state_config(state).agent.failure_state do
+      failure_state when is_binary(failure_state) and failure_state != "" ->
+        safe_tracker_call(identifier, "failure-state move", fn ->
+          Tracker.update_issue_state(issue_id, failure_state, state_config(state))
+        end)
+
+      _ ->
+        :ok
+    end
+  end
+
+  # Best-effort tracker side effect during abandonment: never let a tracker
+  # error (or raise) crash the orchestrator, but log it rather than swallow it.
+  defp safe_tracker_call(identifier, label, fun) do
+    case fun.() do
+      :ok -> :ok
+      {:error, reason} -> Logger.warning("Abandon #{label} failed for #{identifier}: #{inspect(reason)}")
+    end
+  rescue
+    exception -> Logger.warning("Abandon #{label} raised for #{identifier}: #{inspect(exception)}")
   end
 
   defp retry_delay(attempt, metadata) when is_integer(attempt) and attempt > 0 and is_map(metadata) do
@@ -1517,7 +1602,8 @@ defmodule CymphonyElixir.Orchestrator do
           identifier: Map.get(retry_entry, :identifier),
           error: Map.get(retry_entry, :error),
           worker_host: Map.get(retry_entry, :worker_host),
-          workspace_path: Map.get(retry_entry, :workspace_path)
+          workspace_path: Map.get(retry_entry, :workspace_path),
+          failures: Map.get(retry_entry, :failures, 0)
         }
 
         state = %{
@@ -1584,7 +1670,7 @@ defmodule CymphonyElixir.Orchestrator do
   end
 
   defp integrate_claude_update(running_entry, %{event: event, timestamp: timestamp} = update) do
-    token_delta = extract_token_delta(running_entry, update)
+    token_delta = Tokens.extract_token_delta(running_entry, update)
     claude_input_tokens = Map.get(running_entry, :claude_input_tokens, 0)
     claude_output_tokens = Map.get(running_entry, :claude_output_tokens, 0)
     claude_total_tokens = Map.get(running_entry, :claude_total_tokens, 0)
@@ -1699,7 +1785,7 @@ defmodule CymphonyElixir.Orchestrator do
     runtime_seconds = running_seconds(running_entry.started_at, DateTime.utc_now())
 
     claude_totals =
-      apply_token_delta(
+      Tokens.apply_token_delta(
         state.claude_totals,
         %{
           input_tokens: 0,
@@ -1829,13 +1915,13 @@ defmodule CymphonyElixir.Orchestrator do
          %{input_tokens: input, output_tokens: output, total_tokens: total} = token_delta
        )
        when is_integer(input) and is_integer(output) and is_integer(total) do
-    %{state | claude_totals: apply_token_delta(claude_totals, token_delta)}
+    %{state | claude_totals: Tokens.apply_token_delta(claude_totals, token_delta)}
   end
 
   defp apply_claude_token_delta(state, _token_delta), do: state
 
   defp apply_claude_rate_limits(%State{} = state, update) when is_map(update) do
-    case extract_rate_limits(update) do
+    case Tokens.extract_rate_limits(update) do
       %{} = rate_limits ->
         %{state | claude_rate_limits: rate_limits}
 
@@ -1845,308 +1931,6 @@ defmodule CymphonyElixir.Orchestrator do
   end
 
   defp apply_claude_rate_limits(state, _update), do: state
-
-  defp apply_token_delta(claude_totals, token_delta) do
-    input_tokens = Map.get(claude_totals, :input_tokens, 0) + token_delta.input_tokens
-    output_tokens = Map.get(claude_totals, :output_tokens, 0) + token_delta.output_tokens
-    total_tokens = Map.get(claude_totals, :total_tokens, 0) + token_delta.total_tokens
-
-    seconds_running =
-      Map.get(claude_totals, :seconds_running, 0) + Map.get(token_delta, :seconds_running, 0)
-
-    %{
-      input_tokens: max(0, input_tokens),
-      output_tokens: max(0, output_tokens),
-      total_tokens: max(0, total_tokens),
-      seconds_running: max(0, seconds_running)
-    }
-  end
-
-  defp extract_token_delta(running_entry, %{event: _, timestamp: _} = update) do
-    running_entry = running_entry || %{}
-    usage = extract_token_usage(update)
-
-    {
-      compute_token_delta(
-        running_entry,
-        :input,
-        usage,
-        :claude_last_reported_input_tokens
-      ),
-      compute_token_delta(
-        running_entry,
-        :output,
-        usage,
-        :claude_last_reported_output_tokens
-      ),
-      compute_token_delta(
-        running_entry,
-        :total,
-        usage,
-        :claude_last_reported_total_tokens
-      )
-    }
-    |> Tuple.to_list()
-    |> then(fn [input, output, total] ->
-      %{
-        input_tokens: input.delta,
-        output_tokens: output.delta,
-        total_tokens: total.delta,
-        input_reported: input.reported,
-        output_reported: output.reported,
-        total_reported: total.reported
-      }
-    end)
-  end
-
-  defp compute_token_delta(running_entry, token_key, usage, reported_key) do
-    next_total = get_token_usage(usage, token_key)
-    prev_reported = Map.get(running_entry, reported_key, 0)
-
-    delta =
-      if is_integer(next_total) and next_total >= prev_reported do
-        next_total - prev_reported
-      else
-        0
-      end
-
-    %{
-      delta: max(delta, 0),
-      reported: if(is_integer(next_total), do: next_total, else: prev_reported)
-    }
-  end
-
-  defp extract_token_usage(update) do
-    payloads = [
-      update[:usage],
-      Map.get(update, "usage"),
-      Map.get(update, :usage),
-      update[:payload],
-      Map.get(update, "payload"),
-      update
-    ]
-
-    Enum.find_value(payloads, &absolute_token_usage_from_payload/1) ||
-      Enum.find_value(payloads, &turn_completed_usage_from_payload/1) ||
-      %{}
-  end
-
-  defp extract_rate_limits(update) do
-    rate_limits_from_payload(update[:rate_limits]) ||
-      rate_limits_from_payload(Map.get(update, "rate_limits")) ||
-      rate_limits_from_payload(Map.get(update, :rate_limits)) ||
-      rate_limits_from_payload(update[:payload]) ||
-      rate_limits_from_payload(Map.get(update, "payload")) ||
-      rate_limits_from_payload(update)
-  end
-
-  defp absolute_token_usage_from_payload(payload) when is_map(payload) do
-    absolute_paths = [
-      ["params", "msg", "payload", "info", "total_token_usage"],
-      [:params, :msg, :payload, :info, :total_token_usage],
-      ["params", "msg", "info", "total_token_usage"],
-      [:params, :msg, :info, :total_token_usage],
-      ["params", "tokenUsage", "total"],
-      [:params, :tokenUsage, :total],
-      ["tokenUsage", "total"],
-      [:tokenUsage, :total]
-    ]
-
-    explicit_map_at_paths(payload, absolute_paths)
-  end
-
-  defp absolute_token_usage_from_payload(_payload), do: nil
-
-  defp turn_completed_usage_from_payload(payload) when is_map(payload) do
-    method = Map.get(payload, "method") || Map.get(payload, :method)
-
-    if method in ["turn/completed", :turn_completed] do
-      direct =
-        Map.get(payload, "usage") ||
-          Map.get(payload, :usage) ||
-          map_at_path(payload, ["params", "usage"]) ||
-          map_at_path(payload, [:params, :usage])
-
-      if is_map(direct) and integer_token_map?(direct), do: direct
-    end
-  end
-
-  defp turn_completed_usage_from_payload(_payload), do: nil
-
-  defp rate_limits_from_payload(payload) when is_map(payload) do
-    direct = Map.get(payload, "rate_limits") || Map.get(payload, :rate_limits)
-
-    cond do
-      rate_limits_map?(direct) ->
-        direct
-
-      rate_limits_map?(payload) ->
-        payload
-
-      true ->
-        rate_limit_payloads(payload)
-    end
-  end
-
-  defp rate_limits_from_payload(payload) when is_list(payload) do
-    rate_limit_payloads(payload)
-  end
-
-  defp rate_limits_from_payload(_payload), do: nil
-
-  defp rate_limit_payloads(payload) when is_map(payload) do
-    Map.values(payload)
-    |> Enum.reduce_while(nil, fn
-      value, nil ->
-        case rate_limits_from_payload(value) do
-          nil -> {:cont, nil}
-          rate_limits -> {:halt, rate_limits}
-        end
-
-      _value, result ->
-        {:halt, result}
-    end)
-  end
-
-  defp rate_limit_payloads(payload) when is_list(payload) do
-    payload
-    |> Enum.reduce_while(nil, fn
-      value, nil ->
-        case rate_limits_from_payload(value) do
-          nil -> {:cont, nil}
-          rate_limits -> {:halt, rate_limits}
-        end
-
-      _value, result ->
-        {:halt, result}
-    end)
-  end
-
-  defp rate_limits_map?(payload) when is_map(payload) do
-    limit_id =
-      Map.get(payload, "limit_id") ||
-        Map.get(payload, :limit_id) ||
-        Map.get(payload, "limit_name") ||
-        Map.get(payload, :limit_name)
-
-    has_buckets =
-      Enum.any?(
-        ["primary", :primary, "secondary", :secondary, "credits", :credits],
-        &Map.has_key?(payload, &1)
-      )
-
-    !is_nil(limit_id) and has_buckets
-  end
-
-  defp rate_limits_map?(_payload), do: false
-
-  defp explicit_map_at_paths(payload, paths) when is_map(payload) and is_list(paths) do
-    Enum.find_value(paths, fn path ->
-      value = map_at_path(payload, path)
-
-      if is_map(value) and integer_token_map?(value), do: value
-    end)
-  end
-
-  defp explicit_map_at_paths(_payload, _paths), do: nil
-
-  defp map_at_path(payload, path) when is_map(payload) and is_list(path) do
-    Enum.reduce_while(path, payload, fn key, acc ->
-      if is_map(acc) and Map.has_key?(acc, key) do
-        {:cont, Map.get(acc, key)}
-      else
-        {:halt, nil}
-      end
-    end)
-  end
-
-  defp map_at_path(_payload, _path), do: nil
-
-  defp integer_token_map?(payload) do
-    token_fields = [
-      :input_tokens,
-      :output_tokens,
-      :total_tokens,
-      :prompt_tokens,
-      :completion_tokens,
-      :inputTokens,
-      :outputTokens,
-      :totalTokens,
-      :promptTokens,
-      :completionTokens,
-      "input_tokens",
-      "output_tokens",
-      "total_tokens",
-      "prompt_tokens",
-      "completion_tokens",
-      "inputTokens",
-      "outputTokens",
-      "totalTokens",
-      "promptTokens",
-      "completionTokens"
-    ]
-
-    token_fields
-    |> Enum.any?(fn field ->
-      value = payload_get(payload, field)
-      !is_nil(integer_like(value))
-    end)
-  end
-
-  defp get_token_usage(usage, :input),
-    do:
-      payload_get(usage, [
-        "input_tokens",
-        "prompt_tokens",
-        :input_tokens,
-        :prompt_tokens,
-        :input,
-        "promptTokens",
-        :promptTokens,
-        "inputTokens",
-        :inputTokens
-      ])
-
-  defp get_token_usage(usage, :output),
-    do:
-      payload_get(usage, [
-        "output_tokens",
-        "completion_tokens",
-        :output_tokens,
-        :completion_tokens,
-        :output,
-        :completion,
-        "outputTokens",
-        :outputTokens,
-        "completionTokens",
-        :completionTokens
-      ])
-
-  defp get_token_usage(usage, :total),
-    do:
-      payload_get(usage, [
-        "total_tokens",
-        "total",
-        :total_tokens,
-        :total,
-        "totalTokens",
-        :totalTokens
-      ])
-
-  defp payload_get(payload, fields) when is_list(fields) do
-    Enum.find_value(fields, fn field -> map_integer_value(payload, field) end)
-  end
-
-  defp payload_get(payload, field), do: map_integer_value(payload, field)
-
-  defp map_integer_value(payload, field) do
-    if is_map(payload) do
-      value = Map.get(payload, field)
-      integer_like(value)
-    else
-      nil
-    end
-  end
 
   defp append_log_event(running_entry, event, message) when is_map(running_entry) do
     log_events = [
@@ -2162,15 +1946,4 @@ defmodule CymphonyElixir.Orchestrator do
   end
 
   defp running_seconds(_started_at, _now), do: 0
-
-  defp integer_like(value) when is_integer(value) and value >= 0, do: value
-
-  defp integer_like(value) when is_binary(value) do
-    case Integer.parse(String.trim(value)) do
-      {num, _} when num >= 0 -> num
-      _ -> nil
-    end
-  end
-
-  defp integer_like(_value), do: nil
 end

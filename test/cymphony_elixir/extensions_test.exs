@@ -37,6 +37,10 @@ defmodule CymphonyElixir.ExtensionsTest do
           Process.get({__MODULE__, :graphql_result})
       end
     end
+
+    def graphql_opts_for_config(_config), do: []
+
+    def graphql(query, variables, _opts), do: graphql(query, variables)
   end
 
   defmodule SlowOrchestrator do
@@ -243,7 +247,7 @@ defmodule CymphonyElixir.ExtensionsTest do
       {:ok, %{"data" => %{"commentCreate" => %{"success" => false}}}}
     )
 
-    assert {:error, :comment_create_failed} =
+    assert {:error, {:linear_unexpected_response, %{"data" => %{"commentCreate" => %{"success" => false}}}}} =
              Adapter.create_comment("issue-1", "broken")
 
     Process.put({FakeLinearClient, :graphql_result}, {:error, :boom})
@@ -251,10 +255,10 @@ defmodule CymphonyElixir.ExtensionsTest do
     assert {:error, :boom} = Adapter.create_comment("issue-1", "boom")
 
     Process.put({FakeLinearClient, :graphql_result}, {:ok, %{"data" => %{}}})
-    assert {:error, :comment_create_failed} = Adapter.create_comment("issue-1", "weird")
+    assert {:error, {:linear_unexpected_response, %{"data" => %{}}}} = Adapter.create_comment("issue-1", "weird")
 
     Process.put({FakeLinearClient, :graphql_result}, :unexpected)
-    assert {:error, :comment_create_failed} = Adapter.create_comment("issue-1", "odd")
+    assert {:error, {:linear_unexpected_response, :unexpected}} = Adapter.create_comment("issue-1", "odd")
 
     Process.put(
       {FakeLinearClient, :graphql_results},
@@ -290,7 +294,7 @@ defmodule CymphonyElixir.ExtensionsTest do
       ]
     )
 
-    assert {:error, :issue_update_failed} =
+    assert {:error, {:linear_unexpected_response, %{"data" => %{"issueUpdate" => %{"success" => false}}}}} =
              Adapter.update_issue_state("issue-1", "Broken")
 
     Process.put({FakeLinearClient, :graphql_results}, [{:error, :boom}])
@@ -313,7 +317,7 @@ defmodule CymphonyElixir.ExtensionsTest do
       ]
     )
 
-    assert {:error, :issue_update_failed} = Adapter.update_issue_state("issue-1", "Weird")
+    assert {:error, {:linear_unexpected_response, %{"data" => %{}}}} = Adapter.update_issue_state("issue-1", "Weird")
 
     Process.put(
       {FakeLinearClient, :graphql_results},
@@ -328,7 +332,44 @@ defmodule CymphonyElixir.ExtensionsTest do
       ]
     )
 
-    assert {:error, :issue_update_failed} = Adapter.update_issue_state("issue-1", "Odd")
+    assert {:error, {:linear_unexpected_response, :unexpected}} = Adapter.update_issue_state("issue-1", "Odd")
+  end
+
+  test "linear adapter create_comment/3 and update_issue_state/3 thread config and validate responses" do
+    Application.put_env(:cymphony_elixir, :linear_client_module, FakeLinearClient)
+    config = %CymphonyElixir.Config.Schema{}
+
+    Process.put(
+      {FakeLinearClient, :graphql_result},
+      {:ok, %{"data" => %{"commentCreate" => %{"success" => true}}}}
+    )
+
+    assert :ok = Adapter.create_comment("issue-9", "hi", config)
+    assert_receive {:graphql_called, comment_query, %{body: "hi", issueId: "issue-9"}}
+    assert comment_query =~ "commentCreate"
+
+    Process.put(
+      {FakeLinearClient, :graphql_result},
+      {:ok, %{"data" => %{"commentCreate" => %{"success" => false}}}}
+    )
+
+    assert {:error, {:linear_unexpected_response, _}} = Adapter.create_comment("issue-9", "no", config)
+
+    Process.put({FakeLinearClient, :graphql_result}, {:error, :down})
+    assert {:error, :down} = Adapter.create_comment("issue-9", "err", config)
+
+    Process.put(
+      {FakeLinearClient, :graphql_results},
+      [
+        {:ok, %{"data" => %{"issue" => %{"team" => %{"states" => %{"nodes" => [%{"id" => "s1"}]}}}}}},
+        {:ok, %{"data" => %{"issueUpdate" => %{"success" => true}}}}
+      ]
+    )
+
+    assert :ok = Adapter.update_issue_state("issue-9", "Done", config)
+    assert_receive {:graphql_called, _lookup_query, %{issueId: "issue-9", stateName: "Done"}}
+    assert_receive {:graphql_called, update_query, %{issueId: "issue-9", stateId: "s1"}}
+    assert update_query =~ "issueUpdate"
   end
 
   test "phoenix observability api preserves state, issue, and refresh responses" do

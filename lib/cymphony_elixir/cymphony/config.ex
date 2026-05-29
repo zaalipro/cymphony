@@ -1,6 +1,8 @@
 defmodule CymphonyElixir.Cymphony.Config do
   @moduledoc false
 
+  alias CymphonyElixir.Cymphony.Defaults
+
   @config_dir "~/.cymphony"
   @config_file "config.json"
 
@@ -191,74 +193,78 @@ defmodule CymphonyElixir.Cymphony.Config do
     end
   end
 
-  @spec to_workflow_yaml(map()) :: String.t()
-  def to_workflow_yaml(config) do
-    github_repo = Map.get(config, "github_repo_url", "")
-    workspace_root = Map.get(config, "workspace_root", "~/.cymphony/workspaces")
-    polling_ms = Map.get(config, "polling_interval_ms", 5000)
-    claude_command = Map.get(config, "claude_command", "claude")
+  @doc """
+  Builds the Schema-shaped (nested, string-keyed) runtime config map for a
+  project from its flat `config.json` representation, applying `Defaults`.
+
+  This is the structured replacement for the old hand-built YAML string: the
+  generator serializes this map (as JSON, which is valid YAML) into the
+  `WORKFLOW.md` front matter, so values containing YAML metacharacters (`:`,
+  `#`, quotes, newlines) round-trip safely and missing keys get explicit
+  defaults rather than silently becoming Schema fallbacks.
+  """
+  @spec to_schema_map(map()) :: map()
+  def to_schema_map(config) when is_map(config) do
+    base = %{
+      "tracker" => %{
+        "kind" => "linear",
+        "api_key" => Map.get(config, "linear_api_key", ""),
+        "project_slug" => Map.get(config, "linear_project_slug", ""),
+        "active_states" => Defaults.active_states(),
+        "terminal_states" => Defaults.terminal_states()
+      },
+      "polling" => %{
+        "interval_ms" => Map.get(config, "polling_interval_ms", Defaults.polling_interval_ms())
+      },
+      "workspace" => %{
+        "root" => Map.get(config, "workspace_root", Defaults.workspace_root())
+      },
+      "agent" => %{
+        "max_concurrent_agents" => Map.get(config, "max_concurrent_agents", Defaults.max_concurrent_agents()),
+        "max_turns" => Defaults.max_turns()
+      },
+      "claude" => claude_schema_map(config)
+    }
+
+    maybe_put_hooks(base, config)
+  end
+
+  defp claude_schema_map(config) do
+    %{
+      "command" => Map.get(config, "claude_command", Defaults.claude_command()),
+      "output_format" => Defaults.output_format(),
+      "approval_policy" => Defaults.approval_policy(),
+      "thread_sandbox" => Defaults.thread_sandbox(),
+      "turn_sandbox_policy" => Defaults.turn_sandbox_policy()
+    }
+    |> put_provider_keys(config)
+  end
+
+  defp put_provider_keys(claude, config) do
+    providers = Map.get(config, "providers", [])
     provider = Map.get(config, "provider")
 
-    hooks_section =
-      if github_repo != "" do
-        "\nhooks:\n" <>
-          "  after_create: |\n" <>
-          "    git clone --depth 1 #{github_repo} .\n"
-      else
-        ""
-      end
+    cond do
+      is_list(providers) and providers != [] ->
+        claude
+        |> Map.put("providers", providers)
+        |> Map.put("provider", hd(providers))
 
-    providers = Map.get(config, "providers", [])
+      is_binary(provider) and provider != "" ->
+        Map.put(claude, "provider", provider)
 
-    provider_section =
-      cond do
-        is_list(providers) and providers != [] ->
-          provider_lines = Enum.map(providers, &"    - #{&1}")
+      true ->
+        claude
+    end
+  end
 
-          "  providers:\n" <>
-            Enum.join(provider_lines, "\n") <>
-            "\n" <>
-            "  provider: #{hd(providers)}\n"
+  defp maybe_put_hooks(base, config) do
+    case Map.get(config, "github_repo_url", "") do
+      repo when is_binary(repo) and repo != "" ->
+        Map.put(base, "hooks", %{"after_create" => "git clone --depth 1 #{repo} .\n"})
 
-        provider != nil and provider != "" ->
-          "  provider: #{provider}\n"
-
-        true ->
-          ""
-      end
-
-    max_concurrent_agents = Map.get(config, "max_concurrent_agents", 10)
-
-    "tracker:\n" <>
-      "  kind: linear\n" <>
-      "  api_key: #{Map.get(config, "linear_api_key", "")}\n" <>
-      "  project_slug: #{Map.get(config, "linear_project_slug", "")}\n" <>
-      "  active_states:\n" <>
-      "    - Todo\n" <>
-      "    - In Progress\n" <>
-      "    - Merging\n" <>
-      "    - Rework\n" <>
-      "  terminal_states:\n" <>
-      "    - Closed\n" <>
-      "    - Cancelled\n" <>
-      "    - Canceled\n" <>
-      "    - Duplicate\n" <>
-      "    - Done\n" <>
-      "polling:\n" <>
-      "  interval_ms: #{polling_ms}\n" <>
-      "workspace:\n" <>
-      "  root: #{workspace_root}\n" <>
-      "#{hooks_section}" <>
-      "agent:\n" <>
-      "  max_concurrent_agents: #{max_concurrent_agents}\n" <>
-      "  max_turns: 20\n" <>
-      "claude:\n" <>
-      "  command: #{claude_command}\n" <>
-      "#{provider_section}" <>
-      "  output_format: stream-json\n" <>
-      "  approval_policy: \"never\"\n" <>
-      "  thread_sandbox: workspace-write\n" <>
-      "  turn_sandbox_policy:\n" <>
-      "    type: workspaceWrite\n"
+      _ ->
+        base
+    end
   end
 end

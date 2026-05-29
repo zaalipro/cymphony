@@ -56,6 +56,11 @@ defmodule CymphonyElixir.Tracker.Memory do
     :ok
   end
 
+  @spec create_comment(String.t(), String.t(), term()) :: :ok | {:error, term()}
+  def create_comment(issue_id, body, _config) do
+    create_comment(issue_id, body)
+  end
+
   @spec update_issue_state(String.t(), String.t()) :: :ok | {:error, term()}
   def update_issue_state(issue_id, state_name) do
     send_event({:memory_tracker_state_update, issue_id, state_name})
