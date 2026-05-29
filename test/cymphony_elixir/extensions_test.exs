@@ -247,18 +247,17 @@ defmodule CymphonyElixir.ExtensionsTest do
       {:ok, %{"data" => %{"commentCreate" => %{"success" => false}}}}
     )
 
-    assert {:error, {:linear_unexpected_response, %{"data" => %{"commentCreate" => %{"success" => false}}}}} =
-             Adapter.create_comment("issue-1", "broken")
+    assert {:error, :comment_create_failed} = Adapter.create_comment("issue-1", "broken")
 
     Process.put({FakeLinearClient, :graphql_result}, {:error, :boom})
 
     assert {:error, :boom} = Adapter.create_comment("issue-1", "boom")
 
     Process.put({FakeLinearClient, :graphql_result}, {:ok, %{"data" => %{}}})
-    assert {:error, {:linear_unexpected_response, %{"data" => %{}}}} = Adapter.create_comment("issue-1", "weird")
+    assert {:error, :comment_create_failed} = Adapter.create_comment("issue-1", "weird")
 
     Process.put({FakeLinearClient, :graphql_result}, :unexpected)
-    assert {:error, {:linear_unexpected_response, :unexpected}} = Adapter.create_comment("issue-1", "odd")
+    assert {:error, :comment_create_failed} = Adapter.create_comment("issue-1", "odd")
 
     Process.put(
       {FakeLinearClient, :graphql_results},
@@ -294,8 +293,7 @@ defmodule CymphonyElixir.ExtensionsTest do
       ]
     )
 
-    assert {:error, {:linear_unexpected_response, %{"data" => %{"issueUpdate" => %{"success" => false}}}}} =
-             Adapter.update_issue_state("issue-1", "Broken")
+    assert {:error, :issue_update_failed} = Adapter.update_issue_state("issue-1", "Broken")
 
     Process.put({FakeLinearClient, :graphql_results}, [{:error, :boom}])
 
@@ -317,7 +315,7 @@ defmodule CymphonyElixir.ExtensionsTest do
       ]
     )
 
-    assert {:error, {:linear_unexpected_response, %{"data" => %{}}}} = Adapter.update_issue_state("issue-1", "Weird")
+    assert {:error, :issue_update_failed} = Adapter.update_issue_state("issue-1", "Weird")
 
     Process.put(
       {FakeLinearClient, :graphql_results},
@@ -332,7 +330,7 @@ defmodule CymphonyElixir.ExtensionsTest do
       ]
     )
 
-    assert {:error, {:linear_unexpected_response, :unexpected}} = Adapter.update_issue_state("issue-1", "Odd")
+    assert {:error, :issue_update_failed} = Adapter.update_issue_state("issue-1", "Odd")
   end
 
   test "linear adapter create_comment/3 and update_issue_state/3 thread config and validate responses" do
@@ -353,7 +351,7 @@ defmodule CymphonyElixir.ExtensionsTest do
       {:ok, %{"data" => %{"commentCreate" => %{"success" => false}}}}
     )
 
-    assert {:error, {:linear_unexpected_response, _}} = Adapter.create_comment("issue-9", "no", config)
+    assert {:error, :comment_create_failed} = Adapter.create_comment("issue-9", "no", config)
 
     Process.put({FakeLinearClient, :graphql_result}, {:error, :down})
     assert {:error, :down} = Adapter.create_comment("issue-9", "err", config)

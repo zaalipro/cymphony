@@ -688,6 +688,58 @@ defmodule CymphonyElixir.CoreTest do
     refute File.exists?(workspace)
   end
 
+  test "normal completion never abandons, even past the retry cap (rework/wake safety)" do
+    issue_id = "issue-rework"
+    issue_identifier = "MT-564"
+    ref = make_ref()
+
+    write_workflow_file!(Workflow.workflow_file_path(),
+      tracker_kind: "memory",
+      max_retry_attempts: 2,
+      poll_interval_ms: 30_000
+    )
+
+    Application.put_env(:cymphony_elixir, :memory_tracker_recipient, self())
+
+    orchestrator_name = Module.concat(__MODULE__, :ReworkSafetyOrchestrator)
+    {:ok, pid} = Orchestrator.start_link(name: orchestrator_name)
+
+    on_exit(fn ->
+      Application.delete_env(:cymphony_elixir, :memory_tracker_recipient)
+      if Process.alive?(pid), do: Process.exit(pid, :normal)
+    end)
+
+    initial_state = :sys.get_state(pid)
+
+    # failure_count far exceeds max_retry_attempts (2). A *normal* completion must
+    # still schedule a continuation retry and never abandon — otherwise an issue
+    # repeatedly reworked (comment + move back to an active state) could be killed
+    # by the retry cap. Only abnormal exits increment failures / can abandon.
+    running_entry = %{
+      pid: self(),
+      ref: ref,
+      identifier: issue_identifier,
+      failure_count: 99,
+      issue: %Issue{id: issue_id, identifier: issue_identifier, state: "In Progress"},
+      started_at: DateTime.utc_now()
+    }
+
+    :sys.replace_state(pid, fn _ ->
+      initial_state
+      |> Map.put(:running, %{issue_id => running_entry})
+      |> Map.put(:claimed, MapSet.new([issue_id]))
+      |> Map.put(:retry_attempts, %{})
+    end)
+
+    send(pid, {:DOWN, ref, :process, self(), :normal})
+    Process.sleep(50)
+    state = :sys.get_state(pid)
+
+    assert %{attempt: 1} = state.retry_attempts[issue_id]
+    assert MapSet.member?(state.claimed, issue_id)
+    refute_received {:memory_tracker_comment, ^issue_id, _body}
+  end
+
   test "stale retry timer messages do not consume newer retry entries" do
     issue_id = "issue-stale-retry"
     orchestrator_name = Module.concat(__MODULE__, :StaleRetryOrchestrator)

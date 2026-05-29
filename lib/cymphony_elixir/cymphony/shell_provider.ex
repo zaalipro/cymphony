@@ -3,23 +3,12 @@ defmodule CymphonyElixir.Cymphony.ShellProvider do
 
   @env_prefix ~w(ANTHROPIC_ API_TIMEOUT CLAUDE_CODE_)
 
-  @spec load_env(String.t()) :: {:ok, map()} | {:error, :not_found | :invalid_provider_name}
+  @spec load_env(String.t()) :: {:ok, map()} | {:error, :not_found}
   def load_env(provider_name) when is_binary(provider_name) do
-    if valid_provider_name?(provider_name) do
-      case cached(provider_name) do
-        {:ok, _} = result -> result
-        :miss -> fetch_and_cache(provider_name)
-      end
-    else
-      {:error, :invalid_provider_name}
+    case cached(provider_name) do
+      {:ok, _} = result -> result
+      :miss -> fetch_and_cache(provider_name)
     end
-  end
-
-  # Provider names are interpolated into a zsh script, so restrict them to a
-  # safe character class. Anything else (spaces, shell metacharacters) is
-  # rejected rather than executed.
-  defp valid_provider_name?(name) when is_binary(name) do
-    Regex.match?(Regex.compile!("^[A-Za-z0-9_-]+$"), name)
   end
 
   @spec known_providers() :: [String.t()]
