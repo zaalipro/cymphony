@@ -20,17 +20,17 @@ defmodule CymphonyElixir.Orchestrator.Tokens do
         }
 
   @doc """
-  Adds a per-update `token_delta` to a running `claude_totals` accumulator,
+  Adds a per-update `token_delta` to a running `token_totals` accumulator,
   clamping each field at zero.
   """
   @spec apply_token_delta(map(), map()) :: map()
-  def apply_token_delta(claude_totals, token_delta) do
-    input_tokens = Map.get(claude_totals, :input_tokens, 0) + token_delta.input_tokens
-    output_tokens = Map.get(claude_totals, :output_tokens, 0) + token_delta.output_tokens
-    total_tokens = Map.get(claude_totals, :total_tokens, 0) + token_delta.total_tokens
+  def apply_token_delta(token_totals, token_delta) do
+    input_tokens = Map.get(token_totals, :input_tokens, 0) + token_delta.input_tokens
+    output_tokens = Map.get(token_totals, :output_tokens, 0) + token_delta.output_tokens
+    total_tokens = Map.get(token_totals, :total_tokens, 0) + token_delta.total_tokens
 
     seconds_running =
-      Map.get(claude_totals, :seconds_running, 0) + Map.get(token_delta, :seconds_running, 0)
+      Map.get(token_totals, :seconds_running, 0) + Map.get(token_delta, :seconds_running, 0)
 
     %{
       input_tokens: max(0, input_tokens),
@@ -50,9 +50,9 @@ defmodule CymphonyElixir.Orchestrator.Tokens do
     usage = extract_token_usage(update)
 
     {
-      compute_token_delta(running_entry, :input, usage, :claude_last_reported_input_tokens),
-      compute_token_delta(running_entry, :output, usage, :claude_last_reported_output_tokens),
-      compute_token_delta(running_entry, :total, usage, :claude_last_reported_total_tokens)
+      compute_token_delta(running_entry, :input, usage, :last_reported_input_tokens),
+      compute_token_delta(running_entry, :output, usage, :last_reported_output_tokens),
+      compute_token_delta(running_entry, :total, usage, :last_reported_total_tokens)
     }
     |> Tuple.to_list()
     |> then(fn [input, output, total] ->

@@ -25,9 +25,9 @@ defmodule CymphonyElixir.Orchestrator.TokensTest do
       update = %{:event => :u, :timestamp => @ts, "tokenUsage" => %{"total" => %{"input_tokens" => 100, "output_tokens" => 40, "total_tokens" => 140}}}
 
       running = %{
-        claude_last_reported_input_tokens: 70,
-        claude_last_reported_output_tokens: 30,
-        claude_last_reported_total_tokens: 100
+        last_reported_input_tokens: 70,
+        last_reported_output_tokens: 30,
+        last_reported_total_tokens: 100
       }
 
       delta = Tokens.extract_token_delta(running, update)
@@ -47,7 +47,7 @@ defmodule CymphonyElixir.Orchestrator.TokensTest do
 
     test "non-increasing usage yields zero delta but still records reported" do
       update = %{:event => :u, :timestamp => @ts, "tokenUsage" => %{"total" => %{"input_tokens" => 50}}}
-      running = %{claude_last_reported_input_tokens: 80}
+      running = %{last_reported_input_tokens: 80}
 
       delta = Tokens.extract_token_delta(running, update)
       assert delta.input_tokens == 0

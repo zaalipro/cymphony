@@ -23,9 +23,9 @@ defmodule CymphonyElixir.CompletionStore do
       ended_at           TEXT NOT NULL,
       started_at         TEXT,
       runtime_seconds    INTEGER,
-      claude_input_tokens  INTEGER DEFAULT 0,
-      claude_output_tokens INTEGER DEFAULT 0,
-      claude_total_tokens  INTEGER DEFAULT 0,
+      input_tokens  INTEGER DEFAULT 0,
+      output_tokens INTEGER DEFAULT 0,
+      total_tokens  INTEGER DEFAULT 0,
       worker_host        TEXT,
       workspace_path     TEXT,
       PRIMARY KEY (issue_id, ended_at)
@@ -39,6 +39,14 @@ defmodule CymphonyElixir.CompletionStore do
     CREATE INDEX IF NOT EXISTS idx_sessions_ended
       ON sessions(ended_at DESC)
     """
+  ]
+
+  # Pre-rename databases (< v1.7) have claude_*-prefixed token columns; the
+  # open path renames them in place so history survives the neutral renaming.
+  @column_renames [
+    {"claude_input_tokens", "input_tokens"},
+    {"claude_output_tokens", "output_tokens"},
+    {"claude_total_tokens", "total_tokens"}
   ]
 
   @max_limit 1000
@@ -151,10 +159,20 @@ defmodule CymphonyElixir.CompletionStore do
          {:ok, db} <- Sqlite3.open(path, []),
          :ok <- Sqlite3.execute(db, "PRAGMA busy_timeout = 5000"),
          :ok <- Sqlite3.execute(db, "PRAGMA journal_mode = WAL"),
+         :ok <- run_column_renames(db),
          :ok <- run_migrations(db),
          :ok <- chmod_secret(path) do
       {:ok, db}
     end
+  end
+
+  defp run_column_renames(db) do
+    Enum.each(@column_renames, fn {old, new} ->
+      # An error means the old column doesn't exist (fresh DB) — ignore.
+      _ = Sqlite3.execute(db, "ALTER TABLE sessions RENAME COLUMN #{old} TO #{new}")
+    end)
+
+    :ok
   end
 
   defp ensure_parent_dir(path) do
@@ -185,7 +203,7 @@ defmodule CymphonyElixir.CompletionStore do
     sql = """
     INSERT OR REPLACE INTO sessions (
       issue_id, identifier, project_name, ended_at, started_at, runtime_seconds,
-      claude_input_tokens, claude_output_tokens, claude_total_tokens,
+      input_tokens, output_tokens, total_tokens,
       worker_host, workspace_path
     ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
     """
@@ -209,9 +227,9 @@ defmodule CymphonyElixir.CompletionStore do
       iso8601(Map.get(record, :ended_at)),
       iso8601(Map.get(record, :started_at)),
       Map.get(record, :runtime_seconds),
-      Map.get(record, :claude_input_tokens) || 0,
-      Map.get(record, :claude_output_tokens) || 0,
-      Map.get(record, :claude_total_tokens) || 0,
+      Map.get(record, :input_tokens) || 0,
+      Map.get(record, :output_tokens) || 0,
+      Map.get(record, :total_tokens) || 0,
       Map.get(record, :worker_host),
       Map.get(record, :workspace_path)
     ]
@@ -223,7 +241,7 @@ defmodule CymphonyElixir.CompletionStore do
         :all ->
           {"""
            SELECT issue_id, identifier, project_name, ended_at, started_at, runtime_seconds,
-                  claude_input_tokens, claude_output_tokens, claude_total_tokens,
+                  input_tokens, output_tokens, total_tokens,
                   worker_host, workspace_path
              FROM sessions
             ORDER BY ended_at DESC
@@ -233,7 +251,7 @@ defmodule CymphonyElixir.CompletionStore do
         name when is_binary(name) ->
           {"""
            SELECT issue_id, identifier, project_name, ended_at, started_at, runtime_seconds,
-                  claude_input_tokens, claude_output_tokens, claude_total_tokens,
+                  input_tokens, output_tokens, total_tokens,
                   worker_host, workspace_path
              FROM sessions
             WHERE project_name = ?
@@ -291,9 +309,9 @@ defmodule CymphonyElixir.CompletionStore do
       ended_at: parse_iso8601(ended_at),
       started_at: parse_iso8601(started_at),
       runtime_seconds: runtime_seconds,
-      claude_input_tokens: input || 0,
-      claude_output_tokens: output || 0,
-      claude_total_tokens: total || 0,
+      input_tokens: input || 0,
+      output_tokens: output || 0,
+      total_tokens: total || 0,
       worker_host: worker_host,
       workspace_path: workspace_path
     }

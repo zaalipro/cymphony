@@ -8,7 +8,7 @@ defmodule CymphonyElixir.Orchestrator.Stall do
   impure reaction — terminating the session and rescheduling it with backoff.
 
   A running entry is treated loosely as a map; the only keys consulted are
-  `:last_claude_timestamp` (most recent observed Claude activity) and
+  `:last_agent_timestamp` (most recent observed Claude activity) and
   `:started_at` (session start), in that order of preference.
   """
 
@@ -19,7 +19,7 @@ defmodule CymphonyElixir.Orchestrator.Stall do
   """
   @spec last_activity_timestamp(map()) :: DateTime.t() | nil
   def last_activity_timestamp(running_entry) when is_map(running_entry) do
-    Map.get(running_entry, :last_claude_timestamp) || Map.get(running_entry, :started_at)
+    Map.get(running_entry, :last_agent_timestamp) || Map.get(running_entry, :started_at)
   end
 
   def last_activity_timestamp(_running_entry), do: nil

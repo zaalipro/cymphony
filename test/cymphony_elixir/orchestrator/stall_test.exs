@@ -6,12 +6,12 @@ defmodule CymphonyElixir.Orchestrator.StallTest do
   @now ~U[2026-05-29 12:00:10Z]
 
   describe "last_activity_timestamp/1" do
-    test "prefers :last_claude_timestamp over :started_at" do
-      entry = %{started_at: ~U[2026-05-29 12:00:00Z], last_claude_timestamp: ~U[2026-05-29 12:00:08Z]}
+    test "prefers :last_agent_timestamp over :started_at" do
+      entry = %{started_at: ~U[2026-05-29 12:00:00Z], last_agent_timestamp: ~U[2026-05-29 12:00:08Z]}
       assert Stall.last_activity_timestamp(entry) == ~U[2026-05-29 12:00:08Z]
     end
 
-    test "falls back to :started_at when no :last_claude_timestamp" do
+    test "falls back to :started_at when no :last_agent_timestamp" do
       entry = %{started_at: ~U[2026-05-29 12:00:00Z]}
       assert Stall.last_activity_timestamp(entry) == ~U[2026-05-29 12:00:00Z]
     end
@@ -27,7 +27,7 @@ defmodule CymphonyElixir.Orchestrator.StallTest do
 
   describe "elapsed_ms/2" do
     test "computes milliseconds since the last activity" do
-      entry = %{last_claude_timestamp: ~U[2026-05-29 12:00:08Z]}
+      entry = %{last_agent_timestamp: ~U[2026-05-29 12:00:08Z]}
       assert Stall.elapsed_ms(entry, @now) == 2_000
     end
 

@@ -30,9 +30,9 @@ defmodule CymphonyElixir.CompletionStoreTest do
       ended_at: DateTime.utc_now(),
       started_at: DateTime.utc_now(),
       runtime_seconds: 5,
-      claude_input_tokens: 10,
-      claude_output_tokens: 20,
-      claude_total_tokens: 30,
+      input_tokens: 10,
+      output_tokens: 20,
+      total_tokens: 30,
       worker_host: nil,
       workspace_path: "/tmp/ws"
     }
@@ -81,13 +81,13 @@ defmodule CymphonyElixir.CompletionStoreTest do
     {_pid, name} = start_store!(path: path, name: name)
     ended = DateTime.utc_now()
 
-    put_record(name, issue_id: "dup", ended_at: ended, claude_total_tokens: 1)
-    put_record(name, issue_id: "dup", ended_at: ended, claude_total_tokens: 999)
+    put_record(name, issue_id: "dup", ended_at: ended, total_tokens: 1)
+    put_record(name, issue_id: "dup", ended_at: ended, total_tokens: 999)
     :ok = sync(name)
 
     assert [row] = CompletionStore.recent(:all, 10, name)
     assert row.issue_id == "dup"
-    assert row.claude_total_tokens == 999
+    assert row.total_tokens == 999
     assert CompletionStore.count(:all, name) == 1
   end
 
@@ -160,6 +160,38 @@ defmodule CymphonyElixir.CompletionStoreTest do
       # Newest first: i-150 ... i-051
       assert first_issue_id == "i-150"
       assert last_issue_id == "i-051"
+    end
+  end
+
+  describe "legacy column migration" do
+    test "opens a pre-rename database and reads old rows through new column names", %{dir: dir} do
+      path = Path.join(dir, "legacy.db")
+      {:ok, db} = Exqlite.Sqlite3.open(path, [])
+
+      :ok =
+        Exqlite.Sqlite3.execute(db, """
+        CREATE TABLE sessions (
+          issue_id TEXT NOT NULL, identifier TEXT, project_name TEXT,
+          ended_at TEXT NOT NULL, started_at TEXT, runtime_seconds INTEGER,
+          claude_input_tokens INTEGER DEFAULT 0, claude_output_tokens INTEGER DEFAULT 0,
+          claude_total_tokens INTEGER DEFAULT 0, worker_host TEXT, workspace_path TEXT,
+          PRIMARY KEY (issue_id, ended_at))
+        """)
+
+      :ok =
+        Exqlite.Sqlite3.execute(
+          db,
+          "INSERT INTO sessions (issue_id, ended_at, claude_input_tokens, claude_output_tokens, claude_total_tokens) VALUES ('i1', '2026-07-16T00:00:00Z', 7, 3, 10)"
+        )
+
+      :ok = Exqlite.Sqlite3.close(db)
+
+      name = Module.concat(__MODULE__, "LegacyStore#{System.unique_integer([:positive])}")
+      {_pid, name} = start_store!(path: path, name: name)
+
+      assert [row] = CompletionStore.recent(:all, 10, name)
+      assert row.input_tokens == 7
+      assert row.total_tokens == 10
     end
   end
 end

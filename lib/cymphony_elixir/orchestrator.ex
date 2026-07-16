@@ -26,7 +26,7 @@ defmodule CymphonyElixir.Orchestrator do
   @failure_retry_base_ms 10_000
   # Slightly above the dashboard render interval so "checking now…" can render.
   @poll_transition_render_delay_ms 20
-  @empty_claude_totals %{
+  @empty_token_totals %{
     input_tokens: 0,
     output_tokens: 0,
     total_tokens: 0,
@@ -54,8 +54,8 @@ defmodule CymphonyElixir.Orchestrator do
       recent_completed: [],
       claimed: MapSet.new(),
       retry_attempts: %{},
-      claude_totals: nil,
-      claude_rate_limits: nil
+      token_totals: nil,
+      rate_limits: nil
     ]
   end
 
@@ -85,8 +85,8 @@ defmodule CymphonyElixir.Orchestrator do
       tick_timer_ref: nil,
       tick_token: nil,
       recent_completed: load_recent_completed(project_name),
-      claude_totals: @empty_claude_totals,
-      claude_rate_limits: nil
+      token_totals: @empty_token_totals,
+      rate_limits: nil
     }
 
     run_terminal_workspace_cleanup(state)
@@ -221,12 +221,12 @@ defmodule CymphonyElixir.Orchestrator do
         {:noreply, state}
 
       running_entry ->
-        {updated_running_entry, token_delta} = integrate_claude_update(running_entry, update)
+        {updated_running_entry, token_delta} = integrate_agent_update(running_entry, update)
 
         state =
           state
-          |> apply_claude_token_delta(token_delta)
-          |> apply_claude_rate_limits(update)
+          |> apply_agent_token_delta(token_delta)
+          |> apply_rate_limits(update)
 
         notify_dashboard()
         ObservabilityPubSub.broadcast_issue_update(issue_id)
@@ -512,7 +512,7 @@ defmodule CymphonyElixir.Orchestrator do
       |> terminate_running_issue(issue_id, false)
       |> maybe_retry_or_abandon(issue_id, next_attempt, failures, %{
         identifier: identifier,
-        error: "stalled for #{elapsed_ms}ms without claude activity",
+        error: "stalled for #{elapsed_ms}ms without agent activity",
         worker_host: Map.get(running_entry, :worker_host),
         workspace_path: Map.get(running_entry, :workspace_path),
         failures: failures
@@ -773,16 +773,16 @@ defmodule CymphonyElixir.Orchestrator do
                 provider: selected_provider,
                 workspace_path: nil,
                 session_id: nil,
-                last_claude_message: nil,
-                last_claude_timestamp: nil,
-                last_claude_event: nil,
-                claude_app_server_pid: nil,
-                claude_input_tokens: 0,
-                claude_output_tokens: 0,
-                claude_total_tokens: 0,
-                claude_last_reported_input_tokens: 0,
-                claude_last_reported_output_tokens: 0,
-                claude_last_reported_total_tokens: 0,
+                last_agent_message: nil,
+                last_agent_timestamp: nil,
+                last_agent_event: nil,
+                agent_os_pid: nil,
+                input_tokens: 0,
+                output_tokens: 0,
+                total_tokens: 0,
+                last_reported_input_tokens: 0,
+                last_reported_output_tokens: 0,
+                last_reported_total_tokens: 0,
                 turn_count: 0,
                 retry_attempt: normalize_retry_attempt(attempt),
                 failure_count: Keyword.get(opts, :failures, 0),
@@ -876,11 +876,11 @@ defmodule CymphonyElixir.Orchestrator do
       ended_at: ended,
       started_at: started,
       runtime_seconds: runtime,
-      claude_input_tokens: Map.get(running_entry, :claude_input_tokens, 0),
-      claude_output_tokens: Map.get(running_entry, :claude_output_tokens, 0),
-      claude_total_tokens: Map.get(running_entry, :claude_total_tokens, 0),
-      last_event: Map.get(running_entry, :last_claude_event),
-      last_message: Map.get(running_entry, :last_claude_message),
+      input_tokens: Map.get(running_entry, :input_tokens, 0),
+      output_tokens: Map.get(running_entry, :output_tokens, 0),
+      total_tokens: Map.get(running_entry, :total_tokens, 0),
+      last_event: Map.get(running_entry, :last_agent_event),
+      last_message: Map.get(running_entry, :last_agent_message),
       worker_host: Map.get(running_entry, :worker_host),
       workspace_path: Map.get(running_entry, :workspace_path)
     }
@@ -1100,6 +1100,10 @@ defmodule CymphonyElixir.Orchestrator do
   defp state_config(%State{config: nil}), do: load_config()
   defp state_config(%State{config: config}), do: config
 
+  defp agent_command(%{agent: %{kind: "codex"}, codex: %{command: command}}), do: command
+  defp agent_command(%{claude: %{command: command}}), do: command
+  defp agent_command(_config), do: nil
+
   defp max_retry_attempts(%State{} = state), do: state_config(state).agent.max_retry_attempts
 
   # Reschedule a failed issue, or abandon it once it has failed
@@ -1263,17 +1267,28 @@ defmodule CymphonyElixir.Orchestrator do
     )
   end
 
-  defp extract_providers(%{claude: %{providers: [_ | _] = providers}}), do: providers
-  defp extract_providers(%{claude: %{provider: provider}}) when is_binary(provider) and provider != "", do: [provider]
-  defp extract_providers(_), do: []
+  defp extract_providers(%{agent: %{kind: kind}} = config) do
+    case agent_provider_section(config, kind) do
+      %{providers: [_ | _] = providers} -> providers
+      %{provider: provider} when is_binary(provider) and provider != "" -> [provider]
+      _ -> []
+    end
+  end
+
+  defp extract_providers(_config), do: []
+
+  defp agent_provider_section(config, "codex"), do: config.codex
+  defp agent_provider_section(config, _kind), do: config.claude
 
   defp select_provider(%State{providers: [_ | _] = providers}) do
     Enum.random(providers)
   end
 
-  defp select_provider(%State{config: %{claude: %{provider: provider}}})
-       when is_binary(provider) and provider != "" do
-    provider
+  defp select_provider(%State{config: config}) when is_map(config) do
+    case extract_providers(config) do
+      [provider | _] -> provider
+      [] -> nil
+    end
   end
 
   defp select_provider(_state), do: nil
@@ -1357,15 +1372,15 @@ defmodule CymphonyElixir.Orchestrator do
           provider: Map.get(metadata, :provider),
           workspace_path: Map.get(metadata, :workspace_path),
           session_id: metadata.session_id,
-          claude_app_server_pid: metadata.claude_app_server_pid,
-          claude_input_tokens: metadata.claude_input_tokens,
-          claude_output_tokens: metadata.claude_output_tokens,
-          claude_total_tokens: metadata.claude_total_tokens,
+          agent_os_pid: metadata.agent_os_pid,
+          input_tokens: metadata.input_tokens,
+          output_tokens: metadata.output_tokens,
+          total_tokens: metadata.total_tokens,
           turn_count: Map.get(metadata, :turn_count, 0),
           started_at: metadata.started_at,
-          last_claude_timestamp: metadata.last_claude_timestamp,
-          last_claude_message: metadata.last_claude_message,
-          last_claude_event: metadata.last_claude_event,
+          last_agent_timestamp: metadata.last_agent_timestamp,
+          last_agent_message: metadata.last_agent_message,
+          last_agent_event: metadata.last_agent_event,
           log_events: Map.get(metadata, :log_events, []),
           runtime_seconds: running_seconds(metadata.started_at, now)
         }
@@ -1391,10 +1406,11 @@ defmodule CymphonyElixir.Orchestrator do
        running: running,
        retrying: retrying,
        recent_completed: state.recent_completed,
-       claude_totals: state.claude_totals,
-       rate_limits: Map.get(state, :claude_rate_limits),
+       token_totals: state.token_totals,
+       rate_limits: Map.get(state, :rate_limits),
        providers: state.providers || [],
-       claude_command: state.config.claude.command,
+       agent_kind: state.config.agent.kind,
+       agent_command: agent_command(state.config),
        polling: %{
          checking?: state.poll_check_in_progress == true,
          next_poll_in_ms: next_poll_in_ms(state.next_poll_due_at_ms, now_ms),
@@ -1492,8 +1508,13 @@ defmodule CymphonyElixir.Orchestrator do
           state.config
 
         config ->
-          updated_claude = %{config.claude | provider: hd(providers), providers: providers}
-          %{config | claude: updated_claude}
+          case config.agent.kind do
+            "codex" ->
+              %{config | codex: %{config.codex | provider: hd(providers), providers: providers}}
+
+            _ ->
+              %{config | claude: %{config.claude | provider: hd(providers), providers: providers}}
+          end
       end
 
     notify_dashboard()
@@ -1523,30 +1544,30 @@ defmodule CymphonyElixir.Orchestrator do
     end
   end
 
-  defp integrate_claude_update(running_entry, %{event: event, timestamp: timestamp} = update) do
+  defp integrate_agent_update(running_entry, %{event: event, timestamp: timestamp} = update) do
     token_delta = Tokens.extract_token_delta(running_entry, update)
-    claude_input_tokens = Map.get(running_entry, :claude_input_tokens, 0)
-    claude_output_tokens = Map.get(running_entry, :claude_output_tokens, 0)
-    claude_total_tokens = Map.get(running_entry, :claude_total_tokens, 0)
-    claude_app_server_pid = Map.get(running_entry, :claude_app_server_pid)
-    last_reported_input = Map.get(running_entry, :claude_last_reported_input_tokens, 0)
-    last_reported_output = Map.get(running_entry, :claude_last_reported_output_tokens, 0)
-    last_reported_total = Map.get(running_entry, :claude_last_reported_total_tokens, 0)
+    input_tokens = Map.get(running_entry, :input_tokens, 0)
+    output_tokens = Map.get(running_entry, :output_tokens, 0)
+    total_tokens = Map.get(running_entry, :total_tokens, 0)
+    agent_os_pid = Map.get(running_entry, :agent_os_pid)
+    last_reported_input = Map.get(running_entry, :last_reported_input_tokens, 0)
+    last_reported_output = Map.get(running_entry, :last_reported_output_tokens, 0)
+    last_reported_total = Map.get(running_entry, :last_reported_total_tokens, 0)
     turn_count = Map.get(running_entry, :turn_count, 0)
 
     updated_entry =
       Map.merge(running_entry, %{
-        last_claude_timestamp: timestamp,
-        last_claude_message: summarize_claude_update(update),
+        last_agent_timestamp: timestamp,
+        last_agent_message: summarize_agent_update(update),
         session_id: session_id_for_update(running_entry.session_id, update),
-        last_claude_event: event,
-        claude_app_server_pid: claude_app_server_pid_for_update(claude_app_server_pid, update),
-        claude_input_tokens: claude_input_tokens + token_delta.input_tokens,
-        claude_output_tokens: claude_output_tokens + token_delta.output_tokens,
-        claude_total_tokens: claude_total_tokens + token_delta.total_tokens,
-        claude_last_reported_input_tokens: max(last_reported_input, token_delta.input_reported),
-        claude_last_reported_output_tokens: max(last_reported_output, token_delta.output_reported),
-        claude_last_reported_total_tokens: max(last_reported_total, token_delta.total_reported),
+        last_agent_event: event,
+        agent_os_pid: agent_os_pid_for_update(agent_os_pid, update),
+        input_tokens: input_tokens + token_delta.input_tokens,
+        output_tokens: output_tokens + token_delta.output_tokens,
+        total_tokens: total_tokens + token_delta.total_tokens,
+        last_reported_input_tokens: max(last_reported_input, token_delta.input_reported),
+        last_reported_output_tokens: max(last_reported_output, token_delta.output_reported),
+        last_reported_total_tokens: max(last_reported_total, token_delta.total_reported),
         turn_count: turn_count_for_update(turn_count, running_entry.session_id, update)
       })
 
@@ -1560,18 +1581,18 @@ defmodule CymphonyElixir.Orchestrator do
     {updated_entry, token_delta}
   end
 
-  defp claude_app_server_pid_for_update(_existing, %{claude_app_server_pid: pid})
+  defp agent_os_pid_for_update(_existing, %{agent_os_pid: pid})
        when is_binary(pid),
        do: pid
 
-  defp claude_app_server_pid_for_update(_existing, %{claude_app_server_pid: pid})
+  defp agent_os_pid_for_update(_existing, %{agent_os_pid: pid})
        when is_integer(pid),
        do: Integer.to_string(pid)
 
-  defp claude_app_server_pid_for_update(_existing, %{claude_app_server_pid: pid}) when is_list(pid),
+  defp agent_os_pid_for_update(_existing, %{agent_os_pid: pid}) when is_list(pid),
     do: to_string(pid)
 
-  defp claude_app_server_pid_for_update(existing, _update), do: existing
+  defp agent_os_pid_for_update(existing, _update), do: existing
 
   defp session_id_for_update(_existing, %{session_id: session_id}) when is_binary(session_id),
     do: session_id
@@ -1596,7 +1617,7 @@ defmodule CymphonyElixir.Orchestrator do
 
   defp turn_count_for_update(_existing_count, _existing_session_id, _update), do: 0
 
-  defp summarize_claude_update(update) do
+  defp summarize_agent_update(update) do
     %{
       event: update[:event],
       message: update[:payload] || update[:raw],
@@ -1638,9 +1659,9 @@ defmodule CymphonyElixir.Orchestrator do
   defp record_session_completion_totals(state, running_entry) when is_map(running_entry) do
     runtime_seconds = running_seconds(running_entry.started_at, DateTime.utc_now())
 
-    claude_totals =
+    token_totals =
       Tokens.apply_token_delta(
-        state.claude_totals,
+        state.token_totals,
         %{
           input_tokens: 0,
           output_tokens: 0,
@@ -1649,7 +1670,7 @@ defmodule CymphonyElixir.Orchestrator do
         }
       )
 
-    %{state | claude_totals: claude_totals}
+    %{state | token_totals: token_totals}
   end
 
   defp record_session_completion_totals(state, _running_entry), do: state
@@ -1764,27 +1785,27 @@ defmodule CymphonyElixir.Orchestrator do
     available_slots(state) > 0 and state_slots_available?(issue, state.running, state)
   end
 
-  defp apply_claude_token_delta(
-         %{claude_totals: claude_totals} = state,
+  defp apply_agent_token_delta(
+         %{token_totals: token_totals} = state,
          %{input_tokens: input, output_tokens: output, total_tokens: total} = token_delta
        )
        when is_integer(input) and is_integer(output) and is_integer(total) do
-    %{state | claude_totals: Tokens.apply_token_delta(claude_totals, token_delta)}
+    %{state | token_totals: Tokens.apply_token_delta(token_totals, token_delta)}
   end
 
-  defp apply_claude_token_delta(state, _token_delta), do: state
+  defp apply_agent_token_delta(state, _token_delta), do: state
 
-  defp apply_claude_rate_limits(%State{} = state, update) when is_map(update) do
+  defp apply_rate_limits(%State{} = state, update) when is_map(update) do
     case Tokens.extract_rate_limits(update) do
       %{} = rate_limits ->
-        %{state | claude_rate_limits: rate_limits}
+        %{state | rate_limits: rate_limits}
 
       _ ->
         state
     end
   end
 
-  defp apply_claude_rate_limits(state, _update), do: state
+  defp apply_rate_limits(state, _update), do: state
 
   defp append_log_event(running_entry, event, message) when is_map(running_entry) do
     log_events = [

@@ -438,7 +438,7 @@ defmodule CymphonyElixir.ExtensionsTest do
                  "log_events" => []
                }
              ],
-             "claude_totals" => %{
+             "token_totals" => %{
                "input_tokens" => 4,
                "output_tokens" => 8,
                "total_tokens" => 12,
@@ -659,8 +659,8 @@ defmodule CymphonyElixir.ExtensionsTest do
           state: "In Progress",
           session_id: "thread-http",
           turn_count: 8,
-          last_claude_event: :notification,
-          last_claude_message: %{
+          last_agent_event: :notification,
+          last_agent_message: %{
             event: :notification,
             message: %{
               payload: %{
@@ -673,10 +673,10 @@ defmodule CymphonyElixir.ExtensionsTest do
               }
             }
           },
-          last_claude_timestamp: DateTime.utc_now(),
-          claude_input_tokens: 10,
-          claude_output_tokens: 12,
-          claude_total_tokens: 22,
+          last_agent_timestamp: DateTime.utc_now(),
+          input_tokens: 10,
+          output_tokens: 12,
+          total_tokens: 22,
           started_at: DateTime.utc_now()
         }
       ])
@@ -721,9 +721,9 @@ defmodule CymphonyElixir.ExtensionsTest do
               ended_at: DateTime.add(DateTime.utc_now(), -n, :second),
               started_at: DateTime.add(DateTime.utc_now(), -60 * n, :second),
               runtime_seconds: 60,
-              claude_input_tokens: 10,
-              claude_output_tokens: 20,
-              claude_total_tokens: 30,
+              input_tokens: 10,
+              output_tokens: 20,
+              total_tokens: 30,
               last_event: nil,
               last_message: nil,
               worker_host: nil,
@@ -1027,13 +1027,13 @@ defmodule CymphonyElixir.ExtensionsTest do
             state: "In Progress",
             session_id: "thread-http",
             turn_count: 3,
-            claude_app_server_pid: nil,
-            last_claude_message: nil,
-            last_claude_timestamp: nil,
-            last_claude_event: nil,
-            claude_input_tokens: 1,
-            claude_output_tokens: 2,
-            claude_total_tokens: 3,
+            agent_os_pid: nil,
+            last_agent_message: nil,
+            last_agent_timestamp: nil,
+            last_agent_event: nil,
+            input_tokens: 1,
+            output_tokens: 2,
+            total_tokens: 3,
             started_at: DateTime.utc_now()
           }
         ])
@@ -1242,13 +1242,13 @@ defmodule CymphonyElixir.ExtensionsTest do
           state: "In Progress",
           session_id: "thread-http",
           turn_count: 7,
-          claude_app_server_pid: nil,
-          last_claude_message: "rendered",
-          last_claude_timestamp: nil,
-          last_claude_event: :notification,
-          claude_input_tokens: 4,
-          claude_output_tokens: 8,
-          claude_total_tokens: 12,
+          agent_os_pid: nil,
+          last_agent_message: "rendered",
+          last_agent_timestamp: nil,
+          last_agent_event: :notification,
+          input_tokens: 4,
+          output_tokens: 8,
+          total_tokens: 12,
           started_at: DateTime.utc_now()
         }
       ],
@@ -1261,7 +1261,7 @@ defmodule CymphonyElixir.ExtensionsTest do
           error: "boom"
         }
       ],
-      claude_totals: %{input_tokens: 4, output_tokens: 8, total_tokens: 12, seconds_running: 42.5},
+      token_totals: %{input_tokens: 4, output_tokens: 8, total_tokens: 12, seconds_running: 42.5},
       rate_limits: %{"primary" => %{"remaining" => 11}},
       polling: %{
         next_poll_in_ms: 5_000,

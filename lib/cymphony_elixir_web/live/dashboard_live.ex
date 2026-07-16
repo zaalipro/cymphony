@@ -15,7 +15,7 @@ defmodule CymphonyElixirWeb.DashboardLive do
     counts: %{running: 0, retrying: 0},
     running: [],
     retrying: [],
-    claude_totals: %{input_tokens: 0, output_tokens: 0, total_tokens: 0, seconds_running: 0},
+    token_totals: %{input_tokens: 0, output_tokens: 0, total_tokens: 0, seconds_running: 0},
     rate_limits: nil,
     polling: nil
   }
@@ -266,9 +266,9 @@ defmodule CymphonyElixirWeb.DashboardLive do
             </div>
             <div class="metric-pill">
               <span class="metric-pill-label">Tokens</span>
-              <span class="metric-pill-value numeric"><%= format_int(@payload.claude_totals.total_tokens) %></span>
+              <span class="metric-pill-value numeric"><%= format_int(@payload.token_totals.total_tokens) %></span>
               <span class="metric-pill-detail numeric" title="input / output">
-                in <%= format_int(@payload.claude_totals.input_tokens) %> · out <%= format_int(@payload.claude_totals.output_tokens) %>
+                in <%= format_int(@payload.token_totals.input_tokens) %> · out <%= format_int(@payload.token_totals.output_tokens) %>
               </span>
             </div>
             <div class="metric-pill">
@@ -649,7 +649,7 @@ defmodule CymphonyElixirWeb.DashboardLive do
                       <%= format_runtime_seconds(entry.runtime_seconds || 0) %>
                     </div>
                     <div class="session-row-tokens numeric">
-                      <%= format_int(entry.claude_total_tokens) %>
+                      <%= format_int(entry.total_tokens) %>
                     </div>
                     <span class="muted small mono">
                       <%= if entry.ended_at, do: entry.ended_at, else: "" %>
@@ -725,7 +725,7 @@ defmodule CymphonyElixirWeb.DashboardLive do
   end
 
   defp completed_runtime_seconds(payload) do
-    get_in(payload, [:claude_totals, :seconds_running]) || 0
+    get_in(payload, [:token_totals, :seconds_running]) || 0
   end
 
   defp total_runtime_seconds(payload, now) do
@@ -869,7 +869,7 @@ defmodule CymphonyElixirWeb.DashboardLive do
 
   defp update_token_samples(samples, payload) do
     now_ms = System.monotonic_time(:millisecond)
-    total_tokens = get_in(payload, [:claude_totals, :total_tokens]) || 0
+    total_tokens = get_in(payload, [:token_totals, :total_tokens]) || 0
 
     samples =
       [{now_ms, total_tokens} | samples]

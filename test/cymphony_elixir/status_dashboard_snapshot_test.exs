@@ -11,7 +11,7 @@ defmodule CymphonyElixir.StatusDashboardSnapshotTest do
        %{
          running: [],
          retrying: [],
-         claude_totals: %{input_tokens: 0, output_tokens: 0, total_tokens: 0, seconds_running: 0},
+         token_totals: %{input_tokens: 0, output_tokens: 0, total_tokens: 0, seconds_running: 0},
          rate_limits: nil
        }}
 
@@ -36,7 +36,7 @@ defmodule CymphonyElixir.StatusDashboardSnapshotTest do
        %{
          running: [],
          retrying: [],
-         claude_totals: %{input_tokens: 0, output_tokens: 0, total_tokens: 0, seconds_running: 0},
+         token_totals: %{input_tokens: 0, output_tokens: 0, total_tokens: 0, seconds_running: 0},
          rate_limits: nil
        }}
 
@@ -50,25 +50,25 @@ defmodule CymphonyElixir.StatusDashboardSnapshotTest do
          running: [
            running_entry(%{
              identifier: "MT-101",
-             claude_total_tokens: 120_450,
+             total_tokens: 120_450,
              runtime_seconds: 785,
              turn_count: 11,
-             last_claude_event: "turn_completed",
-             last_claude_message: turn_completed_message("completed")
+             last_agent_event: "turn_completed",
+             last_agent_message: turn_completed_message("completed")
            }),
            running_entry(%{
              identifier: "MT-102",
              session_id: "thread-abcdef1234567890",
-             claude_app_server_pid: "5252",
-             claude_total_tokens: 89_200,
+             agent_os_pid: "5252",
+             total_tokens: 89_200,
              runtime_seconds: 412,
              turn_count: 4,
-             last_claude_event: "claude/event/task_started",
-             last_claude_message: exec_command_message("mix test --cover")
+             last_agent_event: "claude/event/task_started",
+             last_agent_message: exec_command_message("mix test --cover")
            })
          ],
          retrying: [],
-         claude_totals: %{
+         token_totals: %{
            input_tokens: 250_000,
            output_tokens: 18_500,
            total_tokens: 268_500,
@@ -93,11 +93,11 @@ defmodule CymphonyElixir.StatusDashboardSnapshotTest do
            running_entry(%{
              identifier: "MT-638",
              state: "retrying",
-             claude_total_tokens: 14_200,
+             total_tokens: 14_200,
              runtime_seconds: 1_225,
              turn_count: 7,
-             last_claude_event: :notification,
-             last_claude_message: agent_message_delta("waiting on rate-limit backoff window")
+             last_agent_event: :notification,
+             last_agent_message: agent_message_delta("waiting on rate-limit backoff window")
            })
          ],
          retrying: [
@@ -126,7 +126,7 @@ defmodule CymphonyElixir.StatusDashboardSnapshotTest do
              error: "fourth queued retry should also render after removing the top-three limit"
            })
          ],
-         claude_totals: %{input_tokens: 18_000, output_tokens: 2_200, total_tokens: 20_200, seconds_running: 2_700},
+         token_totals: %{input_tokens: 18_000, output_tokens: 2_200, total_tokens: 20_200, seconds_running: 2_700},
          rate_limits: %{
            limit_id: "gpt-5",
            primary: %{remaining: 0, limit: 20_000, reset_in_seconds: 95},
@@ -151,7 +151,7 @@ defmodule CymphonyElixir.StatusDashboardSnapshotTest do
              error: "error with \\nnewline"
            })
          ],
-         claude_totals: %{input_tokens: 0, output_tokens: 0, total_tokens: 0, seconds_running: 0},
+         token_totals: %{input_tokens: 0, output_tokens: 0, total_tokens: 0, seconds_running: 0},
          rate_limits: nil
        }}
 
@@ -174,15 +174,15 @@ defmodule CymphonyElixir.StatusDashboardSnapshotTest do
            running_entry(%{
              identifier: "MT-777",
              state: "running",
-             claude_total_tokens: 3_200,
+             total_tokens: 3_200,
              runtime_seconds: 75,
              turn_count: 7,
-             last_claude_event: "claude/event/token_count",
-             last_claude_message: token_usage_message(90, 12, 102)
+             last_agent_event: "claude/event/token_count",
+             last_agent_message: token_usage_message(90, 12, 102)
            })
          ],
          retrying: [],
-         claude_totals: %{input_tokens: 90, output_tokens: 12, total_tokens: 102, seconds_running: 75},
+         token_totals: %{input_tokens: 90, output_tokens: 12, total_tokens: 102, seconds_running: 75},
          rate_limits: %{
            limit_id: "priority-tier",
            primary: %{remaining: 100, limit: 100, reset_in_seconds: 1},
@@ -204,12 +204,12 @@ defmodule CymphonyElixir.StatusDashboardSnapshotTest do
         identifier: "MT-000",
         state: "running",
         session_id: "thread-1234567890",
-        claude_app_server_pid: "4242",
-        claude_total_tokens: 0,
+        agent_os_pid: "4242",
+        total_tokens: 0,
         runtime_seconds: 0,
         turn_count: 1,
-        last_claude_event: :notification,
-        last_claude_message: turn_started_message()
+        last_agent_event: :notification,
+        last_agent_message: turn_started_message()
       },
       overrides
     )

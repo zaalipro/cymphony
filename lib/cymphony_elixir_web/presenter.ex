@@ -52,7 +52,7 @@ defmodule CymphonyElixirWeb.Presenter do
                 snapshot
                 |> Map.get(:recent_completed, [])
                 |> Enum.map(&completed_entry_payload/1),
-              claude_totals: normalize_claude_totals(snapshot.claude_totals),
+              token_totals: normalize_token_totals(snapshot.token_totals),
               rate_limits: snapshot.rate_limits,
               polling: Map.get(snapshot, :polling),
               projects: [project]
@@ -106,7 +106,7 @@ defmodule CymphonyElixirWeb.Presenter do
           running: flat_running,
           retrying: flat_retrying,
           recent_completed: Enum.map(merged.recent_completed, &completed_entry_payload/1),
-          claude_totals: merged.claude_totals,
+          token_totals: merged.token_totals,
           rate_limits: merged.rate_limits,
           polling: merged.polling,
           projects: projects
@@ -123,9 +123,9 @@ defmodule CymphonyElixirWeb.Presenter do
       ended_at: iso8601(Map.get(entry, :ended_at)),
       started_at: iso8601(Map.get(entry, :started_at)),
       runtime_seconds: Map.get(entry, :runtime_seconds),
-      claude_input_tokens: Map.get(entry, :claude_input_tokens, 0),
-      claude_output_tokens: Map.get(entry, :claude_output_tokens, 0),
-      claude_total_tokens: Map.get(entry, :claude_total_tokens, 0),
+      input_tokens: Map.get(entry, :input_tokens, 0),
+      output_tokens: Map.get(entry, :output_tokens, 0),
+      total_tokens: Map.get(entry, :total_tokens, 0),
       worker_host: Map.get(entry, :worker_host),
       workspace_path: Map.get(entry, :workspace_path)
     }
@@ -373,17 +373,17 @@ defmodule CymphonyElixirWeb.Presenter do
       workspace_path: Map.get(entry, :workspace_path),
       session_id: entry.session_id,
       turn_count: Map.get(entry, :turn_count, 0),
-      last_event: entry.last_claude_event,
-      last_message: summarize_message(entry.last_claude_message),
+      last_event: entry.last_agent_event,
+      last_message: summarize_message(entry.last_agent_message),
       started_at: iso8601(entry.started_at),
-      last_event_at: iso8601(entry.last_claude_timestamp),
-      stalled: stalled?(entry.last_claude_timestamp),
+      last_event_at: iso8601(entry.last_agent_timestamp),
+      stalled: stalled?(entry.last_agent_timestamp),
       log_events: Enum.take(Map.get(entry, :log_events, []), 20),
       project_name: Map.get(entry, :project_name),
       tokens: %{
-        input_tokens: entry.claude_input_tokens,
-        output_tokens: entry.claude_output_tokens,
-        total_tokens: entry.claude_total_tokens
+        input_tokens: entry.input_tokens,
+        output_tokens: entry.output_tokens,
+        total_tokens: entry.total_tokens
       }
     }
   end
@@ -425,14 +425,14 @@ defmodule CymphonyElixirWeb.Presenter do
       turn_count: Map.get(running, :turn_count, 0),
       state: running.state,
       started_at: iso8601(running.started_at),
-      last_event: running.last_claude_event,
-      last_message: summarize_message(running.last_claude_message),
-      last_event_at: iso8601(running.last_claude_timestamp),
+      last_event: running.last_agent_event,
+      last_message: summarize_message(running.last_agent_message),
+      last_event_at: iso8601(running.last_agent_timestamp),
       log_events: Enum.map(Map.get(running, :log_events, []), &log_event_payload/1),
       tokens: %{
-        input_tokens: running.claude_input_tokens,
-        output_tokens: running.claude_output_tokens,
-        total_tokens: running.claude_total_tokens
+        input_tokens: running.input_tokens,
+        output_tokens: running.output_tokens,
+        total_tokens: running.total_tokens
       }
     }
   end
@@ -460,9 +460,9 @@ defmodule CymphonyElixirWeb.Presenter do
   defp recent_events_payload(running) do
     [
       %{
-        at: iso8601(running.last_claude_timestamp),
-        event: running.last_claude_event,
-        message: summarize_message(running.last_claude_message)
+        at: iso8601(running.last_agent_timestamp),
+        event: running.last_agent_event,
+        message: summarize_message(running.last_agent_message)
       }
     ]
     |> Enum.reject(&is_nil(&1.at))
@@ -487,7 +487,7 @@ defmodule CymphonyElixirWeb.Presenter do
   defp stalled?(_), do: false
 
   defp summarize_message(nil), do: nil
-  defp summarize_message(message), do: StatusDashboard.humanize_claude_message(message)
+  defp summarize_message(message), do: StatusDashboard.humanize_agent_message(message)
 
   defp due_at_iso8601(due_in_ms) when is_integer(due_in_ms) do
     DateTime.utc_now()
@@ -548,7 +548,7 @@ defmodule CymphonyElixirWeb.Presenter do
 
     merged_totals =
       Enum.reduce(snapshots, %{input_tokens: 0, output_tokens: 0, total_tokens: 0, seconds_running: 0}, fn %{snapshot: snap}, acc ->
-        totals = Map.get(snap, :claude_totals, %{input_tokens: 0, output_tokens: 0, total_tokens: 0, seconds_running: 0})
+        totals = Map.get(snap, :token_totals, %{input_tokens: 0, output_tokens: 0, total_tokens: 0, seconds_running: 0})
 
         %{
           input_tokens: acc.input_tokens + Map.get(totals, :input_tokens, 0),
@@ -564,17 +564,17 @@ defmodule CymphonyElixirWeb.Presenter do
       running: all_running,
       retrying: all_retrying,
       recent_completed: all_completed,
-      claude_totals: merged_totals,
+      token_totals: merged_totals,
       rate_limits: Map.get(first_snap, :rate_limits),
       polling: Map.get(first_snap, :polling)
     }
   end
 
-  defp normalize_claude_totals(nil) do
+  defp normalize_token_totals(nil) do
     %{input_tokens: 0, output_tokens: 0, total_tokens: 0, seconds_running: 0}
   end
 
-  defp normalize_claude_totals(totals) when is_map(totals) do
+  defp normalize_token_totals(totals) when is_map(totals) do
     %{
       input_tokens: Map.get(totals, :input_tokens, 0),
       output_tokens: Map.get(totals, :output_tokens, 0),

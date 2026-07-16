@@ -23,7 +23,7 @@ defmodule CymphonyElixir.BlockerDispatchTest do
       claimed: MapSet.new(),
       retry_attempts: %{},
       recent_completed: [],
-      claude_totals: %{input_tokens: 0, output_tokens: 0, total_tokens: 0, seconds_running: 0}
+      token_totals: %{input_tokens: 0, output_tokens: 0, total_tokens: 0, seconds_running: 0}
     }
   end
 
