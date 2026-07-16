@@ -12,6 +12,7 @@ defmodule CymphonyElixir.Orchestrator do
     CompletionStore,
     Config,
     ProjectSupervisor,
+    RunSpecResolver,
     StatusDashboard,
     Tracker,
     WorkflowStore,
@@ -362,6 +363,22 @@ defmodule CymphonyElixir.Orchestrator do
   def revalidate_issue_for_dispatch_for_test(%Issue{} = issue, issue_fetcher)
       when is_function(issue_fetcher, 1) do
     revalidate_issue_for_dispatch(issue, issue_fetcher, terminal_state_set())
+  end
+
+  @doc false
+  @spec resolve_run_spec_for_test(Issue.t(), term()) :: RunSpecResolver.resolved()
+  def resolve_run_spec_for_test(issue, config), do: RunSpecResolver.resolve(issue, config)
+
+  @doc false
+  @spec dispatch_issue_for_test(GenServer.server(), Issue.t()) :: :ok
+  def dispatch_issue_for_test(server, %Issue{} = issue) do
+    GenServer.call(server, {:dispatch_issue_for_test, issue})
+  end
+
+  @doc false
+  @spec kill_issue_for_test(GenServer.server(), String.t()) :: :ok | {:error, :not_running}
+  def kill_issue_for_test(server, issue_id) when is_binary(issue_id) do
+    GenServer.call(server, {:kill_issue, issue_id})
   end
 
   defp reconcile_running_issue_states([], state, _active_states, _terminal_states), do: state
@@ -743,7 +760,14 @@ defmodule CymphonyElixir.Orchestrator do
   end
 
   defp spawn_issue_on_worker_host(%State{} = state, issue, attempt, recipient, worker_host, opts) do
-    selected_provider = Keyword.get(opts, :provider_override) || select_provider(state)
+    resolved = RunSpecResolver.resolve(issue, state_config(state))
+
+    selected_provider =
+      Keyword.get(opts, :provider_override) || resolved.provider ||
+        select_provider_for_kind(state, resolved.agent_kind)
+
+    model = Keyword.get(opts, :model_override) || resolved.model
+    effort = Keyword.get(opts, :effort_override) || resolved.effort
 
     case Task.Supervisor.start_child(CymphonyElixir.TaskSupervisor, fn ->
            AgentRunner.run(issue, recipient,
@@ -751,7 +775,10 @@ defmodule CymphonyElixir.Orchestrator do
              worker_host: worker_host,
              config: state.config,
              prompt_template: state.prompt_template,
-             provider_override: selected_provider
+             provider_override: selected_provider,
+             agent_kind: resolved.agent_kind,
+             model: model,
+             effort: effort
            )
          end) do
       {:ok, pid} ->
@@ -771,6 +798,9 @@ defmodule CymphonyElixir.Orchestrator do
                 issue: issue,
                 worker_host: worker_host,
                 provider: selected_provider,
+                agent_kind: resolved.agent_kind,
+                model: model,
+                effort: effort,
                 workspace_path: nil,
                 session_id: nil,
                 last_agent_message: nil,
@@ -790,7 +820,7 @@ defmodule CymphonyElixir.Orchestrator do
                 log_events: []
               },
               :agent_dispatched,
-              "worker_host=#{worker_host || "local"} provider=#{selected_provider || "default"} attempt=#{inspect(attempt)}"
+              "worker_host=#{worker_host || "local"} provider=#{selected_provider || "default"} agent=#{resolved.agent_kind} model=#{model || "default"} effort=#{effort || "default"} source=#{resolved.source} attempt=#{inspect(attempt)}"
             )
           )
 
@@ -1280,6 +1310,20 @@ defmodule CymphonyElixir.Orchestrator do
   defp agent_provider_section(config, "codex"), do: config.codex
   defp agent_provider_section(config, _kind), do: config.claude
 
+  # When the issue's resolved kind matches the project's configured kind, use
+  # the rotating provider list; when a label switches kinds, fall back to that
+  # kind's configured provider (rotation lists are per-kind config).
+  defp select_provider_for_kind(%State{config: config} = state, kind) do
+    if is_map(config) and config.agent.kind == kind do
+      select_provider(state)
+    else
+      case config do
+        %{} -> agent_provider_section(config, kind).provider
+        _ -> select_provider(state)
+      end
+    end
+  end
+
   defp select_provider(%State{providers: [_ | _] = providers}) do
     Enum.random(providers)
   end
@@ -1370,6 +1414,9 @@ defmodule CymphonyElixir.Orchestrator do
           state: metadata.issue.state,
           worker_host: Map.get(metadata, :worker_host),
           provider: Map.get(metadata, :provider),
+          agent_kind: Map.get(metadata, :agent_kind),
+          model: Map.get(metadata, :model),
+          effort: Map.get(metadata, :effort),
           workspace_path: Map.get(metadata, :workspace_path),
           session_id: metadata.session_id,
           agent_os_pid: metadata.agent_os_pid,
@@ -1456,6 +1503,10 @@ defmodule CymphonyElixir.Orchestrator do
     else
       {:reply, {:error, :not_running}, state}
     end
+  end
+
+  def handle_call({:dispatch_issue_for_test, issue}, _from, state) do
+    {:reply, :ok, do_dispatch_issue(state, issue, nil, nil, [])}
   end
 
   def handle_call({:retry_issue_now, issue_id}, _from, state) do
