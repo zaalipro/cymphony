@@ -1,16 +1,17 @@
 defmodule CymphonyElixir.AgentRunner do
   @moduledoc """
-  Executes a single Linear issue in its workspace with Claude Code.
+  Executes a single Linear issue in its workspace with the configured coding
+  agent.
   """
 
   require Logger
-  alias CymphonyElixir.Claude.AppServer
+  alias CymphonyElixir.Agent.Runner
   alias CymphonyElixir.{Config, Linear.Issue, PromptBuilder, Tracker, Workspace}
 
   @type worker_host :: String.t() | nil
 
   @spec run(map(), pid() | nil, keyword()) :: :ok | no_return()
-  def run(issue, claude_update_recipient \\ nil, opts \\ []) do
+  def run(issue, agent_update_recipient \\ nil, opts \\ []) do
     config = Keyword.get(opts, :config)
     # The orchestrator owns host retries so one worker lifetime never hops machines.
     worker_hosts = if config, do: config.worker.ssh_hosts, else: Config.settings!().worker.ssh_hosts
@@ -18,7 +19,7 @@ defmodule CymphonyElixir.AgentRunner do
 
     Logger.info("Starting agent run for #{issue_context(issue)} worker_host=#{worker_host_for_log(worker_host)}")
 
-    case run_on_worker_host(issue, claude_update_recipient, opts, worker_host) do
+    case run_on_worker_host(issue, agent_update_recipient, opts, worker_host) do
       :ok ->
         :ok
 
@@ -28,26 +29,19 @@ defmodule CymphonyElixir.AgentRunner do
     end
   end
 
-  defp run_on_worker_host(issue, claude_update_recipient, opts, worker_host) do
+  defp run_on_worker_host(issue, agent_update_recipient, opts, worker_host) do
     config = Keyword.get(opts, :config)
     provider_override = Keyword.get(opts, :provider_override)
-
-    config =
-      if provider_override && config do
-        %{config | claude: %{config.claude | provider: provider_override}}
-      else
-        config
-      end
 
     Logger.info("Starting worker attempt for #{issue_context(issue)} worker_host=#{worker_host_for_log(worker_host)} provider=#{provider_override || "default"}")
 
     case Workspace.create_for_issue(issue, worker_host, config: config) do
       {:ok, workspace} ->
-        send_worker_runtime_info(claude_update_recipient, issue, worker_host, workspace)
+        send_worker_runtime_info(agent_update_recipient, issue, worker_host, workspace)
 
         try do
           with :ok <- Workspace.run_before_run_hook(workspace, issue, worker_host, config: config) do
-            run_claude_turns(workspace, issue, claude_update_recipient, Keyword.put(opts, :config, config), worker_host)
+            run_agent_turns(workspace, issue, agent_update_recipient, opts, worker_host)
           end
         after
           Workspace.run_after_run_hook(workspace, issue, worker_host, config: config)
@@ -58,19 +52,19 @@ defmodule CymphonyElixir.AgentRunner do
     end
   end
 
-  defp claude_message_handler(recipient, issue) do
+  defp agent_message_handler(recipient, issue) do
     fn message ->
-      send_claude_update(recipient, issue, message)
+      send_agent_update(recipient, issue, message)
     end
   end
 
-  defp send_claude_update(recipient, %Issue{id: issue_id}, message)
+  defp send_agent_update(recipient, %Issue{id: issue_id}, message)
        when is_binary(issue_id) and is_pid(recipient) do
-    send(recipient, {:claude_worker_update, issue_id, message})
+    send(recipient, {:agent_worker_update, issue_id, message})
     :ok
   end
 
-  defp send_claude_update(_recipient, _issue, _message), do: :ok
+  defp send_agent_update(_recipient, _issue, _message), do: :ok
 
   defp send_worker_runtime_info(recipient, %Issue{id: issue_id}, worker_host, workspace)
        when is_binary(issue_id) and is_pid(recipient) and is_binary(workspace) do
@@ -88,29 +82,38 @@ defmodule CymphonyElixir.AgentRunner do
 
   defp send_worker_runtime_info(_recipient, _issue, _worker_host, _workspace), do: :ok
 
-  defp run_claude_turns(workspace, issue, claude_update_recipient, opts, worker_host) do
+  defp run_agent_turns(workspace, issue, agent_update_recipient, opts, worker_host) do
     config = Keyword.get(opts, :config)
-    max_turns = Keyword.get(opts, :max_turns) || if config, do: config.agent.max_turns, else: Config.settings!().agent.max_turns
-    issue_state_fetcher = Keyword.get(opts, :issue_state_fetcher) || if config, do: &Tracker.fetch_issue_states_by_ids(&1, config), else: &Tracker.fetch_issue_states_by_ids/1
 
-    with {:ok, session} <- AppServer.start_session(workspace, worker_host: worker_host, config: config) do
+    max_turns =
+      Keyword.get(opts, :max_turns) || if config, do: config.agent.max_turns, else: Config.settings!().agent.max_turns
+
+    issue_state_fetcher =
+      Keyword.get(opts, :issue_state_fetcher) ||
+        if config, do: &Tracker.fetch_issue_states_by_ids(&1, config), else: &Tracker.fetch_issue_states_by_ids/1
+
+    session_opts =
+      [worker_host: worker_host, config: config] ++
+        Keyword.take(opts, [:agent_kind, :model, :effort, :provider_override])
+
+    with {:ok, session} <- Runner.start_session(workspace, session_opts) do
       try do
-        do_run_claude_turns(session, workspace, issue, claude_update_recipient, opts, issue_state_fetcher, 1, max_turns, config)
+        do_run_agent_turns(session, workspace, issue, agent_update_recipient, opts, issue_state_fetcher, 1, max_turns, config)
       after
-        AppServer.stop_session(session)
+        Runner.stop_session(session)
       end
     end
   end
 
-  defp do_run_claude_turns(app_session, workspace, issue, claude_update_recipient, opts, issue_state_fetcher, turn_number, max_turns, config) do
+  defp do_run_agent_turns(agent_session, workspace, issue, agent_update_recipient, opts, issue_state_fetcher, turn_number, max_turns, config) do
     prompt = build_turn_prompt(issue, opts, turn_number, max_turns, config)
 
     with {:ok, turn_result} <-
-           AppServer.run_turn(
-             app_session,
+           Runner.run_turn(
+             agent_session,
              prompt,
              issue,
-             on_message: claude_message_handler(claude_update_recipient, issue),
+             on_message: agent_message_handler(agent_update_recipient, issue),
              config: config
            ) do
       session_id = turn_result[:session_id]
@@ -121,14 +124,14 @@ defmodule CymphonyElixir.AgentRunner do
         {:continue, refreshed_issue} when turn_number < max_turns ->
           Logger.info("Continuing agent run for #{issue_context(refreshed_issue)} after normal turn completion turn=#{turn_number}/#{max_turns}")
 
-          # Resume the Claude session for the next turn
-          app_session = %{app_session | session_id: session_id}
+          # Resume the agent session for the next turn
+          agent_session = %{agent_session | session_id: session_id}
 
-          do_run_claude_turns(
-            app_session,
+          do_run_agent_turns(
+            agent_session,
             workspace,
             refreshed_issue,
-            claude_update_recipient,
+            agent_update_recipient,
             opts,
             issue_state_fetcher,
             turn_number + 1,
@@ -165,7 +168,7 @@ defmodule CymphonyElixir.AgentRunner do
     """
     Continuation guidance:
 
-    - The previous Claude turn completed normally, but the Linear issue is still in an active state.
+    - The previous agent turn completed normally, but the Linear issue is still in an active state.
     - This is continuation turn ##{turn_number} of #{max_turns} for the current agent run.
     - Resume from the current workspace and workpad state instead of restarting from scratch.
     - The original task instructions and prior turn context are already present in this thread, so do not restate them before acting.

@@ -8,7 +8,7 @@ defmodule CymphonyElixir.TestSupport do
 
       alias CymphonyElixir.AgentRunner
       alias CymphonyElixir.CLI
-      alias CymphonyElixir.Claude.AppServer
+      alias CymphonyElixir.Agent.Runner
       alias CymphonyElixir.Config
       alias CymphonyElixir.HttpServer
       alias CymphonyElixir.Linear.Client

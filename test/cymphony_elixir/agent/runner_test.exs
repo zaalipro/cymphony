@@ -1,4 +1,4 @@
-defmodule CymphonyElixir.AppServerTest do
+defmodule CymphonyElixir.Agent.RunnerTest do
   use CymphonyElixir.TestSupport
 
   test "app server rejects the workspace root and paths outside workspace root" do
@@ -30,10 +30,10 @@ defmodule CymphonyElixir.AppServerTest do
       }
 
       assert {:error, {:invalid_workspace_cwd, :workspace_root, _path}} =
-               AppServer.run(workspace_root, "guard", issue)
+               Runner.run(workspace_root, "guard", issue)
 
       assert {:error, {:invalid_workspace_cwd, :outside_workspace_root, _path, _root}} =
-               AppServer.run(outside_workspace, "guard", issue)
+               Runner.run(outside_workspace, "guard", issue)
     after
       File.rm_rf(test_root)
     end
@@ -70,7 +70,7 @@ defmodule CymphonyElixir.AppServerTest do
       }
 
       assert {:error, {:invalid_workspace_cwd, :symlink_escape, ^symlink_workspace, _root}} =
-               AppServer.run(symlink_workspace, "guard", issue)
+               Runner.run(symlink_workspace, "guard", issue)
     after
       File.rm_rf(test_root)
     end
@@ -115,7 +115,7 @@ defmodule CymphonyElixir.AppServerTest do
       }
 
       assert {:ok, %{session_id: "sess-abc123", result: %{result: "done"}}} =
-               AppServer.run(workspace, "do the thing", issue)
+               Runner.run(workspace, "do the thing", issue)
     after
       File.rm_rf(test_root)
     end
@@ -158,8 +158,8 @@ defmodule CymphonyElixir.AppServerTest do
         labels: ["backend"]
       }
 
-      assert {:error, {:claude_exit, 1, _}} =
-               AppServer.run(workspace, "do the thing", issue)
+      assert {:error, {:agent_exit, 1, _}} =
+               Runner.run(workspace, "do the thing", issue)
     after
       File.rm_rf(test_root)
     end
@@ -209,7 +209,7 @@ defmodule CymphonyElixir.AppServerTest do
       }
 
       assert {:ok, %{session_id: "sess-flags"}} =
-               AppServer.run(workspace, "do the thing", issue)
+               Runner.run(workspace, "do the thing", issue)
 
       flags = File.read!(trace_file)
       assert flags =~ "--bare"
@@ -279,7 +279,7 @@ defmodule CymphonyElixir.AppServerTest do
       }
 
       assert {:ok, %{session_id: "sess-env"}} =
-               AppServer.run(workspace, "do the thing", issue)
+               Runner.run(workspace, "do the thing", issue)
 
       trace = File.read!(trace_file)
       assert trace =~ "LINEAR_API_KEY=linear-config-token"
@@ -353,7 +353,7 @@ defmodule CymphonyElixir.AppServerTest do
       }
 
       assert {:ok, %{session_id: "sess-remote-env"}} =
-               AppServer.run(workspace, "do the thing", issue, worker_host: "worker.example")
+               Runner.run(workspace, "do the thing", issue, worker_host: "worker.example")
 
       trace = File.read!(trace_file)
       assert trace =~ "export LINEAR_API_KEY="
@@ -407,17 +407,17 @@ defmodule CymphonyElixir.AppServerTest do
         labels: ["backend"]
       }
 
-      {:ok, session} = AppServer.start_session(workspace)
+      {:ok, session} = Runner.start_session(workspace)
 
       # First turn
       assert {:ok, %{session_id: first_session_id}} =
-               AppServer.run_turn(session, "first turn", issue)
+               Runner.run_turn(session, "first turn", issue)
 
       # Second turn should resume
       session = %{session | session_id: first_session_id}
 
       assert {:ok, %{session_id: ^first_session_id}} =
-               AppServer.run_turn(session, "second turn", issue)
+               Runner.run_turn(session, "second turn", issue)
 
       flags = File.read!(trace_file)
       assert flags =~ "--resume #{first_session_id}"

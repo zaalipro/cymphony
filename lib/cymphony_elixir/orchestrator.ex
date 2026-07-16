@@ -213,7 +213,7 @@ defmodule CymphonyElixir.Orchestrator do
   end
 
   def handle_info(
-        {:claude_worker_update, issue_id, %{event: _, timestamp: _} = update},
+        {:agent_worker_update, issue_id, %{event: _, timestamp: _} = update},
         %{running: running} = state
       ) do
     case Map.get(running, issue_id) do
@@ -234,7 +234,7 @@ defmodule CymphonyElixir.Orchestrator do
     end
   end
 
-  def handle_info({:claude_worker_update, _issue_id, _update}, state), do: {:noreply, state}
+  def handle_info({:agent_worker_update, _issue_id, _update}, state), do: {:noreply, state}
 
   def handle_info({:retry_issue, issue_id, retry_token}, state) do
     result =

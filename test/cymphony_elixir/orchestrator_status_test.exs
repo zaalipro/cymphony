@@ -69,7 +69,7 @@ defmodule CymphonyElixir.OrchestratorStatusTest do
 
     send(
       pid,
-      {:claude_worker_update, issue_id,
+      {:agent_worker_update, issue_id,
        %{
          event: :session_started,
          session_id: "thread-live-turn-live",
@@ -79,7 +79,7 @@ defmodule CymphonyElixir.OrchestratorStatusTest do
 
     send(
       pid,
-      {:claude_worker_update, issue_id,
+      {:agent_worker_update, issue_id,
        %{
          event: :notification,
          payload: %{method: "some-event"},
@@ -158,7 +158,7 @@ defmodule CymphonyElixir.OrchestratorStatusTest do
 
     send(
       pid,
-      {:claude_worker_update, issue_id,
+      {:agent_worker_update, issue_id,
        %{
          event: :notification,
          payload: %{method: "new-event"},
@@ -226,7 +226,7 @@ defmodule CymphonyElixir.OrchestratorStatusTest do
 
     send(
       pid,
-      {:claude_worker_update, issue_id,
+      {:agent_worker_update, issue_id,
        %{
          event: :session_started,
          session_id: "thread-usage-turn-usage",
@@ -236,7 +236,7 @@ defmodule CymphonyElixir.OrchestratorStatusTest do
 
     send(
       pid,
-      {:claude_worker_update, issue_id,
+      {:agent_worker_update, issue_id,
        %{
          event: :notification,
          payload: %{
@@ -321,7 +321,7 @@ defmodule CymphonyElixir.OrchestratorStatusTest do
 
     send(
       pid,
-      {:claude_worker_update, issue_id,
+      {:agent_worker_update, issue_id,
        %{
          event: :turn_completed,
          payload: %{
@@ -398,7 +398,7 @@ defmodule CymphonyElixir.OrchestratorStatusTest do
 
     send(
       pid,
-      {:claude_worker_update, issue_id,
+      {:agent_worker_update, issue_id,
        %{
          event: :notification,
          payload: %{
@@ -422,7 +422,7 @@ defmodule CymphonyElixir.OrchestratorStatusTest do
 
     send(
       pid,
-      {:claude_worker_update, issue_id,
+      {:agent_worker_update, issue_id,
        %{
          event: :notification,
          payload: %{
@@ -516,7 +516,7 @@ defmodule CymphonyElixir.OrchestratorStatusTest do
 
     send(
       pid,
-      {:claude_worker_update, issue_id,
+      {:agent_worker_update, issue_id,
        %{
          event: :notification,
          payload: %{
@@ -590,7 +590,7 @@ defmodule CymphonyElixir.OrchestratorStatusTest do
 
     send(
       pid,
-      {:claude_worker_update, issue_id,
+      {:agent_worker_update, issue_id,
        %{
          event: :notification,
          payload: %{
@@ -682,7 +682,7 @@ defmodule CymphonyElixir.OrchestratorStatusTest do
         ] do
       send(
         pid,
-        {:claude_worker_update, issue_id,
+        {:agent_worker_update, issue_id,
          %{
            event: :notification,
            payload: %{
@@ -752,7 +752,7 @@ defmodule CymphonyElixir.OrchestratorStatusTest do
 
     send(
       pid,
-      {:claude_worker_update, issue_id,
+      {:agent_worker_update, issue_id,
        %{
          event: :notification,
          payload: %{
