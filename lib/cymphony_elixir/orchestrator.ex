@@ -1134,6 +1134,10 @@ defmodule CymphonyElixir.Orchestrator do
   defp agent_command(%{claude: %{command: command}}), do: command
   defp agent_command(_config), do: nil
 
+  defp maybe_override(opts, _key, nil), do: opts
+  defp maybe_override(opts, _key, ""), do: opts
+  defp maybe_override(opts, key, value) when is_binary(value), do: Keyword.put(opts, key, value)
+
   defp max_retry_attempts(%State{} = state), do: state_config(state).agent.max_retry_attempts
 
   # Reschedule a failed issue, or abandon it once it has failed
@@ -1385,6 +1389,22 @@ defmodule CymphonyElixir.Orchestrator do
 
   def set_providers(_server, _providers), do: {:error, :invalid_providers}
 
+  @doc """
+  Kill a running session and immediately re-dispatch it with pinned run-spec
+  overrides (`:provider`, `:model`, `:effort` — all optional, empty/absent
+  keys keep label/config-resolved values). Agent kind is intentionally not
+  overridable per running session: a kind switch invalidates the session id,
+  so drive it via labels/config and let the restart pick it up.
+  """
+  @spec set_issue_run_spec(GenServer.server(), String.t(), map()) ::
+          :ok | {:error, :not_running} | :unavailable
+  def set_issue_run_spec(server, issue_id, overrides)
+      when is_binary(issue_id) and is_map(overrides) do
+    GenServer.call(server, {:set_issue_run_spec, issue_id, overrides})
+  catch
+    :exit, _ -> :unavailable
+  end
+
   @spec snapshot() :: map() | :timeout | :unavailable
   def snapshot, do: snapshot(__MODULE__, 15_000)
 
@@ -1576,7 +1596,7 @@ defmodule CymphonyElixir.Orchestrator do
     {:reply, {:error, :invalid_providers}, state}
   end
 
-  def handle_call({:set_issue_provider, issue_id, new_provider}, _from, state) do
+  def handle_call({:set_issue_run_spec, issue_id, overrides}, _from, state) do
     case Map.get(state.running, issue_id) do
       nil ->
         {:reply, {:error, :not_running}, state}
@@ -1587,9 +1607,15 @@ defmodule CymphonyElixir.Orchestrator do
 
         state = terminate_running_issue(state, issue_id, false)
 
-        Logger.info("Provider override for #{issue_context(issue)}: new_provider=#{new_provider}")
+        Logger.info("Run-spec override for #{issue_context(issue)}: #{inspect(Map.take(overrides, [:provider, :model, :effort]))}")
 
-        new_state = do_dispatch_issue(state, issue, nil, worker_host, provider_override: new_provider)
+        dispatch_opts =
+          []
+          |> maybe_override(:provider_override, overrides[:provider])
+          |> maybe_override(:model_override, overrides[:model])
+          |> maybe_override(:effort_override, overrides[:effort])
+
+        new_state = do_dispatch_issue(state, issue, nil, worker_host, dispatch_opts)
         notify_dashboard()
         {:reply, :ok, new_state}
     end

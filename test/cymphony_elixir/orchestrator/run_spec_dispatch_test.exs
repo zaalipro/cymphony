@@ -46,4 +46,62 @@ defmodule CymphonyElixir.Orchestrator.RunSpecDispatchTest do
     assert entry.agent_kind == "claude"
     assert entry.model == nil
   end
+
+  test "set_issue_run_spec kills and re-dispatches with pinned overrides" do
+    orchestrator_name = Module.concat(__MODULE__, :OverrideOrch)
+    {:ok, pid} = Orchestrator.start_link(name: orchestrator_name)
+    on_exit(fn -> if Process.alive?(pid), do: Process.exit(pid, :normal) end)
+
+    issue = %Issue{
+      id: "iss-override-1",
+      identifier: "MT-502",
+      title: "Override",
+      state: "In Progress",
+      url: "https://example.org/MT-502",
+      labels: []
+    }
+
+    :ok = Orchestrator.dispatch_issue_for_test(pid, issue)
+
+    assert :ok =
+             Orchestrator.set_issue_run_spec(pid, "iss-override-1", %{
+               provider: "cz2",
+               model: "opus",
+               effort: "max"
+             })
+
+    snapshot = GenServer.call(pid, :snapshot)
+    assert %{running: [entry]} = snapshot
+    assert entry.provider == "cz2"
+    assert entry.model == "opus"
+    assert entry.effort == "max"
+
+    assert {:error, :not_running} =
+             Orchestrator.set_issue_run_spec(pid, "missing-id", %{provider: "x"})
+  end
+
+  test "a retry dispatch re-resolves labels (label edits take effect on next attempt)" do
+    orchestrator_name = Module.concat(__MODULE__, :RetryResolveOrch)
+    {:ok, pid} = Orchestrator.start_link(name: orchestrator_name)
+    on_exit(fn -> if Process.alive?(pid), do: Process.exit(pid, :normal) end)
+
+    base = %Issue{
+      id: "iss-retry-1",
+      identifier: "MT-503",
+      title: "Retry resolve",
+      state: "Todo",
+      url: "https://example.org/MT-503",
+      labels: []
+    }
+
+    :ok = Orchestrator.dispatch_issue_for_test(pid, base)
+    assert %{running: [first]} = GenServer.call(pid, :snapshot)
+    assert first.effort == nil
+
+    :ok = Orchestrator.kill_issue_for_test(pid, "iss-retry-1")
+
+    :ok = Orchestrator.dispatch_issue_for_test(pid, %{base | labels: ["effort:max"]})
+    assert %{running: [second]} = GenServer.call(pid, :snapshot)
+    assert second.effort == "max"
+  end
 end

@@ -1013,7 +1013,7 @@ defmodule CymphonyElixirWeb.DashboardLive do
     if orchestrator_addressable?(orchestrator_pid) do
       Task.Supervisor.start_child(CymphonyElixir.TaskSupervisor, fn ->
         try do
-          GenServer.call(orchestrator_pid, {:set_issue_provider, issue_id, provider}, 10_000)
+          GenServer.call(orchestrator_pid, {:set_issue_run_spec, issue_id, %{provider: provider}}, 10_000)
         catch
           :exit, _ -> {:error, :unavailable}
         end

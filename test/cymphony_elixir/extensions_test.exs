@@ -837,7 +837,7 @@ defmodule CymphonyElixir.ExtensionsTest do
       |> form(~s|form[phx-submit="set_provider"]|, %{issue: "MT-HTTP", provider: "cv2"})
       |> render_submit()
 
-      assert_receive {:orchestrator_call, {:set_issue_provider, "issue-http", "cv2"}}, 1_000
+      assert_receive {:orchestrator_call, {:set_issue_run_spec, "issue-http", %{provider: "cv2"}}}, 1_000
     end
 
     test "pause_dispatch sends :pause to the orchestrator" do
