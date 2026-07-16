@@ -220,41 +220,57 @@ defmodule CymphonyElixir.Cymphony.Config do
         "root" => Map.get(config, "workspace_root", Defaults.workspace_root())
       },
       "agent" => %{
+        "kind" => agent_kind(config),
+        "model" => Map.get(config, "model"),
+        "effort" => Map.get(config, "effort"),
         "max_concurrent_agents" => Map.get(config, "max_concurrent_agents", Defaults.max_concurrent_agents()),
         "max_turns" => Defaults.max_turns()
       },
-      "claude" => claude_schema_map(config)
+      "claude" => agent_section_map(config, "claude"),
+      "codex" => agent_section_map(config, "codex")
     }
 
     maybe_put_hooks(base, config)
   end
 
-  defp claude_schema_map(config) do
-    %{
-      "command" => Map.get(config, "claude_command", Defaults.claude_command()),
-      "output_format" => Defaults.output_format(),
-      "approval_policy" => Defaults.approval_policy(),
-      "thread_sandbox" => Defaults.thread_sandbox(),
-      "turn_sandbox_policy" => Defaults.turn_sandbox_policy()
-    }
-    |> put_provider_keys(config)
+  defp agent_kind(config) do
+    case Map.get(config, "agent") do
+      kind when kind in ["claude", "codex"] -> kind
+      _ -> Defaults.agent_kind()
+    end
   end
 
-  defp put_provider_keys(claude, config) do
-    providers = Map.get(config, "providers", [])
-    provider = Map.get(config, "provider")
+  defp agent_section_map(config, "claude") do
+    %{"command" => Defaults.claude_command(), "output_format" => Defaults.output_format()}
+    |> maybe_put_provider_keys(config, "claude")
+  end
 
-    cond do
-      is_list(providers) and providers != [] ->
-        claude
-        |> Map.put("providers", providers)
-        |> Map.put("provider", hd(providers))
+  defp agent_section_map(config, "codex") do
+    %{"command" => Defaults.codex_command(), "sandbox" => Defaults.codex_sandbox()}
+    |> maybe_put_provider_keys(config, "codex")
+  end
 
-      is_binary(provider) and provider != "" ->
-        Map.put(claude, "provider", provider)
+  # Providers are auth aliases for a specific backend: they belong to the
+  # active kind's section only.
+  defp maybe_put_provider_keys(section, config, kind) do
+    if agent_kind(config) == kind do
+      providers = Map.get(config, "providers", [])
+      provider = Map.get(config, "provider")
 
-      true ->
-        claude
+      cond do
+        is_list(providers) and providers != [] ->
+          section
+          |> Map.put("providers", providers)
+          |> Map.put("provider", hd(providers))
+
+        is_binary(provider) and provider != "" ->
+          Map.put(section, "provider", provider)
+
+        true ->
+          section
+      end
+    else
+      section
     end
   end
 

@@ -13,13 +13,13 @@ defmodule CymphonyElixir.Cymphony.Defaults do
   @terminal_states ["Closed", "Cancelled", "Canceled", "Duplicate", "Done"]
   @max_turns 20
   @output_format "stream-json"
-  @approval_policy "never"
-  @thread_sandbox "workspace-write"
-  @turn_sandbox_policy %{"type" => "workspaceWrite"}
   @polling_interval_ms 5000
   @workspace_root "~/.cymphony/workspaces"
   @max_concurrent_agents 10
+  @agent_kind "claude"
   @claude_command "claude"
+  @codex_command "codex"
+  @codex_sandbox "workspace-write"
 
   @spec active_states() :: [String.t()]
   def active_states, do: @active_states
@@ -33,15 +33,6 @@ defmodule CymphonyElixir.Cymphony.Defaults do
   @spec output_format() :: String.t()
   def output_format, do: @output_format
 
-  @spec approval_policy() :: String.t()
-  def approval_policy, do: @approval_policy
-
-  @spec thread_sandbox() :: String.t()
-  def thread_sandbox, do: @thread_sandbox
-
-  @spec turn_sandbox_policy() :: map()
-  def turn_sandbox_policy, do: @turn_sandbox_policy
-
   @spec polling_interval_ms() :: pos_integer()
   def polling_interval_ms, do: @polling_interval_ms
 
@@ -51,6 +42,15 @@ defmodule CymphonyElixir.Cymphony.Defaults do
   @spec max_concurrent_agents() :: pos_integer()
   def max_concurrent_agents, do: @max_concurrent_agents
 
+  @spec agent_kind() :: String.t()
+  def agent_kind, do: @agent_kind
+
   @spec claude_command() :: String.t()
   def claude_command, do: @claude_command
+
+  @spec codex_command() :: String.t()
+  def codex_command, do: @codex_command
+
+  @spec codex_sandbox() :: String.t()
+  def codex_sandbox, do: @codex_sandbox
 end

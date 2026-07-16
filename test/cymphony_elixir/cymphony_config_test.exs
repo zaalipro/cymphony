@@ -28,13 +28,11 @@ defmodule CymphonyElixir.Cymphony.ConfigTest do
         CymphonyConfig.to_schema_map(%{
           "polling_interval_ms" => 1234,
           "max_concurrent_agents" => 7,
-          "claude_command" => "cz",
           "workspace_root" => "/custom/root"
         })
 
       assert map["polling"]["interval_ms"] == 1234
       assert map["agent"]["max_concurrent_agents"] == 7
-      assert map["claude"]["command"] == "cz"
       assert map["workspace"]["root"] == "/custom/root"
     end
 
@@ -60,6 +58,42 @@ defmodule CymphonyElixir.Cymphony.ConfigTest do
     end
   end
 
+  describe "to_schema_map/1 agent shape" do
+    test "maps agent/model/effort project keys and routes providers to the active kind section" do
+      config = %{
+        "name" => "P",
+        "agent" => "codex",
+        "model" => "gpt-5.2-codex",
+        "effort" => "high",
+        "providers" => ["oa1", "oa2"]
+      }
+
+      schema_map = CymphonyConfig.to_schema_map(config)
+
+      assert schema_map["agent"]["kind"] == "codex"
+      assert schema_map["agent"]["model"] == "gpt-5.2-codex"
+      assert schema_map["agent"]["effort"] == "high"
+      assert schema_map["codex"]["providers"] == ["oa1", "oa2"]
+      assert schema_map["codex"]["provider"] == "oa1"
+      refute Map.has_key?(schema_map["claude"], "providers")
+      refute Map.has_key?(schema_map["claude"], "approval_policy")
+    end
+
+    test "defaults to claude kind and routes providers to claude section" do
+      schema_map = CymphonyConfig.to_schema_map(%{"provider" => "cz"})
+      assert schema_map["agent"]["kind"] == "claude"
+      assert schema_map["claude"]["provider"] == "cz"
+      assert schema_map["claude"]["command"] == "claude"
+      assert schema_map["codex"]["command"] == "codex"
+      refute Map.has_key?(schema_map["codex"], "provider")
+    end
+
+    test "unknown agent kind falls back to claude" do
+      schema_map = CymphonyConfig.to_schema_map(%{"agent" => "gemini"})
+      assert schema_map["agent"]["kind"] == "claude"
+    end
+  end
+
   describe "generated WORKFLOW.md front matter round-trips safely" do
     test "values with YAML metacharacters survive generation and parsing" do
       # The old hand-built-YAML path would corrupt these (`:`, `#`, quotes);
@@ -68,7 +102,7 @@ defmodule CymphonyElixir.Cymphony.ConfigTest do
         "linear_api_key" => "lin_api_3:foo#bar \"quoted\"",
         "linear_project_slug" => "team/sub: project # hash",
         "workspace_root" => "/tmp/weird: path #1",
-        "claude_command" => "claude --flag 'single' \"double\""
+        "model" => "model: 'single' \"double\" #tag"
       }
 
       {:ok, path} = WorkflowGenerator.write_temp(config)
@@ -78,7 +112,7 @@ defmodule CymphonyElixir.Cymphony.ConfigTest do
       assert parsed_map["tracker"]["api_key"] == "lin_api_3:foo#bar \"quoted\""
       assert parsed_map["tracker"]["project_slug"] == "team/sub: project # hash"
       assert parsed_map["workspace"]["root"] == "/tmp/weird: path #1"
-      assert parsed_map["claude"]["command"] == "claude --flag 'single' \"double\""
+      assert parsed_map["agent"]["model"] == "model: 'single' \"double\" #tag"
 
       assert {:ok, %Schema{}} = Schema.parse(parsed_map)
     end

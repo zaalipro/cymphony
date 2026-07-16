@@ -94,7 +94,7 @@ defmodule CymphonyElixir.Cymphony.Onboarding do
          {:ok, api_key} <- ask_linear_api_key(),
          {:ok, workspace_root} <- ask_optional("Workspace root [~/.cymphony/workspaces/#{name}]: ", "~/.cymphony/workspaces/#{name}"),
          {:ok, polling_interval} <- ask_optional("Polling interval in seconds [5]: ", "5"),
-         {:ok, claude_command} <- ask_optional("Claude command [claude]: ", "claude"),
+         {:ok, agent_kind} <- ask_agent_kind(),
          {:ok, provider} <- ask_provider(providers) do
       polling_ms =
         case Integer.parse(polling_interval) do
@@ -110,7 +110,7 @@ defmodule CymphonyElixir.Cymphony.Onboarding do
           "linear_api_key" => api_key,
           "workspace_root" => workspace_root,
           "polling_interval_ms" => polling_ms,
-          "claude_command" => claude_command
+          "agent" => agent_kind
         }
 
       project =
@@ -209,6 +209,29 @@ defmodule CymphonyElixir.Cymphony.Onboarding do
           true ->
             IO.puts("  This field is required. Set LINEAR_API_KEY or enter a key.")
             ask_linear_api_key()
+        end
+    end
+  end
+
+  defp ask_agent_kind do
+    case IO.gets("Coding agent (claude/codex) [claude]: ") do
+      :eof ->
+        {:ok, "claude"}
+
+      {:error, _} ->
+        {:ok, "claude"}
+
+      input ->
+        case input |> String.trim() |> String.downcase() do
+          "" ->
+            {:ok, "claude"}
+
+          kind when kind in ["claude", "codex"] ->
+            {:ok, kind}
+
+          other ->
+            IO.puts("  Unknown agent '#{other}'. Choose claude or codex.")
+            ask_agent_kind()
         end
     end
   end
