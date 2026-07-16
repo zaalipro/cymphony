@@ -172,13 +172,13 @@ Polling interval in seconds [5]:
 
 How often Cymphony checks Linear for new "Todo" issues. The default of 5 seconds is fine for almost everything. Press **Enter**.
 
-### Step 7 — Claude command *(optional)*
+### Step 7 — Coding agent *(optional)*
 
 ```
-Claude command [claude]:
+Coding agent (claude/codex) [claude]:
 ```
 
-The command Cymphony spawns to run an agent. The default `claude` is correct if you installed Claude Code via npm, the official installer, or you have a shell function in `~/.cld` / `~/.zshrc` (see [Multiple Claude providers](#multiple-claude-providers) below). Press **Enter** unless you want a per-project override.
+Which coding agent runs this project's sessions: Claude Code (`claude`) or Codex CLI (`codex`). Press **Enter** for Claude Code. You can switch later with `cymphony agent codex` or the per-project `agent` key in `~/.cymphony/config.json`.
 
 ### Step 8 — Add another project? *(optional)*
 
@@ -229,6 +229,8 @@ cymphony                                # run with saved config
 cymphony project MyApp                  # run only the "MyApp" project
 cymphony cr 3                           # cap concurrent sessions at 3
 cymphony c cv1,cz2                      # rotate across providers cv1 and cz2
+cymphony agent codex                    # run with the Codex CLI instead of Claude Code
+cymphony model opus effort high         # model + reasoning effort passed to the agent CLI
 cymphony port 4089                      # enable dashboard
 cymphony project MyApp cr 5 c cv1,cz port 4089  # combine flags
 cymphony start                          # run as a background daemon
@@ -241,7 +243,7 @@ cymphony v                              # version
 cymphony h                              # help
 ```
 
-Long-form flags also work: `--project`, `--concurrency`, `--provider`, `--claude-command`, `--port`, `--setup`, `--logs-root`, `--help`, `--version`.
+Long-form flags also work: `--project`, `--agent`, `--model`, `--effort`, `--concurrency`, `--provider`, `--port`, `--setup`, `--logs-root`, `--help`, `--version`.
 
 ---
 

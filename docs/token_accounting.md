@@ -115,3 +115,17 @@ If Cymphony documents token reporting externally, the contract should be:
 - Live token totals come from Claude Code per-session usage reporting.
 - Usage is reported at turn completion, not streamed incrementally.
 - Reporting is session-based, and multiple turns can occur on one session via `--resume`.
+
+## Codex
+
+When `agent.kind` is `codex`, usage arrives once per `codex exec` invocation on the terminal
+`turn.completed` JSONL event:
+
+```json
+{"type":"turn.completed","usage":{"input_tokens":14461,"cached_input_tokens":9984,"output_tokens":5,"reasoning_output_tokens":0}}
+```
+
+Cymphony reads `input_tokens` and `output_tokens` and computes `total_tokens` as their sum
+(`cached_input_tokens` is informational; `reasoning_output_tokens` is already included in
+`output_tokens`). Resumed sessions (`codex exec resume <session_id>`) report per-invocation
+totals the same way, and the same delta-accounting path used for Claude applies.

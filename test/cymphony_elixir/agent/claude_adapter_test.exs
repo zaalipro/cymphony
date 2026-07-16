@@ -109,6 +109,60 @@ defmodule CymphonyElixir.Agent.ClaudeAdapterTest do
     end
   end
 
+  describe "build_command/1 edge branches" do
+    test "empty/nil settings.command falls back to the default binary" do
+      settings = %{spec().settings | command: nil}
+      assert {:ok, cmd} = Claude.build_command(spec(%{settings: settings}))
+      assert String.starts_with?(cmd, "claude ")
+    end
+
+    test "nil boolean flag and empty-string session id add nothing" do
+      settings = %{spec().settings | bare_mode: nil}
+      assert {:ok, cmd} = Claude.build_command(spec(%{settings: settings, session_id: ""}))
+      refute cmd =~ "--bare"
+      refute cmd =~ "--resume"
+    end
+
+    test "integer and decimal flag values render via their clauses" do
+      settings = %{spec().settings | max_turns: 5, max_budget_usd: Decimal.new("2.50")}
+      assert {:ok, cmd} = Claude.build_command(spec(%{settings: settings}))
+      assert cmd =~ "--max-turns 5"
+      assert cmd =~ "--max-budget-usd 2.5"
+    end
+
+    test "an unwritable mcp descriptor is skipped without failing the command" do
+      assert {:ok, cmd} = Claude.build_command(spec(%{mcp_descriptor: %{api_key: ""}}))
+      refute cmd =~ "--mcp-config"
+    end
+  end
+
+  describe "parse_output/3 edge branches" do
+    test "a braces line that is not valid JSON is a decode error" do
+      assert {:error, {:json_decode_failed, _, _}} =
+               Claude.parse_output(["{not json}"], spec(), fn _ -> :ok end)
+    end
+
+    test "non-binary lines are skipped by the json-line scan" do
+      lines = [123, ~s({"result":"ok","session_id":"s9","usage":null})]
+
+      assert {:ok, %{session_id: "s9"}} = Claude.parse_output(lines, spec(), fn _ -> :ok end)
+
+      assert {:error, {:no_json_output, _}} = Claude.parse_output([123, :atom], spec(), fn _ -> :ok end)
+    end
+
+    test "stream-json ignores non-JSON lines between events" do
+      settings = %{spec().settings | output_format: "stream-json"}
+
+      lines = [
+        "plain log noise",
+        ~s({"type":"result","result":"ok","session_id":"s3","usage":{}})
+      ]
+
+      assert {:ok, %{session_id: "s3"}} =
+               Claude.parse_output(lines, spec(%{settings: settings}), fn _ -> :ok end)
+    end
+  end
+
   test "auth env callbacks" do
     assert Claude.default_command() == "claude"
     assert Claude.auth_env_prefixes() == ["ANTHROPIC_", "API_TIMEOUT", "CLAUDE_CODE_"]

@@ -105,6 +105,32 @@ defmodule CymphonyElixir.Agent.CodexAdapterTest do
     end
   end
 
+  describe "edge branches" do
+    test "empty settings.command falls back to the default binary" do
+      settings = %{spec().settings | command: nil}
+      assert {:ok, cmd} = Codex.build_command(spec(%{settings: settings}))
+      assert String.starts_with?(cmd, "codex ")
+    end
+
+    test "non-JSON lines are skipped; missing usage yields nil; negative counts clamp to zero" do
+      lines = [
+        "log noise",
+        ~s({"type":"thread.started","thread_id":"t-4"}),
+        ~s({"type":"turn.completed"})
+      ]
+
+      assert {:ok, %{session_id: "t-4", usage: nil}} = Codex.parse_output(lines, spec(), fn _ -> :ok end)
+
+      lines_bad_usage = [
+        ~s({"type":"thread.started","thread_id":"t-5"}),
+        ~s({"type":"turn.completed","usage":{"input_tokens":-2,"output_tokens":"x"}})
+      ]
+
+      assert {:ok, %{usage: %{"input_tokens" => 0, "output_tokens" => 0, "total_tokens" => 0}}} =
+               Codex.parse_output(lines_bad_usage, spec(), fn _ -> :ok end)
+    end
+  end
+
   test "auth env callbacks" do
     assert Codex.default_command() == "codex"
     assert Codex.auth_env_prefixes() == ["OPENAI_", "CODEX_", "API_TIMEOUT"]

@@ -264,9 +264,27 @@ defmodule CymphonyElixir.CLITest do
       assert text =~ "Usage:"
     end
 
-    test "c expands to --claude-command", %{deps: deps} do
+    test "c expands to --provider", %{deps: deps} do
       result = CLI.evaluate(["c", "cz"], deps)
       assert result in [:ok, :done] or match?({:error, _}, result)
+    end
+
+    test "agent/model/effort shorthands run in cymphony mode without crashing", %{deps: deps} do
+      for args <- [["agent", "codex"], ["model", "opus"], ["effort", "high"]] do
+        result = CLI.evaluate(args, deps)
+        assert result in [:ok, :done] or match?({:error, _}, result)
+      end
+    end
+
+    test "bare agent/model/effort shorthands show help" do
+      for shorthand <- ["agent", "model", "effort"] do
+        assert {:error, text} = CLI.evaluate([shorthand])
+        assert text =~ "Usage:"
+      end
+    end
+
+    test "--claude-command is no longer a recognized switch" do
+      assert {:error, _} = CLI.evaluate(["--claude-command", "cz"])
     end
 
     test "--provider <name> sets provider override", %{deps: deps} do

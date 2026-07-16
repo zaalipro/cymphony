@@ -425,4 +425,61 @@ defmodule CymphonyElixir.Agent.RunnerTest do
       File.rm_rf(test_root)
     end
   end
+
+  test "runner drives a codex-kind session through the codex adapter" do
+    test_root =
+      Path.join(
+        System.tmp_dir!(),
+        "cymphony-runner-codex-#{System.unique_integer([:positive])}"
+      )
+
+    try do
+      workspace_root = Path.join(test_root, "workspaces")
+      workspace = Path.join(workspace_root, "MT-3001")
+      codex_binary = Path.join(test_root, "fake-codex")
+      trace_file = Path.join(test_root, "codex-args.trace")
+
+      File.mkdir_p!(workspace)
+
+      File.write!(codex_binary, """
+      #!/bin/sh
+      echo "$@" > "#{trace_file}"
+      echo '{"type":"thread.started","thread_id":"t-e2e"}'
+      echo '{"type":"item.completed","item":{"id":"item_0","type":"agent_message","text":"done"}}'
+      echo '{"type":"turn.completed","usage":{"input_tokens":8,"output_tokens":2}}'
+      """)
+
+      File.chmod!(codex_binary, 0o755)
+
+      write_workflow_file!(Workflow.workflow_file_path(),
+        workspace_root: workspace_root,
+        agent_kind: "codex",
+        agent_model: "gpt-5.2-codex",
+        agent_effort: "high",
+        codex_command: codex_binary
+      )
+
+      issue = %Issue{
+        id: "issue-codex-e2e",
+        identifier: "MT-3001",
+        title: "Codex path",
+        description: "drive codex adapter",
+        state: "In Progress",
+        url: "https://example.org/issues/MT-3001"
+      }
+
+      assert {:ok, %{session_id: "t-e2e", result: %{result: "done", usage: usage}}} =
+               Runner.run(workspace, "do it", issue)
+
+      assert usage["total_tokens"] == 10
+
+      args = File.read!(trace_file)
+      assert args =~ "exec"
+      assert args =~ "--json"
+      assert args =~ "-m gpt-5.2-codex"
+      assert args =~ "model_reasoning_effort"
+    after
+      File.rm_rf(test_root)
+    end
+  end
 end

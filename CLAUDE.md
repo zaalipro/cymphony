@@ -37,7 +37,10 @@ Defined in `lib/cymphony_elixir/cli.ex`.
 | Command | Expands to | Description |
 |---------|-----------|-------------|
 | `project <name>` / `projects <name>` | `--project <name>` | Run a specific project |
-| `c <value>` | `--claude-command <value>` | Override provider or Claude command |
+| `agent <kind>` | `--agent <kind>` | Coding agent: `claude` or `codex` |
+| `model <name>` | `--model <name>` | Model override passed to the agent CLI |
+| `effort <level>` | `--effort <level>` | Reasoning effort passed to the agent CLI |
+| `c <value>` | `--provider <value>` | Provider rotation (comma-separated auth aliases) |
 | `cr <n>` | `--concurrency <n>` | Set max concurrent agents |
 | `port <n>` | `--port <n>` | Set HTTP server / dashboard port |
 | `setup` | `--setup` | Run onboarding wizard |
@@ -71,13 +74,26 @@ cymphony project Farm cr 6 c cv1,cz2  # 6 sessions split across 2 providers (~3 
 
 Comma-separated provider names are randomly assigned per session. Each provider must be defined in `~/.cymphony/config.json` under `providers` or as a shell function in `~/.cld`.
 
+### Agent selection
+
+```bash
+cymphony agent codex                       # Run every project with the Codex CLI
+cymphony agent codex model gpt-5.2-codex   # Codex with an explicit model
+cymphony effort high                       # Reasoning effort for the configured agent
+```
+
+`agent <kind>` picks the coding-agent backend (`claude` or `codex`) for this run; `model` and
+`effort` are passed through to the agent CLI verbatim (Claude: `--model`/`--effort`;
+Codex: `-m`/`-c model_reasoning_effort=…`). Per-project defaults live in
+`~/.cymphony/config.json` as `agent`, `model`, `effort` keys.
+
 ### Combined usage
 
 ```bash
-cymphony project AgentFarm cr 3 c cv1,cz2 port 4089
+cymphony project AgentFarm agent codex cr 3 c oa1,oa2 port 4089
 ```
 
-Runs project "AgentFarm" with 3 concurrent sessions rotating across cv1 and cz2 providers, with dashboard on port 4089.
+Runs project "AgentFarm" on Codex with 3 concurrent sessions rotating across oa1 and oa2 providers, with dashboard on port 4089.
 
 ## Architecture
 
@@ -86,17 +102,17 @@ The application is an escript CLI (`main_module: CymphonyElixir.CLI`) that start
 ### Core Data Flow
 
 ```
-CLI → CymphonyConfig → WorkflowStore → Orchestrator (GenServer, per-project) → AgentRunner (Task) → Claude.AppServer (Port)
+CLI → CymphonyConfig → WorkflowStore → Orchestrator (GenServer, per-project) → AgentRunner (Task) → Agent.Runner (Port) → Agent.Claude | Agent.Codex adapter
 ```
 
 1. **CLI** (`cli.ex`) — Escript entrypoint. Handles onboarding, multi-project mode, background process management, concurrency control, provider rotation, and legacy WORKFLOW.md mode.
 2. **CymphonyConfig** (`cymphony/config.ex`) — Reads/writes `~/.cymphony/config.json`, generates temporary `WORKFLOW.md` with YAML front matter from project config. Converts `--concurrency` and `c` flags into workflow YAML.
 3. **WorkflowStore** (`workflow_store.ex`) — GenServer that loads and hot-reloads `WORKFLOW.md`. Holds current workflow state per project.
-4. **Config** (`config.ex` + `config/schema.ex`) — Validates workflow config via Ecto embedded schemas. Resolves `$ENV_VAR` references and provides typed access to all settings (tracker, polling, workspace, claude, hooks, etc.).
+4. **Config** (`config.ex` + `config/schema.ex`) — Validates workflow config via Ecto embedded schemas. Resolves `$ENV_VAR` references and provides typed access to all settings (tracker, polling, workspace, agent, claude, codex, hooks, etc.).
 5. **Orchestrator** (`orchestrator.ex`) — Central GenServer per project. Poll tick loop dispatches issues, enforces concurrency via `available_slots/1`, selects providers via `select_provider/1` (random rotation from `providers` list), handles retries with exponential backoff, tracks token usage, and detects stalled agents.
-6. **AgentRunner** (`agent_runner.ex`) — Spawns a Task per issue. Creates workspace, runs lifecycle hooks, then calls `Claude.AppServer` for multi-turn execution. Accepts `provider_override` opt to use a specific provider for this session.
-7. **ShellProvider** (`cymphony/shell_provider.ex`) — Reads provider env vars (API keys, model config) from shell functions in `~/.cld`, `~/.zshrc`, or `~/.bashrc`. Sources the rc files in a zsh subprocess with `claude` noop'd, calls the provider function, and captures the resulting `ANTHROPIC_*`/`CLAUDE_CODE_*` env vars. Results are cached via `persistent_term`.
-8. **Claude.AppServer** (`claude/app_server.ex`) — Spawns `claude` CLI as a Port process. Manages session start/turn/resume lifecycle. Parses JSON and stream-json output. Uses `ShellProvider` to inject provider env vars into the spawned process.
+6. **AgentRunner** (`agent_runner.ex`) — Spawns a Task per issue. Creates workspace, runs lifecycle hooks, then calls `Agent.Runner` for multi-turn execution. Accepts `agent_kind`/`model`/`effort`/`provider_override` opts for this session.
+7. **ShellProvider** (`cymphony/shell_provider.ex`) — Reads provider env vars (API keys, model config) from shell functions in `~/.cld`, `~/.zshrc`, or `~/.bashrc`. Sources the rc files in a zsh subprocess with `claude`/`codex` noop'd, calls the provider function, and captures env vars matching the active agent's prefixes (Claude: `ANTHROPIC_*`/`CLAUDE_CODE_*`; Codex: `OPENAI_*`/`CODEX_*`). Results are cached via `persistent_term`.
+8. **Agent behaviour** (`agent.ex`, `agent/runner.ex`, `agent/claude.ex`, `agent/codex.ex`) — `Agent.Runner` owns the shared machinery (port spawn, SSH remoting, env injection, timeouts, workspace validation) and delegates argv construction + output parsing to the `CymphonyElixir.Agent` adapter for `agent.kind`. The Claude adapter drives `claude --bare -p … --resume`; the Codex adapter drives `codex exec --json` / `codex exec resume <id>` and parses its JSONL events.
 9. **Workspace** (`workspace.ex`) — Isolated per-issue directories with path safety validation, lifecycle hooks (after_create, before_run, after_run, before_remove), and SSH worker support. Optional retention sweep (`workspace.retention_days` in config) deletes stale workspaces every 6 hours, skipping currently-running ones.
 10. **Tracker** (`tracker.ex`) — Behaviour-based adapter for issue trackers. `Linear.Adapter` is the production implementation; `Tracker.Memory` is for testing.
 
@@ -111,7 +127,7 @@ CLI → CymphonyConfig → WorkflowStore → Orchestrator (GenServer, per-projec
 ### Provider Rotation
 
 - `providers` list stored in Orchestrator `%State{}` struct
-- `extract_providers/1` reads from `config.claude.providers` (list) or falls back to single `config.claude.provider`
+- `extract_providers/1` reads from the **active agent kind's** section (`config.claude.*` or `config.codex.*`): `providers` list first, single `provider` fallback
 - `select_provider/1` picks randomly via `Enum.random(providers)` for even distribution
 - `spawn_issue_on_worker_host/6` selects a provider per dispatch and passes it as `provider_override` to AgentRunner
 - Dashboard can change a running session's provider (kill & restart with new provider)
@@ -248,7 +264,7 @@ Triggered by pushing a `v*` tag. Three jobs:
 
 ## Provider System
 
-Providers supply the `ANTHROPIC_*` env vars that Claude Code uses. Two sources:
+Providers supply the auth env vars the agent CLI uses (`ANTHROPIC_*` for Claude Code, `OPENAI_*` for Codex). Two sources:
 
 ### 1. Config-based providers (`~/.cymphony/config.json`)
 

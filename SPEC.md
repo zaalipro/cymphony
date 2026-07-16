@@ -400,8 +400,21 @@ Fields:
 
 #### 5.3.5 `agent` (object)
 
+Agent-neutral settings shared by every coding-agent backend.
+
 Fields:
 
+- `kind` (string, `"claude"` | `"codex"`)
+  - Default: `"claude"`
+  - Selects the coding-agent CLI adapter used for dispatched sessions.
+  - Unknown values are a validation error.
+- `model` (string or null)
+  - Default: null (the agent CLI's own default model).
+  - Passed through to the agent CLI verbatim (`--model` for Claude Code, `-m` for Codex).
+  - Not validated against a model list; invalid values surface as run failures.
+- `effort` (string or null)
+  - Default: null (the agent CLI's own default effort).
+  - Passed through verbatim (`--effort` for Claude Code, `-c model_reasoning_effort=…` for Codex).
 - `max_concurrent_agents` (integer or string integer)
   - Default: `10`
   - Changes should be re-applied at runtime and affect subsequent dispatch decisions.
@@ -412,34 +425,66 @@ Fields:
   - Default: empty map.
   - State keys are normalized (`lowercase`) for lookup.
   - Invalid entries (non-positive or non-numeric) are ignored.
-
-#### 5.3.6 `claude` (object)
-
-Fields:
-
-For Claude Code-owned config values such as `approval_policy`, `permission_mode`, and
-`allowed_tools`, supported values are defined by the targeted Claude Code app-server version.
-Implementors should treat them as pass-through Claude Code config values rather than relying on a
-hand-maintained enum in this spec. Implementations may validate these fields locally if they want
-stricter startup checks.
-
-- `command` (string shell command)
-  - Default: `claude`
-  - The runtime launches this command via `bash -lc` in the workspace directory.
-  - The launched process must speak a compatible app-server protocol over stdio.
-- `approval_policy` (Claude Code approval policy value)
-  - Default: implementation-defined.
-- `permission_mode` (Claude Code permission mode value)
-  - Default: implementation-defined.
-- `allowed_tools` (list of strings)
-  - Default: implementation-defined.
 - `turn_timeout_ms` (integer)
   - Default: `3600000` (1 hour)
-- `read_timeout_ms` (integer)
-  - Default: `5000`
+  - Maximum wall-clock time for one agent turn, regardless of agent kind.
 - `stall_timeout_ms` (integer)
   - Default: `300000` (5 minutes)
   - If `<= 0`, stall detection is disabled.
+
+#### 5.3.6 `claude` (object)
+
+Claude Code CLI-specific settings. Only consulted when `agent.kind` is `"claude"`.
+
+For Claude Code-owned config values such as `permission_mode` and `allowed_tools`, supported
+values are defined by the targeted Claude Code CLI version; treat them as pass-through.
+
+- `command` (string shell command)
+  - Default: `claude`
+  - Launched per turn as `claude --bare -p <prompt> …` with `--resume <session_id>` on
+    continuation turns.
+- `permission_mode` (Claude Code permission mode value)
+  - Default: `acceptEdits`.
+- `allowed_tools` (comma-separated string)
+  - Default: `Bash,Read,Edit`.
+- `output_format` (string, `text` | `json` | `stream-json`)
+  - Default: `stream-json`.
+- `fallback_model` (string or null)
+  - Default: null. Passed as `--fallback-model`.
+- `max_turns` (integer or null)
+  - Default: null. Claude CLI's internal turn cap (`--max-turns`), distinct from the
+    orchestrator-level `agent.max_turns` continuation loop.
+- `max_budget_usd` (decimal or null)
+  - Default: null. Passed as `--max-budget-usd`.
+- `bare_mode` (boolean)
+  - Default: true. Passed as `--bare`.
+- `provider` / `providers` (string / list of strings)
+  - Auth aliases resolved via shell functions or the config `providers` map; see Section 6.
+  - Provider env capture keeps `ANTHROPIC_*`, `CLAUDE_CODE_*`, and `API_TIMEOUT` variables.
+
+#### 5.3.7 `codex` (object)
+
+Codex CLI-specific settings. Only consulted when `agent.kind` is `"codex"`.
+
+- `command` (string shell command)
+  - Default: `codex`
+  - Launched per turn as `codex exec --json --skip-git-repo-check …`; continuation turns use
+    `codex exec resume <session_id> …`.
+- `sandbox` (string, `read-only` | `workspace-write` | `danger-full-access`)
+  - Default: `workspace-write`.
+  - Always passed as `-c sandbox_mode="<value>"` (the `-s` shorthand is not accepted by
+    `codex exec resume`).
+- `network_access` (boolean)
+  - Default: true.
+  - When true with the `workspace-write` sandbox, passes
+    `-c sandbox_workspace_write.network_access=true`.
+- `provider` / `providers` (string / list of strings)
+  - Auth aliases, as for Claude, but env capture keeps `OPENAI_*`, `CODEX_*`, and
+    `API_TIMEOUT` variables.
+
+Completion conditions for a Codex turn: a `turn.completed` JSONL event is success; a
+`turn.failed` event, missing terminal event, nonzero process exit, or turn timeout is failure.
+Session identifiers come from the `thread.started` event's `thread_id`.
 
 ### 5.4 Prompt Template Contract
 

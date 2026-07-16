@@ -56,12 +56,11 @@ defmodule CymphonyElixir.Agent.Claude do
   defp maybe_add_flag(args, nil, _flag), do: args
   defp maybe_add_flag(args, false, _flag), do: args
   defp maybe_add_flag(args, true, flag), do: args ++ [flag]
-  defp maybe_add_flag(args, value, flag, value) when is_binary(value), do: args ++ [flag, shell_escape(value)]
-  defp maybe_add_flag(args, value, flag, value) when is_integer(value), do: args ++ [flag, to_string(value)]
 
-  defp maybe_add_flag(args, value, flag, _display) when is_binary(value) and value != "",
+  defp maybe_add_flag(args, value, flag, value) when is_binary(value) and value != "",
     do: args ++ [flag, shell_escape(value)]
 
+  defp maybe_add_flag(args, value, flag, value) when is_integer(value), do: args ++ [flag, to_string(value)]
   defp maybe_add_flag(args, %Decimal{} = value, flag, _display), do: args ++ [flag, to_string(Decimal.to_string(value))]
   defp maybe_add_flag(args, _value, _flag, _display), do: args
 
