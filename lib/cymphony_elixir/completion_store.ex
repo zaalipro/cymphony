@@ -28,6 +28,8 @@ defmodule CymphonyElixir.CompletionStore do
       total_tokens  INTEGER DEFAULT 0,
       worker_host        TEXT,
       workspace_path     TEXT,
+      agent_kind         TEXT,
+      model              TEXT,
       PRIMARY KEY (issue_id, ended_at)
     )
     """,
@@ -47,6 +49,13 @@ defmodule CymphonyElixir.CompletionStore do
     {"claude_input_tokens", "input_tokens"},
     {"claude_output_tokens", "output_tokens"},
     {"claude_total_tokens", "total_tokens"}
+  ]
+
+  # Additive columns for databases created before they existed; "duplicate
+  # column" errors on fresh DBs are ignored.
+  @column_adds [
+    "ALTER TABLE sessions ADD COLUMN agent_kind TEXT",
+    "ALTER TABLE sessions ADD COLUMN model TEXT"
   ]
 
   @max_limit 1000
@@ -161,6 +170,7 @@ defmodule CymphonyElixir.CompletionStore do
          :ok <- Sqlite3.execute(db, "PRAGMA journal_mode = WAL"),
          :ok <- run_column_renames(db),
          :ok <- run_migrations(db),
+         :ok <- run_column_adds(db),
          :ok <- chmod_secret(path) do
       {:ok, db}
     end
@@ -172,6 +182,11 @@ defmodule CymphonyElixir.CompletionStore do
       _ = Sqlite3.execute(db, "ALTER TABLE sessions RENAME COLUMN #{old} TO #{new}")
     end)
 
+    :ok
+  end
+
+  defp run_column_adds(db) do
+    Enum.each(@column_adds, fn stmt -> _ = Sqlite3.execute(db, stmt) end)
     :ok
   end
 
@@ -204,8 +219,8 @@ defmodule CymphonyElixir.CompletionStore do
     INSERT OR REPLACE INTO sessions (
       issue_id, identifier, project_name, ended_at, started_at, runtime_seconds,
       input_tokens, output_tokens, total_tokens,
-      worker_host, workspace_path
-    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+      worker_host, workspace_path, agent_kind, model
+    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
     """
 
     with {:ok, stmt} <- Sqlite3.prepare(db, sql),
@@ -231,7 +246,9 @@ defmodule CymphonyElixir.CompletionStore do
       Map.get(record, :output_tokens) || 0,
       Map.get(record, :total_tokens) || 0,
       Map.get(record, :worker_host),
-      Map.get(record, :workspace_path)
+      Map.get(record, :workspace_path),
+      Map.get(record, :agent_kind),
+      Map.get(record, :model)
     ]
   end
 
@@ -242,7 +259,7 @@ defmodule CymphonyElixir.CompletionStore do
           {"""
            SELECT issue_id, identifier, project_name, ended_at, started_at, runtime_seconds,
                   input_tokens, output_tokens, total_tokens,
-                  worker_host, workspace_path
+                  worker_host, workspace_path, agent_kind, model
              FROM sessions
             ORDER BY ended_at DESC
             LIMIT ?
@@ -252,7 +269,7 @@ defmodule CymphonyElixir.CompletionStore do
           {"""
            SELECT issue_id, identifier, project_name, ended_at, started_at, runtime_seconds,
                   input_tokens, output_tokens, total_tokens,
-                  worker_host, workspace_path
+                  worker_host, workspace_path, agent_kind, model
              FROM sessions
             WHERE project_name = ?
             ORDER BY ended_at DESC
@@ -300,7 +317,9 @@ defmodule CymphonyElixir.CompletionStore do
          output,
          total,
          worker_host,
-         workspace_path
+         workspace_path,
+         agent_kind,
+         model
        ]) do
     %{
       issue_id: issue_id,
@@ -313,7 +332,9 @@ defmodule CymphonyElixir.CompletionStore do
       output_tokens: output || 0,
       total_tokens: total || 0,
       worker_host: worker_host,
-      workspace_path: workspace_path
+      workspace_path: workspace_path,
+      agent_kind: agent_kind,
+      model: model
     }
   end
 

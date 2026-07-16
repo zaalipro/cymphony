@@ -912,7 +912,9 @@ defmodule CymphonyElixir.Orchestrator do
       last_event: Map.get(running_entry, :last_agent_event),
       last_message: Map.get(running_entry, :last_agent_message),
       worker_host: Map.get(running_entry, :worker_host),
-      workspace_path: Map.get(running_entry, :workspace_path)
+      workspace_path: Map.get(running_entry, :workspace_path),
+      agent_kind: Map.get(running_entry, :agent_kind),
+      model: Map.get(running_entry, :model)
     }
   end
 

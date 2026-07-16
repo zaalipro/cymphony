@@ -763,6 +763,33 @@ Sorting order (stable intent):
 2. `created_at` oldest first
 3. `identifier` lexicographic tie-breaker
 
+#### Per-issue run spec resolution
+
+At dispatch time, the orchestrator resolves the session's agent kind, model, reasoning effort,
+and (optionally) provider for the issue. Field-level precedence, highest first:
+
+1. **Linear labels** — `agent:<kind>`, `model:<name>`, `effort:<level>`, `provider:<alias>`.
+   Labels arrive downcased from the tracker adapter. Duplicate prefixes pick the sorted-first
+   value with a warning; empty values are ignored.
+2. **Description directive** — the first line in the issue description of the form
+   `cymphony: key=value key=value …` with keys in `agent|model|effort|provider`. Values match
+   `[A-Za-z0-9._/-]+`; `agent`/`effort` values are lowercased. Unknown keys are ignored.
+3. **Project config** — `agent.kind`, `agent.model`, `agent.effort`; provider comes from the
+   active kind's rotation (Section 8.3).
+
+Rules:
+
+- `agent` must be a known kind; unknown kinds log a warning and fall through to the next
+  source (never fail dispatch). `model`/`effort`/`provider` are pass-through.
+- The resolved spec is **pinned for the whole run attempt**: multi-turn resume never
+  re-resolves, so an agent-kind switch mid-session is impossible.
+- Retries re-resolve from the freshly polled issue, so label edits take effect on the next
+  attempt.
+- An explicit issue-level `provider` bypasses rotation for that issue. When a label switches
+  the agent kind away from the project default, the provider falls back to that kind's
+  configured `provider` (rotation lists are per-kind).
+- The dispatch log line records `agent=… model=… effort=… source=labels|directive|config`.
+
 ### 8.3 Concurrency Control
 
 Global limit:

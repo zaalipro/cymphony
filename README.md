@@ -245,6 +245,19 @@ cymphony h                              # help
 
 Long-form flags also work: `--project`, `--agent`, `--model`, `--effort`, `--concurrency`, `--provider`, `--port`, `--setup`, `--logs-root`, `--help`, `--version`.
 
+### Per-issue overrides
+
+Add Linear labels — `agent:codex`, `model:gpt-5.2-codex`, `effort:high`, `provider:cz1` —
+or a directive line in the issue description:
+
+```
+cymphony: agent=codex model=gpt-5.2-codex effort=high
+```
+
+Labels win over the directive; both win over project config. Changes apply on the
+next dispatch/retry (running sessions keep their spec).
+
+
 ---
 
 ## Iterating with the agent

@@ -163,6 +163,29 @@ defmodule CymphonyElixir.CompletionStoreTest do
     end
   end
 
+  describe "agent columns" do
+    test "persists and reads agent_kind and model", %{path: path, name: name} do
+      {_pid, name} = start_store!(path: path, name: name)
+
+      put_record(name, issue_id: "spec-b", agent_kind: "codex", model: "gpt-5.2-codex")
+      :ok = sync(name)
+
+      assert [row] = CompletionStore.recent("p1", 10, name)
+      assert row.agent_kind == "codex"
+      assert row.model == "gpt-5.2-codex"
+    end
+
+    test "rows written without agent fields read back as nil", %{path: path, name: name} do
+      {_pid, name} = start_store!(path: path, name: name)
+      put_record(name, issue_id: "old-row")
+      :ok = sync(name)
+
+      assert [row] = CompletionStore.recent("p1", 10, name)
+      assert row.agent_kind == nil
+      assert row.model == nil
+    end
+  end
+
   describe "legacy column migration" do
     test "opens a pre-rename database and reads old rows through new column names", %{dir: dir} do
       path = Path.join(dir, "legacy.db")

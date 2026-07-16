@@ -87,6 +87,25 @@ cymphony effort high                       # Reasoning effort for the configured
 Codex: `-m`/`-c model_reasoning_effort=…`). Per-project defaults live in
 `~/.cymphony/config.json` as `agent`, `model`, `effort` keys.
 
+### Per-issue agent/model/effort
+
+Choose the agent, model, effort, or provider for a single issue from Linear itself — add labels:
+
+```
+agent:codex   model:gpt-5.2-codex   effort:high   provider:cz1
+```
+
+or a directive line anywhere in the issue description:
+
+```
+cymphony: agent=codex model=gpt-5.2-codex effort=high
+```
+
+Labels win over the directive; both win over project config. Resolution happens at dispatch and
+is pinned for the run attempt; changes apply on the next dispatch/retry (running sessions keep
+their spec). Unknown `agent:` values fall back with a warning; model/effort are pass-through
+(bad values fail the run visibly and land in the retry queue).
+
 ### Combined usage
 
 ```bash
