@@ -892,6 +892,54 @@ defmodule CymphonyElixir.ExtensionsTest do
       assert_receive {:orchestrator_call, {:set_concurrency, 5}}, 1_000
     end
 
+    test "set_project_agent event sends :set_agent_settings to orchestrator and persists" do
+      tmp = Path.join(System.tmp_dir!(), "cymphony-agent-live-#{System.unique_integer([:positive])}")
+      File.mkdir_p!(tmp)
+      File.write!(Path.join(tmp, "config.json"), "{\"projects\": [{\"name\": \"default\"}]}")
+      Application.put_env(:cymphony_elixir, :config_dir_override, tmp)
+
+      on_exit(fn ->
+        Application.delete_env(:cymphony_elixir, :config_dir_override)
+        File.rm_rf!(tmp)
+      end)
+
+      orchestrator_name = Module.concat(__MODULE__, :AgentLiveOrchestrator)
+
+      {:ok, _pid} =
+        StaticOrchestrator.start_link(
+          name: orchestrator_name,
+          snapshot: static_snapshot(),
+          recipient: self()
+        )
+
+      start_test_endpoint(orchestrator: orchestrator_name, snapshot_timeout_ms: 50)
+
+      {:ok, view, html} = live(build_conn(), "/")
+
+      # Header controls render with the providers input relabeled.
+      assert html =~ ~s(name="agent_kind")
+      assert html =~ "model-suggestions-"
+      assert html =~ ">providers</label>"
+      refute html =~ "claude command"
+
+      view
+      |> form(~s|form[phx-submit="set_project_agent"]|, %{
+        agent_kind: "codex",
+        model: "gpt-5.2-codex",
+        effort: "high"
+      })
+      |> render_submit()
+
+      assert_receive {:orchestrator_call, {:set_agent_settings, %{"agent" => "codex", "model" => "gpt-5.2-codex", "effort" => "high"}}},
+                     1_000
+
+      {:ok, persisted} = Jason.decode(File.read!(Path.join(tmp, "config.json")))
+      [project | _] = persisted["projects"]
+      assert project["agent"] == "codex"
+      assert project["model"] == "gpt-5.2-codex"
+      assert project["effort"] == "high"
+    end
+
     test "set_project_providers event sends :set_providers list to orchestrator" do
       tmp = Path.join(System.tmp_dir!(), "cymphony-providers-#{System.unique_integer([:positive])}")
       File.mkdir_p!(tmp)

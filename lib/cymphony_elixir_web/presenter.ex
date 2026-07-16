@@ -36,6 +36,9 @@ defmodule CymphonyElixirWeb.Presenter do
               running_count: length(running),
               retrying_count: length(retrying),
               providers: Map.get(snapshot, :providers, []),
+              agent_kind: Map.get(snapshot, :agent_kind),
+              agent_model: Map.get(snapshot, :agent_model),
+              agent_effort: Map.get(snapshot, :agent_effort),
               paused: Map.get(polling, :paused, false),
               max_concurrent_agents: Map.get(polling, :max_concurrent_agents)
             }
@@ -89,6 +92,9 @@ defmodule CymphonyElixirWeb.Presenter do
               running_count: length(running),
               retrying_count: length(retrying),
               providers: Map.get(snap, :providers, []),
+              agent_kind: Map.get(snap, :agent_kind),
+              agent_model: Map.get(snap, :agent_model),
+              agent_effort: Map.get(snap, :agent_effort),
               paused: Map.get(polling, :paused, false),
               max_concurrent_agents: Map.get(polling, :max_concurrent_agents)
             }
@@ -127,7 +133,9 @@ defmodule CymphonyElixirWeb.Presenter do
       output_tokens: Map.get(entry, :output_tokens, 0),
       total_tokens: Map.get(entry, :total_tokens, 0),
       worker_host: Map.get(entry, :worker_host),
-      workspace_path: Map.get(entry, :workspace_path)
+      workspace_path: Map.get(entry, :workspace_path),
+      agent_kind: Map.get(entry, :agent_kind),
+      model: Map.get(entry, :model)
     }
   end
 

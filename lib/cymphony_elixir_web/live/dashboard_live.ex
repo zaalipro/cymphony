@@ -153,6 +153,28 @@ defmodule CymphonyElixirWeb.DashboardLive do
   end
 
   @impl true
+  def handle_event("set_project_agent", %{"project" => project_name} = params, socket) do
+    parse_params =
+      params
+      |> Map.take(["model", "effort"])
+      |> Map.put("kind", params["agent_kind"])
+
+    case Control.parse_agent_settings(parse_params) do
+      {:ok, settings} ->
+        case Control.set_agent_settings({:project, project_name}, settings) do
+          :ok ->
+            {:noreply, reload_payload_now(put_flash(socket, :info, "#{project_name}: agent settings updated"))}
+
+          {:error, :not_found} ->
+            {:noreply, put_flash(socket, :error, "Project not found: #{project_name}")}
+        end
+
+      :error ->
+        {:noreply, put_flash(socket, :error, "Agent must be claude or codex")}
+    end
+  end
+
+  @impl true
   def handle_event("toggle_project_pause", %{"project" => project_name}, socket) do
     case toggle_project_pause(socket.assigns.payload, project_name) do
       :ok ->
@@ -410,9 +432,45 @@ defmodule CymphonyElixirWeb.DashboardLive do
                   />
                 </form>
 
+                <form phx-submit="set_project_agent" class="inline-form inline-form--agent">
+                  <input type="hidden" name="project" value={project.name} />
+                  <label class="inline-label" for={"agent-#{project.name}"}>agent</label>
+                  <select id={"agent-#{project.name}"} name="agent_kind" class="inline-input inline-input--narrow">
+                    <option value="claude" selected={Map.get(project, :agent_kind) != "codex"}>claude</option>
+                    <option value="codex" selected={Map.get(project, :agent_kind) == "codex"}>codex</option>
+                  </select>
+
+                  <label class="inline-label" for={"model-#{project.name}"}>model</label>
+                  <input
+                    id={"model-#{project.name}"}
+                    type="text"
+                    name="model"
+                    value={Map.get(project, :agent_model) || ""}
+                    placeholder="default"
+                    list={"model-suggestions-#{project.name}"}
+                    class="inline-input inline-input--narrow"
+                    title="Model override passed to the agent CLI (cli alias: model)"
+                  />
+                  <datalist id={"model-suggestions-#{project.name}"}>
+                    <%= for m <- model_suggestions(Map.get(project, :agent_kind)) do %>
+                      <option value={m}></option>
+                    <% end %>
+                  </datalist>
+
+                  <label class="inline-label" for={"effort-#{project.name}"}>effort</label>
+                  <select id={"effort-#{project.name}"} name="effort" class="inline-input inline-input--narrow">
+                    <option value="" selected={Map.get(project, :agent_effort) in [nil, ""]}>default</option>
+                    <%= for level <- effort_levels(Map.get(project, :agent_kind)) do %>
+                      <option value={level} selected={Map.get(project, :agent_effort) == level}><%= level %></option>
+                    <% end %>
+                  </select>
+
+                  <button type="submit" class="subtle-button">Set</button>
+                </form>
+
                 <form phx-submit="set_project_providers" class="inline-form inline-form--wide">
                   <input type="hidden" name="project" value={project.name} />
-                  <label class="inline-label" for={"providers-#{project.name}"}>claude command</label>
+                  <label class="inline-label" for={"providers-#{project.name}"}>providers</label>
                   <input
                     id={"providers-#{project.name}"}
                     type="text"
@@ -689,6 +747,14 @@ defmodule CymphonyElixirWeb.DashboardLive do
     |> assign(:token_samples, token_samples)
     |> assign(:last_payload_refresh, System.monotonic_time(:millisecond))
   end
+
+  # Suggestions only — values are pass-through free text; both CLIs evolve
+  # their model lists faster than we release.
+  defp model_suggestions("codex"), do: ["gpt-5.2-codex", "gpt-5.2", "o4-mini"]
+  defp model_suggestions(_kind), do: ["sonnet", "opus", "haiku"]
+
+  defp effort_levels("codex"), do: ["minimal", "low", "medium", "high", "xhigh"]
+  defp effort_levels(_kind), do: ["low", "medium", "high", "xhigh", "max"]
 
   defp orchestrator do
     Endpoint.config(:orchestrator) || CymphonyElixir.Orchestrator

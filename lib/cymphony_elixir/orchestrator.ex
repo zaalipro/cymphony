@@ -1509,6 +1509,8 @@ defmodule CymphonyElixir.Orchestrator do
        rate_limits: Map.get(state, :rate_limits),
        providers: state.providers || [],
        agent_kind: state.config.agent.kind,
+       agent_model: state.config.agent.model,
+       agent_effort: state.config.agent.effort,
        agent_command: agent_command(state.config),
        polling: %{
          checking?: state.poll_check_in_progress == true,
