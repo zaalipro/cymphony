@@ -193,7 +193,7 @@ defmodule CymphonyElixir.AppServerTest do
         claude_command: claude_binary,
         claude_permission_mode: "plan",
         claude_allowed_tools: "Bash,Read",
-        claude_model: "claude-sonnet-4-6",
+        agent_model: "claude-sonnet-4-6",
         claude_bare_mode: true,
         claude_output_format: "json"
       )

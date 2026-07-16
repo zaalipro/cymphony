@@ -150,6 +150,7 @@ defmodule CymphonyElixir.Claude.AppServer do
           {:ok, String.t()}
   def build_claude_command(prompt, _issue, session_id, config, workspace \\ nil, worker_host \\ nil) do
     settings = if config, do: config.claude, else: Config.settings!().claude
+    agent = if config, do: config.agent, else: Config.settings!().agent
 
     args =
       []
@@ -160,7 +161,7 @@ defmodule CymphonyElixir.Claude.AppServer do
       |> maybe_add_flag(settings.output_format == "stream-json", "--verbose")
       |> maybe_add_flag(settings.permission_mode, "--permission-mode", settings.permission_mode)
       |> maybe_add_flag(settings.allowed_tools, "--allowedTools", settings.allowed_tools)
-      |> maybe_add_flag(settings.model, "--model", settings.model)
+      |> maybe_add_flag(agent.model, "--model", agent.model)
       |> maybe_add_flag(settings.fallback_model, "--fallback-model", settings.fallback_model)
       |> maybe_add_flag(settings.max_turns, "--max-turns", settings.max_turns)
       |> maybe_add_flag(settings.max_budget_usd, "--max-budget-usd", settings.max_budget_usd)
@@ -389,7 +390,7 @@ defmodule CymphonyElixir.Claude.AppServer do
   # the end, so a long stream-json turn (thousands of events) does not grow the
   # call stack proportionally to the number of output lines.
   defp collect_output(port, buffer, acc, config) do
-    timeout_ms = if config, do: config.claude.turn_timeout_ms, else: Config.settings!().claude.turn_timeout_ms
+    timeout_ms = if config, do: config.agent.turn_timeout_ms, else: Config.settings!().agent.turn_timeout_ms
 
     receive do
       {^port, {:data, {:eol, chunk}}} ->

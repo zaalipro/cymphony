@@ -477,7 +477,7 @@ defmodule CymphonyElixirWeb.Presenter do
   end
 
   defp stalled?(%DateTime{} = last_event_at) do
-    timeout_ms = Config.settings!().claude.stall_timeout_ms
+    timeout_ms = Config.settings!().agent.stall_timeout_ms
     elapsed_ms = DateTime.diff(DateTime.utc_now(), last_event_at, :millisecond)
     elapsed_ms > timeout_ms
   rescue

@@ -124,21 +124,24 @@ defmodule CymphonyElixir.TestSupport do
           max_retry_attempts: 30,
           failure_state: nil,
           max_concurrent_agents_by_state: %{},
+          agent_kind: "claude",
+          agent_model: nil,
+          agent_effort: nil,
+          turn_timeout_ms: 3_600_000,
+          stall_timeout_ms: 300_000,
           claude_command: "claude",
-          claude_approval_policy: %{reject: %{sandbox_approval: true, rules: true, mcp_elicitations: true}},
           claude_permission_mode: "acceptEdits",
           claude_allowed_tools: "Bash,Read,Edit",
-          claude_thread_sandbox: "workspace-write",
-          claude_turn_sandbox_policy: nil,
-          claude_turn_timeout_ms: 3_600_000,
-          claude_read_timeout_ms: 5_000,
-          claude_stall_timeout_ms: 300_000,
+          claude_output_format: "json",
           claude_max_budget_usd: nil,
           claude_max_turns: nil,
           claude_bare_mode: true,
-          claude_output_format: "json",
-          claude_model: nil,
           claude_fallback_model: nil,
+          claude_provider: nil,
+          claude_providers: [],
+          codex_command: "codex",
+          codex_sandbox: "workspace-write",
+          codex_network_access: true,
           hook_after_create: nil,
           hook_before_run: nil,
           hook_after_run: nil,
@@ -171,21 +174,24 @@ defmodule CymphonyElixir.TestSupport do
     max_retry_attempts = Keyword.get(config, :max_retry_attempts)
     failure_state = Keyword.get(config, :failure_state)
     max_concurrent_agents_by_state = Keyword.get(config, :max_concurrent_agents_by_state)
+    agent_kind = Keyword.get(config, :agent_kind)
+    agent_model = Keyword.get(config, :agent_model)
+    agent_effort = Keyword.get(config, :agent_effort)
+    turn_timeout_ms = Keyword.get(config, :turn_timeout_ms)
+    stall_timeout_ms = Keyword.get(config, :stall_timeout_ms)
     claude_command = Keyword.get(config, :claude_command)
-    claude_approval_policy = Keyword.get(config, :claude_approval_policy)
     claude_permission_mode = Keyword.get(config, :claude_permission_mode)
     claude_allowed_tools = Keyword.get(config, :claude_allowed_tools)
-    claude_thread_sandbox = Keyword.get(config, :claude_thread_sandbox)
-    claude_turn_sandbox_policy = Keyword.get(config, :claude_turn_sandbox_policy)
-    claude_turn_timeout_ms = Keyword.get(config, :claude_turn_timeout_ms)
-    claude_read_timeout_ms = Keyword.get(config, :claude_read_timeout_ms)
-    claude_stall_timeout_ms = Keyword.get(config, :claude_stall_timeout_ms)
+    claude_output_format = Keyword.get(config, :claude_output_format)
     claude_max_budget_usd = Keyword.get(config, :claude_max_budget_usd)
     claude_max_turns = Keyword.get(config, :claude_max_turns)
     claude_bare_mode = Keyword.get(config, :claude_bare_mode)
-    claude_output_format = Keyword.get(config, :claude_output_format)
-    claude_model = Keyword.get(config, :claude_model)
     claude_fallback_model = Keyword.get(config, :claude_fallback_model)
+    claude_provider = Keyword.get(config, :claude_provider)
+    claude_providers = Keyword.get(config, :claude_providers)
+    codex_command = Keyword.get(config, :codex_command)
+    codex_sandbox = Keyword.get(config, :codex_sandbox)
+    codex_network_access = Keyword.get(config, :codex_network_access)
     hook_after_create = Keyword.get(config, :hook_after_create)
     hook_before_run = Keyword.get(config, :hook_before_run)
     hook_after_run = Keyword.get(config, :hook_after_run)
@@ -215,6 +221,11 @@ defmodule CymphonyElixir.TestSupport do
         "  root: #{yaml_value(workspace_root)}",
         worker_yaml(worker_ssh_hosts, worker_max_concurrent_agents_per_host),
         "agent:",
+        "  kind: #{yaml_value(agent_kind)}",
+        "  model: #{yaml_value(agent_model)}",
+        "  effort: #{yaml_value(agent_effort)}",
+        "  turn_timeout_ms: #{yaml_value(turn_timeout_ms)}",
+        "  stall_timeout_ms: #{yaml_value(stall_timeout_ms)}",
         "  max_concurrent_agents: #{yaml_value(max_concurrent_agents)}",
         "  max_turns: #{yaml_value(max_turns)}",
         "  max_retry_backoff_ms: #{yaml_value(max_retry_backoff_ms)}",
@@ -223,20 +234,19 @@ defmodule CymphonyElixir.TestSupport do
         "  max_concurrent_agents_by_state: #{yaml_value(max_concurrent_agents_by_state)}",
         "claude:",
         "  command: #{yaml_value(claude_command)}",
-        "  approval_policy: #{yaml_value(claude_approval_policy)}",
         "  permission_mode: #{yaml_value(claude_permission_mode)}",
         "  allowed_tools: #{yaml_value(claude_allowed_tools)}",
-        "  thread_sandbox: #{yaml_value(claude_thread_sandbox)}",
-        "  turn_sandbox_policy: #{yaml_value(claude_turn_sandbox_policy)}",
-        "  turn_timeout_ms: #{yaml_value(claude_turn_timeout_ms)}",
-        "  read_timeout_ms: #{yaml_value(claude_read_timeout_ms)}",
-        "  stall_timeout_ms: #{yaml_value(claude_stall_timeout_ms)}",
+        "  output_format: #{yaml_value(claude_output_format)}",
         "  max_budget_usd: #{yaml_value(claude_max_budget_usd)}",
         "  max_turns: #{yaml_value(claude_max_turns)}",
         "  bare_mode: #{yaml_value(claude_bare_mode)}",
-        "  output_format: #{yaml_value(claude_output_format)}",
-        "  model: #{yaml_value(claude_model)}",
         "  fallback_model: #{yaml_value(claude_fallback_model)}",
+        "  provider: #{yaml_value(claude_provider)}",
+        "  providers: #{yaml_value(claude_providers)}",
+        "codex:",
+        "  command: #{yaml_value(codex_command)}",
+        "  sandbox: #{yaml_value(codex_sandbox)}",
+        "  network_access: #{yaml_value(codex_network_access)}",
         hooks_yaml(hook_after_create, hook_before_run, hook_after_run, hook_before_remove, hook_timeout_ms),
         observability_yaml(observability_enabled, observability_refresh_ms, observability_render_interval_ms),
         server_yaml(server_port, server_host),

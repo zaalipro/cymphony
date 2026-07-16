@@ -5,37 +5,9 @@ defmodule CymphonyElixir.Config.Schema do
 
   import Ecto.Changeset
 
-  alias CymphonyElixir.PathSafety
-
   @primary_key false
 
   @type t :: %__MODULE__{}
-
-  defmodule StringOrMap do
-    @moduledoc false
-    @behaviour Ecto.Type
-
-    @spec type() :: :map
-    def type, do: :map
-
-    @spec embed_as(term()) :: :self
-    def embed_as(_format), do: :self
-
-    @spec equal?(term(), term()) :: boolean()
-    def equal?(left, right), do: left == right
-
-    @spec cast(term()) :: {:ok, String.t() | map()} | :error
-    def cast(value) when is_binary(value) or is_map(value), do: {:ok, value}
-    def cast(_value), do: :error
-
-    @spec load(term()) :: {:ok, String.t() | map()} | :error
-    def load(value) when is_binary(value) or is_map(value), do: {:ok, value}
-    def load(_value), do: :error
-
-    @spec dump(term()) :: {:ok, String.t() | map()} | :error
-    def dump(value) when is_binary(value) or is_map(value), do: {:ok, value}
-    def dump(_value), do: :error
-  end
 
   defmodule Tracker do
     @moduledoc false
@@ -130,12 +102,17 @@ defmodule CymphonyElixir.Config.Schema do
 
     @primary_key false
     embedded_schema do
+      field(:kind, :string, default: "claude")
+      field(:model, :string)
+      field(:effort, :string)
       field(:max_concurrent_agents, :integer, default: 10)
       field(:max_turns, :integer, default: 20)
       field(:max_retry_backoff_ms, :integer, default: 300_000)
       field(:max_retry_attempts, :integer, default: 30)
       field(:failure_state, :string)
       field(:max_concurrent_agents_by_state, :map, default: %{})
+      field(:turn_timeout_ms, :integer, default: 3_600_000)
+      field(:stall_timeout_ms, :integer, default: 300_000)
     end
 
     @spec changeset(%__MODULE__{}, map()) :: Ecto.Changeset.t()
@@ -144,19 +121,27 @@ defmodule CymphonyElixir.Config.Schema do
       |> cast(
         attrs,
         [
+          :kind,
+          :model,
+          :effort,
           :max_concurrent_agents,
           :max_turns,
           :max_retry_backoff_ms,
           :max_retry_attempts,
           :failure_state,
-          :max_concurrent_agents_by_state
+          :max_concurrent_agents_by_state,
+          :turn_timeout_ms,
+          :stall_timeout_ms
         ],
         empty_values: []
       )
+      |> validate_inclusion(:kind, ["claude", "codex"])
       |> validate_number(:max_concurrent_agents, greater_than: 0)
       |> validate_number(:max_turns, greater_than: 0)
       |> validate_number(:max_retry_backoff_ms, greater_than: 0)
       |> validate_number(:max_retry_attempts, greater_than: 0)
+      |> validate_number(:turn_timeout_ms, greater_than: 0)
+      |> validate_number(:stall_timeout_ms, greater_than_or_equal_to: 0)
       |> update_change(:max_concurrent_agents_by_state, &Schema.normalize_state_limits/1)
       |> Schema.validate_state_limits(:max_concurrent_agents_by_state)
     end
@@ -170,32 +155,15 @@ defmodule CymphonyElixir.Config.Schema do
     @primary_key false
     embedded_schema do
       field(:command, :string, default: "claude")
-      field(:provider, :string)
-      field(:providers, {:array, :string}, default: [])
-
-      field(:approval_policy, StringOrMap,
-        default: %{
-          "reject" => %{
-            "sandbox_approval" => true,
-            "rules" => true,
-            "mcp_elicitations" => true
-          }
-        }
-      )
-
       field(:permission_mode, :string, default: "acceptEdits")
       field(:allowed_tools, :string, default: "Bash,Read,Edit")
-      field(:thread_sandbox, :string, default: "workspace-write")
-      field(:turn_sandbox_policy, :map)
-      field(:turn_timeout_ms, :integer, default: 3_600_000)
-      field(:read_timeout_ms, :integer, default: 5_000)
-      field(:stall_timeout_ms, :integer, default: 300_000)
-      field(:max_budget_usd, :decimal)
-      field(:max_turns, :integer)
-      field(:bare_mode, :boolean, default: true)
-      field(:output_format, :string, default: "json")
-      field(:model, :string)
+      field(:output_format, :string, default: "stream-json")
       field(:fallback_model, :string)
+      field(:max_turns, :integer)
+      field(:max_budget_usd, :decimal)
+      field(:bare_mode, :boolean, default: true)
+      field(:provider, :string)
+      field(:providers, {:array, :string}, default: [])
     end
 
     @spec changeset(%__MODULE__{}, map()) :: Ecto.Changeset.t()
@@ -205,29 +173,19 @@ defmodule CymphonyElixir.Config.Schema do
         attrs,
         [
           :command,
-          :provider,
-          :providers,
-          :approval_policy,
           :permission_mode,
           :allowed_tools,
-          :thread_sandbox,
-          :turn_sandbox_policy,
-          :turn_timeout_ms,
-          :read_timeout_ms,
-          :stall_timeout_ms,
-          :max_budget_usd,
-          :max_turns,
-          :bare_mode,
           :output_format,
-          :model,
-          :fallback_model
+          :fallback_model,
+          :max_turns,
+          :max_budget_usd,
+          :bare_mode,
+          :provider,
+          :providers
         ],
         empty_values: []
       )
       |> validate_required([:command])
-      |> validate_number(:turn_timeout_ms, greater_than: 0)
-      |> validate_number(:read_timeout_ms, greater_than: 0)
-      |> validate_number(:stall_timeout_ms, greater_than_or_equal_to: 0)
       |> validate_number(:max_turns, greater_than: 0)
       |> validate_inclusion(:permission_mode, [
         "default",
@@ -238,6 +196,29 @@ defmodule CymphonyElixir.Config.Schema do
         "bypassPermissions"
       ])
       |> validate_inclusion(:output_format, ["text", "json", "stream-json"])
+    end
+  end
+
+  defmodule Codex do
+    @moduledoc false
+    use Ecto.Schema
+    import Ecto.Changeset
+
+    @primary_key false
+    embedded_schema do
+      field(:command, :string, default: "codex")
+      field(:sandbox, :string, default: "workspace-write")
+      field(:network_access, :boolean, default: true)
+      field(:provider, :string)
+      field(:providers, {:array, :string}, default: [])
+    end
+
+    @spec changeset(%__MODULE__{}, map()) :: Ecto.Changeset.t()
+    def changeset(schema, attrs) do
+      schema
+      |> cast(attrs, [:command, :sandbox, :network_access, :provider, :providers], empty_values: [])
+      |> validate_required([:command])
+      |> validate_inclusion(:sandbox, ["read-only", "workspace-write", "danger-full-access"])
     end
   end
 
@@ -310,6 +291,7 @@ defmodule CymphonyElixir.Config.Schema do
     embeds_one(:worker, Worker, on_replace: :update, defaults_to_struct: true)
     embeds_one(:agent, Agent, on_replace: :update, defaults_to_struct: true)
     embeds_one(:claude, Claude, on_replace: :update, defaults_to_struct: true)
+    embeds_one(:codex, Codex, on_replace: :update, defaults_to_struct: true)
     embeds_one(:hooks, Hooks, on_replace: :update, defaults_to_struct: true)
     embeds_one(:observability, Observability, on_replace: :update, defaults_to_struct: true)
     embeds_one(:server, Server, on_replace: :update, defaults_to_struct: true)
@@ -328,34 +310,6 @@ defmodule CymphonyElixir.Config.Schema do
 
       {:error, changeset} ->
         {:error, {:invalid_workflow_config, format_errors(changeset)}}
-    end
-  end
-
-  @spec resolve_turn_sandbox_policy(%__MODULE__{}, Path.t() | nil) :: map()
-  def resolve_turn_sandbox_policy(settings, workspace \\ nil) do
-    case settings.claude.turn_sandbox_policy do
-      %{} = policy ->
-        policy
-
-      _ ->
-        workspace
-        |> default_workspace_root(settings.workspace.root)
-        |> expand_local_workspace_root()
-        |> default_turn_sandbox_policy()
-    end
-  end
-
-  @spec resolve_runtime_turn_sandbox_policy(%__MODULE__{}, Path.t() | nil, keyword()) ::
-          {:ok, map()} | {:error, term()}
-  def resolve_runtime_turn_sandbox_policy(settings, workspace \\ nil, opts \\ []) do
-    case settings.claude.turn_sandbox_policy do
-      %{} = policy ->
-        {:ok, policy}
-
-      _ ->
-        workspace
-        |> default_workspace_root(settings.workspace.root)
-        |> default_runtime_turn_sandbox_policy(opts)
     end
   end
 
@@ -402,6 +356,7 @@ defmodule CymphonyElixir.Config.Schema do
     |> cast_embed(:worker, with: &Worker.changeset/2)
     |> cast_embed(:agent, with: &Agent.changeset/2)
     |> cast_embed(:claude, with: &Claude.changeset/2)
+    |> cast_embed(:codex, with: &Codex.changeset/2)
     |> cast_embed(:hooks, with: &Hooks.changeset/2)
     |> cast_embed(:observability, with: &Observability.changeset/2)
     |> cast_embed(:server, with: &Server.changeset/2)
@@ -419,13 +374,7 @@ defmodule CymphonyElixir.Config.Schema do
       | root: resolve_path_value(settings.workspace.root, Path.join(System.tmp_dir!(), "cymphony_workspaces"))
     }
 
-    claude = %{
-      settings.claude
-      | approval_policy: normalize_keys(settings.claude.approval_policy),
-        turn_sandbox_policy: normalize_optional_map(settings.claude.turn_sandbox_policy)
-    }
-
-    %{settings | tracker: tracker, workspace: workspace, claude: claude}
+    %{settings | tracker: tracker, workspace: workspace}
   end
 
   defp normalize_keys(value) when is_map(value) do
@@ -436,9 +385,6 @@ defmodule CymphonyElixir.Config.Schema do
 
   defp normalize_keys(value) when is_list(value), do: Enum.map(value, &normalize_keys/1)
   defp normalize_keys(value), do: value
-
-  defp normalize_optional_map(nil), do: nil
-  defp normalize_optional_map(value) when is_map(value), do: normalize_keys(value)
 
   defp normalize_key(value) when is_atom(value), do: Atom.to_string(value)
   defp normalize_key(value), do: to_string(value)
@@ -520,48 +466,6 @@ defmodule CymphonyElixir.Config.Schema do
   end
 
   defp normalize_secret_value(_value), do: nil
-
-  defp default_turn_sandbox_policy(workspace) do
-    %{
-      "type" => "workspaceWrite",
-      "writableRoots" => [workspace],
-      "readOnlyAccess" => %{"type" => "fullAccess"},
-      "networkAccess" => false,
-      "excludeTmpdirEnvVar" => false,
-      "excludeSlashTmp" => false
-    }
-  end
-
-  defp default_runtime_turn_sandbox_policy(workspace_root, opts) when is_binary(workspace_root) do
-    if Keyword.get(opts, :remote, false) do
-      {:ok, default_turn_sandbox_policy(workspace_root)}
-    else
-      with expanded_workspace_root <- expand_local_workspace_root(workspace_root),
-           {:ok, canonical_workspace_root} <- PathSafety.canonicalize(expanded_workspace_root) do
-        {:ok, default_turn_sandbox_policy(canonical_workspace_root)}
-      end
-    end
-  end
-
-  defp default_runtime_turn_sandbox_policy(workspace_root, _opts) do
-    {:error, {:unsafe_turn_sandbox_policy, {:invalid_workspace_root, workspace_root}}}
-  end
-
-  defp default_workspace_root(workspace, _fallback) when is_binary(workspace) and workspace != "",
-    do: workspace
-
-  defp default_workspace_root(nil, fallback), do: fallback
-  defp default_workspace_root("", fallback), do: fallback
-  defp default_workspace_root(workspace, _fallback), do: workspace
-
-  defp expand_local_workspace_root(workspace_root)
-       when is_binary(workspace_root) and workspace_root != "" do
-    Path.expand(workspace_root)
-  end
-
-  defp expand_local_workspace_root(_workspace_root) do
-    Path.expand(Path.join(System.tmp_dir!(), "cymphony_workspaces"))
-  end
 
   defp format_errors(changeset) do
     changeset

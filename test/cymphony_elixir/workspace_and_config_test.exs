@@ -2,7 +2,6 @@ defmodule CymphonyElixir.WorkspaceAndConfigTest do
   use CymphonyElixir.TestSupport
   alias Ecto.Changeset
   alias CymphonyElixir.Config.Schema
-  alias CymphonyElixir.Config.Schema.{Claude, StringOrMap}
   alias CymphonyElixir.Linear.Client
 
   test "workspace bootstrap can be implemented in after_create hook" do
@@ -752,12 +751,8 @@ defmodule CymphonyElixir.WorkspaceAndConfigTest do
     write_workflow_file!(Workflow.workflow_file_path(),
       workspace_root: nil,
       max_concurrent_agents: nil,
-      claude_approval_policy: nil,
-      claude_thread_sandbox: nil,
-      claude_turn_sandbox_policy: nil,
-      claude_turn_timeout_ms: nil,
-      claude_read_timeout_ms: nil,
-      claude_stall_timeout_ms: nil,
+      turn_timeout_ms: nil,
+      stall_timeout_ms: nil,
       tracker_api_token: nil,
       tracker_project_slug: nil
     )
@@ -771,65 +766,11 @@ defmodule CymphonyElixir.WorkspaceAndConfigTest do
     assert config.agent.max_concurrent_agents == 10
     assert config.claude.command == "claude"
 
-    assert config.claude.approval_policy == %{
-             "reject" => %{
-               "sandbox_approval" => true,
-               "rules" => true,
-               "mcp_elicitations" => true
-             }
-           }
-
-    assert config.claude.thread_sandbox == "workspace-write"
-
-    assert {:ok, canonical_default_workspace_root} =
-             CymphonyElixir.PathSafety.canonicalize(Path.join(System.tmp_dir!(), "cymphony_workspaces"))
-
-    assert Config.claude_turn_sandbox_policy() == %{
-             "type" => "workspaceWrite",
-             "writableRoots" => [canonical_default_workspace_root],
-             "readOnlyAccess" => %{"type" => "fullAccess"},
-             "networkAccess" => false,
-             "excludeTmpdirEnvVar" => false,
-             "excludeSlashTmp" => false
-           }
-
-    assert config.claude.turn_timeout_ms == 3_600_000
-    assert config.claude.read_timeout_ms == 5_000
-    assert config.claude.stall_timeout_ms == 300_000
+    assert config.agent.turn_timeout_ms == 3_600_000
+    assert config.agent.stall_timeout_ms == 300_000
 
     write_workflow_file!(Workflow.workflow_file_path(), claude_command: "claude --model gpt-5.3-claude")
     assert Config.settings!().claude.command == "claude --model gpt-5.3-claude"
-
-    explicit_root =
-      Path.join(
-        System.tmp_dir!(),
-        "cymphony-elixir-explicit-sandbox-root-#{System.unique_integer([:positive])}"
-      )
-
-    explicit_workspace = Path.join(explicit_root, "MT-EXPLICIT")
-    explicit_cache = Path.join(explicit_workspace, "cache")
-    File.mkdir_p!(explicit_cache)
-
-    on_exit(fn -> File.rm_rf(explicit_root) end)
-
-    write_workflow_file!(Workflow.workflow_file_path(),
-      workspace_root: explicit_root,
-      claude_approval_policy: "on-request",
-      claude_thread_sandbox: "workspace-write",
-      claude_turn_sandbox_policy: %{
-        type: "workspaceWrite",
-        writableRoots: [explicit_workspace, explicit_cache]
-      }
-    )
-
-    config = Config.settings!()
-    assert config.claude.approval_policy == "on-request"
-    assert config.claude.thread_sandbox == "workspace-write"
-
-    assert Config.claude_turn_sandbox_policy(explicit_workspace) == %{
-             "type" => "workspaceWrite",
-             "writableRoots" => [explicit_workspace, explicit_cache]
-           }
 
     write_workflow_file!(Workflow.workflow_file_path(), tracker_active_states: ",")
     assert {:error, {:invalid_workflow_config, message}} = Config.validate!()
@@ -843,17 +784,13 @@ defmodule CymphonyElixir.WorkspaceAndConfigTest do
     assert {:error, {:invalid_workflow_config, message}} = Config.validate!()
     assert message =~ "worker.max_concurrent_agents_per_host"
 
-    write_workflow_file!(Workflow.workflow_file_path(), claude_turn_timeout_ms: "bad")
+    write_workflow_file!(Workflow.workflow_file_path(), turn_timeout_ms: "bad")
     assert {:error, {:invalid_workflow_config, message}} = Config.validate!()
-    assert message =~ "claude.turn_timeout_ms"
+    assert message =~ "agent.turn_timeout_ms"
 
-    write_workflow_file!(Workflow.workflow_file_path(), claude_read_timeout_ms: "bad")
+    write_workflow_file!(Workflow.workflow_file_path(), stall_timeout_ms: "bad")
     assert {:error, {:invalid_workflow_config, message}} = Config.validate!()
-    assert message =~ "claude.read_timeout_ms"
-
-    write_workflow_file!(Workflow.workflow_file_path(), claude_stall_timeout_ms: "bad")
-    assert {:error, {:invalid_workflow_config, message}} = Config.validate!()
-    assert message =~ "claude.stall_timeout_ms"
+    assert message =~ "agent.stall_timeout_ms"
 
     write_workflow_file!(Workflow.workflow_file_path(),
       tracker_active_states: %{todo: true},
@@ -871,38 +808,6 @@ defmodule CymphonyElixir.WorkspaceAndConfigTest do
     )
 
     assert {:error, {:invalid_workflow_config, _message}} = Config.validate!()
-
-    write_workflow_file!(Workflow.workflow_file_path(), claude_approval_policy: "")
-    assert :ok = Config.validate!()
-    assert Config.settings!().claude.approval_policy == ""
-
-    write_workflow_file!(Workflow.workflow_file_path(), claude_thread_sandbox: "")
-    assert :ok = Config.validate!()
-    assert Config.settings!().claude.thread_sandbox == ""
-
-    write_workflow_file!(Workflow.workflow_file_path(), claude_turn_sandbox_policy: "bad")
-    assert {:error, {:invalid_workflow_config, message}} = Config.validate!()
-    assert message =~ "claude.turn_sandbox_policy"
-
-    write_workflow_file!(Workflow.workflow_file_path(),
-      claude_approval_policy: "future-policy",
-      claude_thread_sandbox: "future-sandbox",
-      claude_turn_sandbox_policy: %{
-        type: "futureSandbox",
-        nested: %{flag: true}
-      }
-    )
-
-    config = Config.settings!()
-    assert config.claude.approval_policy == "future-policy"
-    assert config.claude.thread_sandbox == "future-sandbox"
-
-    assert :ok = Config.validate!()
-
-    assert Config.claude_turn_sandbox_policy() == %{
-             "type" => "futureSandbox",
-             "nested" => %{"flag" => true}
-           }
 
     write_workflow_file!(Workflow.workflow_file_path(), claude_command: "claude")
     assert Config.settings!().claude.command == "claude"
@@ -991,22 +896,7 @@ defmodule CymphonyElixir.WorkspaceAndConfigTest do
     assert Config.settings!().worker.max_concurrent_agents_per_host == 2
   end
 
-  test "schema helpers cover custom type and state limit validation" do
-    assert StringOrMap.type() == :map
-    assert StringOrMap.embed_as(:json) == :self
-    assert StringOrMap.equal?(%{"a" => 1}, %{"a" => 1})
-    refute StringOrMap.equal?(%{"a" => 1}, %{"a" => 2})
-
-    assert {:ok, "value"} = StringOrMap.cast("value")
-    assert {:ok, %{"a" => 1}} = StringOrMap.cast(%{"a" => 1})
-    assert :error = StringOrMap.cast(123)
-
-    assert {:ok, "value"} = StringOrMap.load("value")
-    assert :error = StringOrMap.load(123)
-
-    assert {:ok, %{"a" => 1}} = StringOrMap.dump(%{"a" => 1})
-    assert :error = StringOrMap.dump(123)
-
+  test "schema helpers cover state limit validation" do
     assert Schema.normalize_state_limits(nil) == %{}
 
     assert Schema.normalize_state_limits(%{"In Progress" => 2, todo: 1}) == %{
@@ -1025,7 +915,7 @@ defmodule CymphonyElixir.WorkspaceAndConfigTest do
            ]
   end
 
-  test "schema parse normalizes policy keys and env-backed fallbacks" do
+  test "schema parse resolves env-backed fallbacks" do
     missing_workspace_env = "SYMP_MISSING_WORKSPACE_#{System.unique_integer([:positive])}"
     empty_secret_env = "SYMP_EMPTY_SECRET_#{System.unique_integer([:positive])}"
     missing_secret_env = "SYMP_MISSING_SECRET_#{System.unique_integer([:positive])}"
@@ -1050,16 +940,11 @@ defmodule CymphonyElixir.WorkspaceAndConfigTest do
     assert {:ok, settings} =
              Schema.parse(%{
                tracker: %{api_key: "$#{empty_secret_env}"},
-               workspace: %{root: "$#{missing_workspace_env}"},
-               claude: %{approval_policy: %{reject: %{sandbox_approval: true}}}
+               workspace: %{root: "$#{missing_workspace_env}"}
              })
 
     assert settings.tracker.api_key == nil
     assert settings.workspace.root == Path.join(System.tmp_dir!(), "cymphony_workspaces")
-
-    assert settings.claude.approval_policy == %{
-             "reject" => %{"sandbox_approval" => true}
-           }
 
     assert {:ok, settings} =
              Schema.parse(%{
@@ -1071,121 +956,6 @@ defmodule CymphonyElixir.WorkspaceAndConfigTest do
     assert settings.workspace.root == Path.join(System.tmp_dir!(), "cymphony_workspaces")
   end
 
-  test "schema resolves sandbox policies from explicit and default workspaces" do
-    explicit_policy = %{"type" => "workspaceWrite", "writableRoots" => ["/tmp/explicit"]}
-
-    assert Schema.resolve_turn_sandbox_policy(%Schema{
-             claude: %Claude{turn_sandbox_policy: explicit_policy},
-             workspace: %Schema.Workspace{root: "/tmp/ignored"}
-           }) == explicit_policy
-
-    assert Schema.resolve_turn_sandbox_policy(%Schema{
-             claude: %Claude{turn_sandbox_policy: nil},
-             workspace: %Schema.Workspace{root: ""}
-           }) == %{
-             "type" => "workspaceWrite",
-             "writableRoots" => [Path.expand(Path.join(System.tmp_dir!(), "cymphony_workspaces"))],
-             "readOnlyAccess" => %{"type" => "fullAccess"},
-             "networkAccess" => false,
-             "excludeTmpdirEnvVar" => false,
-             "excludeSlashTmp" => false
-           }
-
-    assert Schema.resolve_turn_sandbox_policy(
-             %Schema{
-               claude: %Claude{turn_sandbox_policy: nil},
-               workspace: %Schema.Workspace{root: "/tmp/ignored"}
-             },
-             "/tmp/workspace"
-           ) == %{
-             "type" => "workspaceWrite",
-             "writableRoots" => [Path.expand("/tmp/workspace")],
-             "readOnlyAccess" => %{"type" => "fullAccess"},
-             "networkAccess" => false,
-             "excludeTmpdirEnvVar" => false,
-             "excludeSlashTmp" => false
-           }
-  end
-
-  test "schema keeps workspace roots raw while sandbox helpers expand only for local use" do
-    assert {:ok, settings} =
-             Schema.parse(%{
-               workspace: %{root: "~/.cymphony/workspaces"},
-               claude: %{}
-             })
-
-    assert settings.workspace.root == "~/.cymphony/workspaces"
-
-    assert Schema.resolve_turn_sandbox_policy(settings) == %{
-             "type" => "workspaceWrite",
-             "writableRoots" => [Path.expand("~/.cymphony/workspaces")],
-             "readOnlyAccess" => %{"type" => "fullAccess"},
-             "networkAccess" => false,
-             "excludeTmpdirEnvVar" => false,
-             "excludeSlashTmp" => false
-           }
-
-    assert {:ok, remote_policy} =
-             Schema.resolve_runtime_turn_sandbox_policy(settings, nil, remote: true)
-
-    assert remote_policy == %{
-             "type" => "workspaceWrite",
-             "writableRoots" => ["~/.cymphony/workspaces"],
-             "readOnlyAccess" => %{"type" => "fullAccess"},
-             "networkAccess" => false,
-             "excludeTmpdirEnvVar" => false,
-             "excludeSlashTmp" => false
-           }
-  end
-
-  test "runtime sandbox policy resolution passes explicit policies through unchanged" do
-    test_root =
-      Path.join(
-        System.tmp_dir!(),
-        "cymphony-elixir-runtime-sandbox-#{System.unique_integer([:positive])}"
-      )
-
-    try do
-      workspace_root = Path.join(test_root, "workspaces")
-      issue_workspace = Path.join(workspace_root, "MT-100")
-      File.mkdir_p!(issue_workspace)
-
-      write_workflow_file!(Workflow.workflow_file_path(),
-        workspace_root: workspace_root,
-        claude_turn_sandbox_policy: %{
-          type: "workspaceWrite",
-          writableRoots: ["relative/path"],
-          networkAccess: true
-        }
-      )
-
-      assert {:ok, runtime_settings} = Config.claude_runtime_settings(issue_workspace)
-
-      assert runtime_settings.turn_sandbox_policy == %{
-               "type" => "workspaceWrite",
-               "writableRoots" => ["relative/path"],
-               "networkAccess" => true
-             }
-
-      write_workflow_file!(Workflow.workflow_file_path(),
-        workspace_root: workspace_root,
-        claude_turn_sandbox_policy: %{
-          type: "futureSandbox",
-          nested: %{flag: true}
-        }
-      )
-
-      assert {:ok, runtime_settings} = Config.claude_runtime_settings(issue_workspace)
-
-      assert runtime_settings.turn_sandbox_policy == %{
-               "type" => "futureSandbox",
-               "nested" => %{"flag" => true}
-             }
-    after
-      File.rm_rf(test_root)
-    end
-  end
-
   test "path safety returns errors for invalid path segments" do
     invalid_segment = String.duplicate("a", 300)
     path = Path.join(System.tmp_dir!(), invalid_segment)
@@ -1193,58 +963,6 @@ defmodule CymphonyElixir.WorkspaceAndConfigTest do
 
     assert {:error, {:path_canonicalize_failed, ^expanded_path, :enametoolong}} =
              CymphonyElixir.PathSafety.canonicalize(path)
-  end
-
-  test "runtime sandbox policy resolution defaults when omitted and ignores workspace for explicit policies" do
-    test_root =
-      Path.join(
-        System.tmp_dir!(),
-        "cymphony-elixir-runtime-sandbox-branches-#{System.unique_integer([:positive])}"
-      )
-
-    try do
-      workspace_root = Path.join(test_root, "workspaces")
-      issue_workspace = Path.join(workspace_root, "MT-101")
-
-      File.mkdir_p!(issue_workspace)
-
-      write_workflow_file!(Workflow.workflow_file_path(), workspace_root: workspace_root)
-
-      settings = Config.settings!()
-
-      assert {:ok, canonical_workspace_root} =
-               CymphonyElixir.PathSafety.canonicalize(workspace_root)
-
-      assert {:ok, default_policy} = Schema.resolve_runtime_turn_sandbox_policy(settings)
-      assert default_policy["type"] == "workspaceWrite"
-      assert default_policy["writableRoots"] == [canonical_workspace_root]
-
-      assert {:ok, blank_workspace_policy} =
-               Schema.resolve_runtime_turn_sandbox_policy(settings, "")
-
-      assert blank_workspace_policy == default_policy
-
-      read_only_settings = %{
-        settings
-        | claude: %{settings.claude | turn_sandbox_policy: %{"type" => "readOnly", "networkAccess" => true}}
-      }
-
-      assert {:ok, %{"type" => "readOnly", "networkAccess" => true}} =
-               Schema.resolve_runtime_turn_sandbox_policy(read_only_settings, 123)
-
-      future_settings = %{
-        settings
-        | claude: %{settings.claude | turn_sandbox_policy: %{"type" => "futureSandbox", "nested" => %{"flag" => true}}}
-      }
-
-      assert {:ok, %{"type" => "futureSandbox", "nested" => %{"flag" => true}}} =
-               Schema.resolve_runtime_turn_sandbox_policy(future_settings, 123)
-
-      assert {:error, {:unsafe_turn_sandbox_policy, {:invalid_workspace_root, 123}}} =
-               Schema.resolve_runtime_turn_sandbox_policy(settings, 123)
-    after
-      File.rm_rf(test_root)
-    end
   end
 
   test "workflow prompt is used when building base prompt" do

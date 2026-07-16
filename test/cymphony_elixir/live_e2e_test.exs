@@ -460,7 +460,6 @@ defmodule CymphonyElixir.LiveE2ETest do
         workspace_root: worker_setup.workspace_root,
         worker_ssh_hosts: worker_setup.ssh_worker_hosts,
         claude_command: worker_setup.claude_command,
-        claude_approval_policy: "never",
         observability_enabled: false
       )
 
@@ -491,9 +490,8 @@ defmodule CymphonyElixir.LiveE2ETest do
         workspace_root: worker_setup.workspace_root,
         worker_ssh_hosts: worker_setup.ssh_worker_hosts,
         claude_command: worker_setup.claude_command,
-        claude_approval_policy: "never",
-        claude_turn_timeout_ms: 600_000,
-        claude_stall_timeout_ms: 600_000,
+        turn_timeout_ms: 600_000,
+        stall_timeout_ms: 600_000,
         observability_enabled: false,
         prompt: live_prompt(project["slugId"])
       )

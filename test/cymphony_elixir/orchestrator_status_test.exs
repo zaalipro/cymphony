@@ -971,7 +971,7 @@ defmodule CymphonyElixir.OrchestratorStatusTest do
   test "orchestrator restarts stalled workers with retry backoff" do
     write_workflow_file!(Workflow.workflow_file_path(),
       tracker_api_token: nil,
-      claude_stall_timeout_ms: 1_000
+      stall_timeout_ms: 1_000
     )
 
     issue_id = "issue-stall"

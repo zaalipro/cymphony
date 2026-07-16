@@ -477,7 +477,7 @@ defmodule CymphonyElixir.Orchestrator do
   end
 
   defp reconcile_stalled_running_issues(%State{} = state) do
-    do_reconcile_stalled(state, state_config(state).claude.stall_timeout_ms)
+    do_reconcile_stalled(state, state_config(state).agent.stall_timeout_ms)
   end
 
   defp do_reconcile_stalled(state, timeout_ms) do

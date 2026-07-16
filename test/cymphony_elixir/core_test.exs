@@ -64,26 +64,6 @@ defmodule CymphonyElixir.CoreTest do
     write_workflow_file!(Workflow.workflow_file_path(), claude_command: "/bin/sh app-server")
     assert :ok = Config.validate!()
 
-    write_workflow_file!(Workflow.workflow_file_path(), claude_approval_policy: "definitely-not-valid")
-    assert :ok = Config.validate!()
-
-    write_workflow_file!(Workflow.workflow_file_path(), claude_thread_sandbox: "unsafe-ish")
-    assert :ok = Config.validate!()
-
-    write_workflow_file!(Workflow.workflow_file_path(),
-      claude_turn_sandbox_policy: %{type: "workspaceWrite", writableRoots: ["relative/path"]}
-    )
-
-    assert :ok = Config.validate!()
-
-    write_workflow_file!(Workflow.workflow_file_path(), claude_approval_policy: 123)
-    assert {:error, {:invalid_workflow_config, message}} = Config.validate!()
-    assert message =~ "claude.approval_policy"
-
-    write_workflow_file!(Workflow.workflow_file_path(), claude_thread_sandbox: 123)
-    assert {:error, {:invalid_workflow_config, message}} = Config.validate!()
-    assert message =~ "claude.thread_sandbox"
-
     write_workflow_file!(Workflow.workflow_file_path(), tracker_kind: "123")
     assert {:error, {:unsupported_tracker_kind, "123"}} = Config.validate!()
   end

@@ -28,23 +28,6 @@ defmodule CymphonyElixir.Config do
   - For merge-conflict requests, update the existing PR branch with latest origin/main, resolve conflicts, rerun validation, push, and move back to Human Review only after checks are green.
   """
 
-  @type claude_runtime_settings :: %{
-          approval_policy: String.t() | map(),
-          thread_sandbox: String.t(),
-          turn_sandbox_policy: map(),
-          permission_mode: String.t(),
-          allowed_tools: String.t(),
-          bare_mode: boolean(),
-          output_format: String.t(),
-          model: String.t() | nil,
-          fallback_model: String.t() | nil,
-          max_budget_usd: Decimal.t() | nil,
-          max_turns: integer() | nil,
-          turn_timeout_ms: integer(),
-          read_timeout_ms: integer(),
-          stall_timeout_ms: integer()
-        }
-
   @spec settings() :: {:ok, Schema.t()} | {:error, term()}
   def settings do
     case Workflow.current() do
@@ -80,17 +63,6 @@ defmodule CymphonyElixir.Config do
 
   def max_concurrent_agents_for_state(_state_name), do: settings!().agent.max_concurrent_agents
 
-  @spec claude_turn_sandbox_policy(Path.t() | nil) :: map()
-  def claude_turn_sandbox_policy(workspace \\ nil) do
-    case Schema.resolve_runtime_turn_sandbox_policy(settings!(), workspace) do
-      {:ok, policy} ->
-        policy
-
-      {:error, reason} ->
-        raise ArgumentError, message: "Invalid claude turn sandbox policy: #{inspect(reason)}"
-    end
-  end
-
   @spec workflow_prompt() :: String.t()
   def workflow_prompt do
     case Workflow.current() do
@@ -120,35 +92,6 @@ defmodule CymphonyElixir.Config do
   @spec validate!(Schema.t()) :: :ok | {:error, term()}
   def validate!(%Schema{} = settings) do
     validate_semantics(settings)
-  end
-
-  @spec claude_runtime_settings(Path.t() | nil, keyword()) ::
-          {:ok, claude_runtime_settings()} | {:error, term()}
-  def claude_runtime_settings(workspace \\ nil, opts \\ []) do
-    with {:ok, settings} <- settings() do
-      with {:ok, turn_sandbox_policy} <-
-             Schema.resolve_runtime_turn_sandbox_policy(settings, workspace, opts) do
-        claude = settings.claude
-
-        {:ok,
-         %{
-           approval_policy: claude.approval_policy,
-           thread_sandbox: claude.thread_sandbox,
-           turn_sandbox_policy: turn_sandbox_policy,
-           permission_mode: claude.permission_mode,
-           allowed_tools: claude.allowed_tools,
-           bare_mode: claude.bare_mode,
-           output_format: claude.output_format,
-           model: claude.model,
-           fallback_model: claude.fallback_model,
-           max_budget_usd: claude.max_budget_usd,
-           max_turns: claude.max_turns,
-           turn_timeout_ms: claude.turn_timeout_ms,
-           read_timeout_ms: claude.read_timeout_ms,
-           stall_timeout_ms: claude.stall_timeout_ms
-         }}
-      end
-    end
   end
 
   defp validate_semantics(settings) do
