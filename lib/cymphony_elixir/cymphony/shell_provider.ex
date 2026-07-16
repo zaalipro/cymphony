@@ -1,13 +1,13 @@
 defmodule CymphonyElixir.Cymphony.ShellProvider do
   @moduledoc false
 
-  @env_prefix ~w(ANTHROPIC_ API_TIMEOUT CLAUDE_CODE_)
+  @default_env_prefixes ~w(ANTHROPIC_ API_TIMEOUT CLAUDE_CODE_)
 
-  @spec load_env(String.t()) :: {:ok, map()} | {:error, :not_found}
-  def load_env(provider_name) when is_binary(provider_name) do
-    case cached(provider_name) do
+  @spec load_env(String.t(), [String.t()]) :: {:ok, map()} | {:error, :not_found}
+  def load_env(provider_name, prefixes \\ @default_env_prefixes) when is_binary(provider_name) do
+    case cached({provider_name, prefixes}) do
       {:ok, _} = result -> result
-      :miss -> fetch_and_cache(provider_name)
+      :miss -> fetch_and_cache(provider_name, prefixes)
     end
   end
 
@@ -15,11 +15,12 @@ defmodule CymphonyElixir.Cymphony.ShellProvider do
   def known_providers do
     script = """
     claude() { :; }
+    codex() { :; }
     for f in "$HOME/.cld" "$HOME/.zshrc" "$HOME/.bashrc"; do
       [ -f "$f" ] && source "$f" 2>/dev/null || true
     done
     for name in $(functions | grep "^[a-z][a-z0-9]* ()" | sed 's/ ()//' | sort -u); do
-      if [[ "$name" == c* ]] && [[ "$name" != claude ]] && [[ "$name" != _* ]]; then
+      if [[ "$name" == c* ]] && [[ "$name" != claude ]] && [[ "$name" != codex ]] && [[ "$name" != _* ]]; then
         echo "$name"
       fi
     done
@@ -36,9 +37,24 @@ defmodule CymphonyElixir.Cymphony.ShellProvider do
     end
   end
 
-  defp fetch_and_cache(provider_name) do
+  @doc false
+  @spec parse_env_output(String.t(), [String.t()]) :: map()
+  def parse_env_output(output, prefixes) do
+    output
+    |> String.split("\n", trim: true)
+    |> Enum.filter(fn line ->
+      String.contains?(line, "=") and Enum.any?(prefixes, &String.starts_with?(line, &1))
+    end)
+    |> Enum.into(%{}, fn line ->
+      [k | rest] = String.split(line, "=", parts: 2)
+      {k, Enum.join(rest, "=")}
+    end)
+  end
+
+  defp fetch_and_cache(provider_name, prefixes) do
     script = """
     claude() { :; }
+    codex() { :; }
     for f in "$HOME/.cld" "$HOME/.zshrc" "$HOME/.bashrc"; do
       [ -f "$f" ] && source "$f" 2>/dev/null || true
     done
@@ -50,8 +66,8 @@ defmodule CymphonyElixir.Cymphony.ShellProvider do
 
     case System.cmd("zsh", ["-c", script], stderr_to_stdout: true) do
       {output, 0} ->
-        env_map = parse_env_output(output)
-        put_cached(provider_name, env_map)
+        env_map = parse_env_output(output, prefixes)
+        put_cached({provider_name, prefixes}, env_map)
         {:ok, env_map}
 
       {_output, 1} ->
@@ -62,21 +78,6 @@ defmodule CymphonyElixir.Cymphony.ShellProvider do
         Logger.warning("ShellProvider exited #{code} for #{provider_name}: #{String.slice(output, 0, 200)}")
         {:error, :not_found}
     end
-  end
-
-  defp parse_env_output(output) do
-    output
-    |> String.split("\n", trim: true)
-    |> Enum.filter(&env_var?/1)
-    |> Enum.into(%{}, fn line ->
-      [k | rest] = String.split(line, "=", parts: 2)
-      {k, Enum.join(rest, "=")}
-    end)
-  end
-
-  defp env_var?(line) do
-    String.contains?(line, "=") and
-      Enum.any?(@env_prefix, &String.starts_with?(line, &1))
   end
 
   defp cached(key) do
