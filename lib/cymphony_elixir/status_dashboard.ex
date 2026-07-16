@@ -1428,6 +1428,14 @@ defmodule CymphonyElixir.StatusDashboard do
     |> String.trim()
   end
 
+  defp humanize_agent_payload(payload) do
+    payload
+    |> inspect(pretty: true, limit: 20)
+    |> String.replace("\n", " ")
+    |> sanitize_ansi_and_control_bytes()
+    |> String.trim()
+  end
+
   defp humanize_agent_payload_fallback(payload) do
     cond do
       is_binary(map_value(payload, ["session_id", :session_id])) ->
@@ -1494,14 +1502,6 @@ defmodule CymphonyElixir.StatusDashboard do
   end
 
   defp humanize_codex_event(type, _payload), do: type
-
-  defp humanize_agent_payload(payload) do
-    payload
-    |> inspect(pretty: true, limit: 20)
-    |> String.replace("\n", " ")
-    |> sanitize_ansi_and_control_bytes()
-    |> String.trim()
-  end
 
   defp sanitize_ansi_and_control_bytes(value) when is_binary(value) do
     value

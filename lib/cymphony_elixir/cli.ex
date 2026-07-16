@@ -8,19 +8,20 @@ defmodule CymphonyElixir.CLI do
 
   alias CymphonyElixir.Cymphony.Config, as: CymphonyConfig
   alias CymphonyElixir.Cymphony.Onboarding
-  alias CymphonyElixir.Cymphony.ShellProvider
   alias CymphonyElixir.Cymphony.WorkflowGenerator
 
   @acknowledgement_switch :i_understand_that_this_will_be_running_without_the_usual_guardrails
   @switches [
     {@acknowledgement_switch, :boolean},
+    agent: :string,
     background: :boolean,
     background_stop: :boolean,
-    claude_command: :string,
     concurrency: :integer,
     daemon_internal: :boolean,
+    effort: :string,
     help: :boolean,
     logs_root: :string,
+    model: :string,
     port: :integer,
     project: :string,
     provider: :string,
@@ -118,8 +119,14 @@ defmodule CymphonyElixir.CLI do
   defp expand_shorthands(["project" | _]), do: ["--help"]
   defp expand_shorthands(["projects", value | rest]), do: ["--project", value | expand_shorthands(rest)]
   defp expand_shorthands(["projects" | _]), do: ["--help"]
-  defp expand_shorthands(["c", value | rest]), do: ["--claude-command", value | expand_shorthands(rest)]
+  defp expand_shorthands(["c", value | rest]), do: ["--provider", value | expand_shorthands(rest)]
   defp expand_shorthands(["c" | _]), do: ["--help"]
+  defp expand_shorthands(["agent", value | rest]), do: ["--agent", value | expand_shorthands(rest)]
+  defp expand_shorthands(["agent" | _]), do: ["--help"]
+  defp expand_shorthands(["model", value | rest]), do: ["--model", value | expand_shorthands(rest)]
+  defp expand_shorthands(["model" | _]), do: ["--help"]
+  defp expand_shorthands(["effort", value | rest]), do: ["--effort", value | expand_shorthands(rest)]
+  defp expand_shorthands(["effort" | _]), do: ["--help"]
   defp expand_shorthands(["cr", value | rest]), do: ["--concurrency", value | expand_shorthands(rest)]
   defp expand_shorthands(["cr" | _]), do: ["--help"]
   defp expand_shorthands(["port", value | rest]), do: ["--port", value | expand_shorthands(rest)]
@@ -263,7 +270,10 @@ defmodule CymphonyElixir.CLI do
     Usage:
       cymphony                       Run with saved config (all projects)
       cymphony project frontend      Run only the "frontend" project
-      cymphony c cz                  Run with a different Claude provider (e.g. cz, ck, cm)
+      cymphony agent codex           Run with the Codex CLI agent
+      cymphony model opus            Model override passed to the agent CLI
+      cymphony effort high           Reasoning effort passed to the agent CLI
+      cymphony c cz                  Run with a different provider (e.g. cz, ck, cm)
       cymphony c cv1,cz2,cz1         Run with provider rotation (random per session)
       cymphony cr 3                  Set max concurrent agents to 3
       cymphony cr 3 c cv1,cz2        Set concurrency and provider rotation together
@@ -283,8 +293,10 @@ defmodule CymphonyElixir.CLI do
     Flags:
       --setup                  Force onboarding wizard
       --project <name>         Run a specific project
-      --provider <name>        Override the Claude provider for this run
-      --claude-command <cmd>   Override the Claude command for this run
+      --agent <kind>           Coding agent: claude or codex
+      --model <name>           Model override passed to the agent CLI
+      --effort <level>         Reasoning effort passed to the agent CLI
+      --provider <name>        Provider rotation (comma-separated auth aliases)
       --concurrency <n>        Set max concurrent agents
       --logs-root <path>       Override log directory
       --port <port>            Override HTTP server port
@@ -304,7 +316,9 @@ defmodule CymphonyElixir.CLI do
     Keyword.get(opts, :daemon_internal, false) or
       Keyword.has_key?(opts, :project) or
       Keyword.has_key?(opts, :setup) or
-      Keyword.has_key?(opts, :claude_command) or
+      Keyword.has_key?(opts, :agent) or
+      Keyword.has_key?(opts, :model) or
+      Keyword.has_key?(opts, :effort) or
       Keyword.has_key?(opts, :provider) or
       Keyword.has_key?(opts, :concurrency) or
       (positional == [] and invalid == [] and
@@ -373,15 +387,49 @@ defmodule CymphonyElixir.CLI do
         filtered_projects = filter_projects(projects, project_filter)
 
         filtered_projects =
-          case Keyword.get(opts, :claude_command) do
-            nil -> filtered_projects
-            cmd -> Enum.map(filtered_projects, &resolve_command_override(&1, cmd))
+          case Keyword.get(opts, :provider) do
+            nil ->
+              filtered_projects
+
+            value ->
+              providers = parse_provider_list(value)
+
+              Enum.map(filtered_projects, fn project ->
+                project
+                |> Map.put("provider", hd(providers))
+                |> Map.put("providers", providers)
+              end)
           end
 
         filtered_projects =
-          case Keyword.get(opts, :provider) do
-            nil -> filtered_projects
-            provider -> Enum.map(filtered_projects, &Map.put(&1, "provider", provider))
+          case Keyword.get(opts, :agent) do
+            kind when kind in ["claude", "codex"] ->
+              Enum.map(filtered_projects, &Map.put(&1, "agent", kind))
+
+            nil ->
+              filtered_projects
+
+            other ->
+              IO.puts(:stderr, "Unknown agent '#{other}' — using configured agent")
+              filtered_projects
+          end
+
+        filtered_projects =
+          case Keyword.get(opts, :model) do
+            model when is_binary(model) and model != "" ->
+              Enum.map(filtered_projects, &Map.put(&1, "model", model))
+
+            _ ->
+              filtered_projects
+          end
+
+        filtered_projects =
+          case Keyword.get(opts, :effort) do
+            effort when is_binary(effort) and effort != "" ->
+              Enum.map(filtered_projects, &Map.put(&1, "effort", effort))
+
+            _ ->
+              filtered_projects
           end
 
         filtered_projects =
@@ -417,29 +465,6 @@ defmodule CymphonyElixir.CLI do
 
       {:error, reason} ->
         {:error, "Configuration error: #{inspect(reason)}"}
-    end
-  end
-
-  defp resolve_command_override(project, cmd) do
-    providers = parse_provider_list(cmd)
-
-    case providers do
-      [single] ->
-        case ShellProvider.load_env(single) do
-          {:ok, _env} -> Map.put(project, "provider", single)
-          {:error, :not_found} -> Map.put(project, "claude_command", cmd)
-        end
-
-      multiple ->
-        case ShellProvider.load_env(hd(multiple)) do
-          {:ok, _env} ->
-            project
-            |> Map.put("provider", hd(multiple))
-            |> Map.put("providers", multiple)
-
-          {:error, :not_found} ->
-            Map.put(project, "claude_command", cmd)
-        end
     end
   end
 
