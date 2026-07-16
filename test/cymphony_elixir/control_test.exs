@@ -31,6 +31,17 @@ defmodule CymphonyElixirWeb.ControlTest do
       assert Control.scope("Farm") == {:project, "Farm"}
     end
 
+    test "parse_agent_settings validates kind and normalizes params" do
+      assert {:ok, %{"agent" => "codex", "model" => "m", "effort" => "high"}} =
+               Control.parse_agent_settings(%{"kind" => "codex", "model" => "m", "effort" => "high"})
+
+      assert {:ok, %{"model" => "m"}} = Control.parse_agent_settings(%{"model" => "m"})
+      assert {:ok, %{"model" => ""}} = Control.parse_agent_settings(%{"model" => "  "})
+      assert :error = Control.parse_agent_settings(%{"kind" => "gemini"})
+      assert :error = Control.parse_agent_settings(%{})
+      assert :error = Control.parse_agent_settings(%{"other" => "x"})
+    end
+
     test "parse_concurrency/1 accepts positive integers/strings and rejects the rest" do
       assert Control.parse_concurrency(3) == {:ok, 3}
       assert Control.parse_concurrency("5") == {:ok, 5}
@@ -66,6 +77,19 @@ defmodule CymphonyElixirWeb.ControlTest do
 
       {:ok, cfg} = Jason.decode(File.read!(Path.join(tmp, "config.json")))
       assert Enum.all?(cfg["projects"], &(&1["max_concurrent_agents"] == 4))
+    end
+
+    test "set_agent_settings fans out to orchestrators and persists", %{tmp: tmp} do
+      start_orch!("alpha")
+      start_orch!("beta")
+
+      assert :ok = Control.set_agent_settings(:all, %{"agent" => "codex", "effort" => "high"})
+
+      assert_receive {:orch, _, {:set_agent_settings, %{"agent" => "codex", "effort" => "high"}}}
+      assert_receive {:orch, _, {:set_agent_settings, %{"agent" => "codex", "effort" => "high"}}}
+
+      {:ok, cfg} = Jason.decode(File.read!(Path.join(tmp, "config.json")))
+      assert Enum.all?(cfg["projects"], &(&1["agent"] == "codex" and &1["effort"] == "high"))
     end
 
     test "set_providers({:project, name}, list) targets only the named orchestrator", %{tmp: tmp} do

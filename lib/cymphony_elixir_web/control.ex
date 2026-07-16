@@ -47,6 +47,45 @@ defmodule CymphonyElixirWeb.Control do
     )
   end
 
+  @spec set_agent_settings(scope(), map()) :: :ok | {:error, :not_found}
+  def set_agent_settings(scope, settings) when is_map(settings) do
+    apply_scope(
+      scope,
+      &Orchestrator.set_agent_settings(&1, settings),
+      fn project -> CymphonyConfig.update_agent_settings(project, settings) end
+    )
+  end
+
+  @doc """
+  Parses API/LiveView agent-settings params (`kind`/`model`/`effort`, all
+  optional but at least one required) into the settings map
+  `update_agent_settings/2` accepts (`"agent"`/`"model"`/`"effort"` keys,
+  whitespace trimmed — an all-whitespace value becomes `""`, which clears the
+  key). Returns `:error` on an unknown kind or when no recognized key is
+  present.
+  """
+  @spec parse_agent_settings(map()) :: {:ok, map()} | :error
+  def parse_agent_settings(params) when is_map(params) do
+    settings =
+      %{}
+      |> put_param(params, "kind", "agent")
+      |> put_param(params, "model", "model")
+      |> put_param(params, "effort", "effort")
+
+    cond do
+      map_size(settings) == 0 -> :error
+      Map.get(settings, "agent") not in [nil, "claude", "codex"] -> :error
+      true -> {:ok, settings}
+    end
+  end
+
+  defp put_param(settings, params, from_key, to_key) do
+    case Map.get(params, from_key) do
+      value when is_binary(value) -> Map.put(settings, to_key, String.trim(value))
+      _ -> settings
+    end
+  end
+
   @doc """
   Parses a concurrency value (integer or string) into `{:ok, pos_integer}` or
   `:error`.

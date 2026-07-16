@@ -962,6 +962,48 @@ defmodule CymphonyElixir.ExtensionsTest do
       assert project["providers"] == ["cv1", "cz2"]
     end
 
+    test "POST /api/v1/agent updates settings, persists, and validates kind" do
+      tmp = Path.join(System.tmp_dir!(), "cymphony-agent-api-#{System.unique_integer([:positive])}")
+      File.mkdir_p!(tmp)
+      File.write!(Path.join(tmp, "config.json"), "{}")
+      Application.put_env(:cymphony_elixir, :config_dir_override, tmp)
+
+      on_exit(fn ->
+        Application.delete_env(:cymphony_elixir, :config_dir_override)
+        File.rm_rf!(tmp)
+      end)
+
+      orchestrator_name = Module.concat(__MODULE__, :AgentApiOrchestrator)
+
+      {:ok, _pid} =
+        StaticOrchestrator.start_link(
+          name: orchestrator_name,
+          snapshot: static_snapshot(),
+          recipient: self()
+        )
+
+      start_test_endpoint(orchestrator: orchestrator_name, snapshot_timeout_ms: 50)
+
+      conn = post(build_conn(), "/api/v1/agent", %{"kind" => "codex", "effort" => "high"})
+      assert %{status: 202} = conn
+      assert %{"agent" => "codex", "effort" => "high"} = Jason.decode!(conn.resp_body)
+
+      assert_receive {:orchestrator_call, {:set_agent_settings, %{"agent" => "codex", "effort" => "high"}}},
+                     1_000
+
+      {:ok, persisted} = Jason.decode(File.read!(Path.join(tmp, "config.json")))
+      assert persisted["agent"] == "codex"
+      assert persisted["effort"] == "high"
+
+      assert json_response(post(build_conn(), "/api/v1/agent", %{"kind" => "gemini"}), 422) ==
+               %{
+                 "error" => %{
+                   "code" => "invalid_agent_settings",
+                   "message" => "body must include at least one of kind/model/effort; kind must be claude or codex"
+                 }
+               }
+    end
+
     test "POST /api/v1/providers rejects empty value with 422" do
       orchestrator_name = Module.concat(__MODULE__, :ProvidersApiInvalidOrchestrator)
 

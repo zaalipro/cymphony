@@ -158,6 +158,33 @@ defmodule CymphonyElixirWeb.ObservabilityApiController do
     end
   end
 
+  @spec agent(Conn.t(), map()) :: Conn.t()
+  def agent(conn, params) do
+    project = params["project"]
+
+    case Control.parse_agent_settings(params) do
+      {:ok, settings} ->
+        Control.set_agent_settings(Control.scope(project), settings)
+
+        conn
+        |> put_status(202)
+        |> json(%{
+          agent: settings["agent"],
+          model: settings["model"],
+          effort: settings["effort"],
+          project: project
+        })
+
+      :error ->
+        error_response(
+          conn,
+          422,
+          "invalid_agent_settings",
+          "body must include at least one of kind/model/effort; kind must be claude or codex"
+        )
+    end
+  end
+
   @spec method_not_allowed(Conn.t(), map()) :: Conn.t()
   def method_not_allowed(conn, _params) do
     error_response(conn, 405, "method_not_allowed", "Method not allowed")
