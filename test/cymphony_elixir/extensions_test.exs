@@ -992,8 +992,9 @@ defmodule CymphonyElixir.ExtensionsTest do
                      1_000
 
       {:ok, persisted} = Jason.decode(File.read!(Path.join(tmp, "config.json")))
-      assert persisted["agent"] == "codex"
-      assert persisted["effort"] == "high"
+      [project | _] = persisted["projects"]
+      assert project["agent"] == "codex"
+      assert project["effort"] == "high"
 
       assert json_response(post(build_conn(), "/api/v1/agent", %{"kind" => "gemini"}), 422) ==
                %{
