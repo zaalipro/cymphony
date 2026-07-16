@@ -52,6 +52,57 @@ defmodule CymphonyElixir.RunSpecResolver do
     end)
   end
 
+  @doc """
+  Extract overrides from the first `cymphony:` directive line in the issue
+  description. Keys: agent|model|effort|provider as `key=value` pairs.
+  `agent` and `effort` values are lowercased; `model`/`provider` preserved.
+  """
+  @spec from_description(String.t() | nil) :: overrides()
+  def from_description(description) when is_binary(description) do
+    description
+    |> String.split(["\n", "\r\n"], trim: true)
+    |> Enum.find_value(%{}, fn line ->
+      case parse_directive_line(String.trim(line)) do
+        overrides when map_size(overrides) > 0 -> overrides
+        _ -> nil
+      end
+    end)
+  end
+
+  def from_description(_description), do: %{}
+
+  defp parse_directive_line("cymphony:" <> rest), do: parse_directive_pairs(rest)
+  defp parse_directive_line("Cymphony:" <> rest), do: parse_directive_pairs(rest)
+  defp parse_directive_line("CYMPHONY:" <> rest), do: parse_directive_pairs(rest)
+  defp parse_directive_line(_line), do: %{}
+
+  defp parse_directive_pairs(rest) do
+    pair_pattern = Regex.compile!("^([A-Za-z]+)=([A-Za-z0-9._/-]+)$")
+    whitespace = Regex.compile!("\\s+")
+
+    rest
+    |> String.split(whitespace, trim: true)
+    |> Enum.reduce(%{}, fn token, acc ->
+      case Regex.run(pair_pattern, token) do
+        [_, raw_key, raw_value] ->
+          key = String.downcase(raw_key)
+
+          case Map.fetch(@override_keys, key) do
+            {:ok, field} ->
+              value = if field in [:agent_kind, :effort], do: String.downcase(raw_value), else: raw_value
+              put_validated(acc, field, value)
+
+            :error ->
+              Logger.debug("run_spec: unknown directive key #{inspect(raw_key)} — ignored")
+              acc
+          end
+
+        nil ->
+          acc
+      end
+    end)
+  end
+
   defp parse_label(label) when is_binary(label) do
     case String.split(label, ":", parts: 2) do
       [prefix, value] when is_map_key(@override_keys, prefix) ->
