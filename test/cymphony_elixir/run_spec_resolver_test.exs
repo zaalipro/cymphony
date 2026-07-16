@@ -113,7 +113,66 @@ defmodule CymphonyElixir.RunSpecResolverTest do
     end
   end
 
-  # resolve/2 is exercised in a later task; the issue/1 helper stays for it.
+  describe "resolve/2" do
+    defp config_with(agent_overrides) do
+      {:ok, settings} = CymphonyElixir.Config.Schema.parse(%{"agent" => agent_overrides})
+      settings
+    end
+
+    test "per-field precedence: labels > directive > config" do
+      issue =
+        issue(
+          labels: ["effort:xhigh"],
+          description: "cymphony: model=directive-model effort=low"
+        )
+
+      config = config_with(%{"kind" => "claude", "model" => "config-model", "effort" => "medium"})
+
+      resolved = RunSpecResolver.resolve(issue, config)
+
+      assert resolved.agent_kind == "claude"
+      assert resolved.model == "directive-model"
+      assert resolved.effort == "xhigh"
+      assert resolved.source == :labels
+    end
+
+    test "config-only issue resolves to project defaults with source :config" do
+      resolved = RunSpecResolver.resolve(issue(labels: [], description: "plain"), config_with(%{"kind" => "codex"}))
+
+      assert resolved.agent_kind == "codex"
+      assert resolved.model == nil
+      assert resolved.effort == nil
+      assert resolved.provider == nil
+      assert resolved.source == :config
+    end
+
+    test "label agent switch does not implicitly pin that kind's provider" do
+      {:ok, settings} =
+        CymphonyElixir.Config.Schema.parse(%{
+          "agent" => %{"kind" => "claude"},
+          "claude" => %{"provider" => "cz"},
+          "codex" => %{"provider" => "oa"}
+        })
+
+      resolved = RunSpecResolver.resolve(issue(labels: ["agent:codex"]), settings)
+      assert resolved.agent_kind == "codex"
+      # provider stays nil here: rotation/config provider selection is the
+      # orchestrator's job; the resolver only pins EXPLICIT provider overrides.
+      assert resolved.provider == nil
+      assert resolved.source == :labels
+    end
+
+    test "explicit provider label pins the provider; directive source reported when only directive contributes" do
+      resolved = RunSpecResolver.resolve(issue(labels: ["provider:cz1"]), config_with(%{}))
+      assert resolved.provider == "cz1"
+      assert resolved.source == :labels
+
+      directive_only = RunSpecResolver.resolve(issue(labels: [], description: "cymphony: model=m1"), config_with(%{}))
+      assert directive_only.model == "m1"
+      assert directive_only.source == :directive
+    end
+  end
+
   test "issue helper builds a valid struct" do
     assert %Issue{labels: ["a"]} = issue(labels: ["a"])
   end

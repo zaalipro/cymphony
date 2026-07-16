@@ -16,6 +16,7 @@ defmodule CymphonyElixir.RunSpecResolver do
   require Logger
 
   alias CymphonyElixir.Agent
+  alias CymphonyElixir.Linear.Issue
 
   @override_keys %{
     "agent" => :agent_kind,
@@ -30,6 +31,39 @@ defmodule CymphonyElixir.RunSpecResolver do
           optional(:effort) => String.t(),
           optional(:provider) => String.t()
         }
+
+  @type resolved :: %{
+          agent_kind: String.t(),
+          model: String.t() | nil,
+          effort: String.t() | nil,
+          provider: String.t() | nil,
+          source: :labels | :directive | :config
+        }
+
+  @doc """
+  Resolve the effective run spec for an issue against the project config.
+  Field-level precedence: labels > description directive > config defaults.
+  `source` reports the highest source that contributed any field (for logs).
+  """
+  @spec resolve(Issue.t(), term()) :: resolved()
+  def resolve(%Issue{} = issue, config) do
+    label_overrides = from_labels(issue.labels || [])
+    directive_overrides = from_description(issue.description)
+
+    merged = Map.merge(directive_overrides, label_overrides)
+
+    %{
+      agent_kind: merged[:agent_kind] || config.agent.kind,
+      model: merged[:model] || config.agent.model,
+      effort: merged[:effort] || config.agent.effort,
+      provider: merged[:provider],
+      source: source_of(label_overrides, directive_overrides)
+    }
+  end
+
+  defp source_of(labels, _directive) when map_size(labels) > 0, do: :labels
+  defp source_of(_labels, directive) when map_size(directive) > 0, do: :directive
+  defp source_of(_labels, _directive), do: :config
 
   @doc "Extract overrides from Linear labels (already downcased by the adapter)."
   @spec from_labels([String.t()]) :: overrides()
