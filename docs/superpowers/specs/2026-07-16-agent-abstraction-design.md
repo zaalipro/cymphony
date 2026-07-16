@@ -132,13 +132,15 @@ Argv (verified against codex-cli 0.144.5; probed live):
 ```
 # first turn
 codex exec --json --skip-git-repo-check [-m <model>] [-c model_reasoning_effort=<effort>]
-      [-s <sandbox>] [-c mcp_servers.cymphony-linear...] <prompt>
+      [-c sandbox_mode=<sandbox>] [-c mcp_servers.cymphony-linear...] <prompt>
 # resume
 codex exec resume <session_id> --json --skip-git-repo-check [same flags] <prompt>
 ```
 
 - Sandbox: from `codex.sandbox` config (`read-only` | `workspace-write` | `danger-full-access`,
-  default `workspace-write`). Network for workspace-write via
+  default `workspace-write`), passed as `-c sandbox_mode="<value>"` — NOT `-s`, because
+  `codex exec resume` does not accept `-s` (verified live; `-c` works on both paths).
+  Network for workspace-write via
   `-c sandbox_workspace_write.network_access=true` when `codex.network_access` (default true —
   agents need git push).
 - Approvals: headless exec never prompts interactively; no approval flag needed.
