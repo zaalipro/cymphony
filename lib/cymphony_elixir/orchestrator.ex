@@ -1140,6 +1140,23 @@ defmodule CymphonyElixir.Orchestrator do
   defp maybe_override(opts, _key, ""), do: opts
   defp maybe_override(opts, key, value) when is_binary(value), do: Keyword.put(opts, key, value)
 
+  # "agent" must stay a valid kind; absent/invalid keeps the current value.
+  defp normalized_kind_setting(settings, current) do
+    case Map.get(settings, "agent") do
+      value when value in ["claude", "codex"] -> value
+      _ -> current
+    end
+  end
+
+  # model/effort: absent keeps current; "" clears to nil (agent default).
+  defp cleared_setting(settings, key, current) do
+    case Map.fetch(settings, key) do
+      {:ok, ""} -> nil
+      {:ok, value} when is_binary(value) -> value
+      _ -> current
+    end
+  end
+
   defp max_retry_attempts(%State{} = state), do: state_config(state).agent.max_retry_attempts
 
   # Reschedule a failed issue, or abandon it once it has failed
@@ -1392,6 +1409,19 @@ defmodule CymphonyElixir.Orchestrator do
   def set_providers(_server, _providers), do: {:error, :invalid_providers}
 
   @doc """
+  Update the runtime agent defaults (`"agent"` kind, `"model"`, `"effort"`)
+  for subsequent dispatches. Empty-string model/effort clear to nil (agent
+  default); an invalid kind keeps the current one. Providers are re-extracted
+  because switching kinds switches the rotation source section.
+  """
+  @spec set_agent_settings(GenServer.server(), map()) :: :ok | :unavailable
+  def set_agent_settings(server, settings) when is_map(settings) do
+    GenServer.call(server, {:set_agent_settings, settings})
+  catch
+    :exit, _ -> :unavailable
+  end
+
+  @doc """
   Kill a running session and immediately re-dispatch it with pinned run-spec
   overrides (`:provider`, `:model`, `:effort` — all optional, empty/absent
   keys keep label/config-resolved values). Agent kind is intentionally not
@@ -1596,6 +1626,30 @@ defmodule CymphonyElixir.Orchestrator do
 
   def handle_call({:set_providers, _providers}, _from, state) do
     {:reply, {:error, :invalid_providers}, state}
+  end
+
+  def handle_call({:set_agent_settings, settings}, _from, state) do
+    new_config =
+      case state.config do
+        nil ->
+          state.config
+
+        config ->
+          agent = config.agent
+
+          agent = %{
+            agent
+            | kind: normalized_kind_setting(settings, agent.kind),
+              model: cleared_setting(settings, "model", agent.model),
+              effort: cleared_setting(settings, "effort", agent.effort)
+          }
+
+          %{config | agent: agent}
+      end
+
+    Logger.info("Agent settings updated: #{inspect(Map.take(settings, ["agent", "model", "effort"]))}")
+    notify_dashboard()
+    {:reply, :ok, %{state | config: new_config, providers: extract_providers(new_config)}}
   end
 
   def handle_call({:set_issue_run_spec, issue_id, overrides}, _from, state) do

@@ -156,6 +156,55 @@ defmodule CymphonyElixir.Cymphony.Config do
     |> Map.put("providers", providers)
   end
 
+  @agent_setting_keys ["agent", "model", "effort"]
+
+  @doc """
+  Merges agent settings (`"agent"`, `"model"`, `"effort"`) onto the named
+  project (or all projects when `project_name` is nil) and saves. Keys absent
+  from `settings` are untouched; empty-string values delete the key.
+  """
+  @spec update_agent_settings(String.t() | nil, map()) ::
+          :ok | {:error, :invalid_agent_kind | term()}
+  def update_agent_settings(project_name, settings) when is_map(settings) do
+    with :ok <- validate_agent_kind(Map.get(settings, "agent")),
+         {:ok, config} <- load(),
+         {:ok, updated} <- apply_agent_settings(config, project_name, settings) do
+      save(updated)
+    end
+  end
+
+  defp validate_agent_kind(nil), do: :ok
+  defp validate_agent_kind(kind) when kind in ["claude", "codex"], do: :ok
+  defp validate_agent_kind(_kind), do: {:error, :invalid_agent_kind}
+
+  defp apply_agent_settings(%{"projects" => projects} = config, project_name, settings)
+       when is_list(projects) do
+    updated_projects =
+      Enum.map(projects, fn project ->
+        if project_name == nil or Map.get(project, "name") == project_name do
+          merge_agent_settings(project, settings)
+        else
+          project
+        end
+      end)
+
+    {:ok, Map.put(config, "projects", updated_projects)}
+  end
+
+  defp apply_agent_settings(config, _project_name, settings) when is_map(config) do
+    {:ok, merge_agent_settings(config, settings)}
+  end
+
+  defp merge_agent_settings(map, settings) do
+    Enum.reduce(@agent_setting_keys, map, fn key, acc ->
+      case Map.fetch(settings, key) do
+        {:ok, ""} -> Map.delete(acc, key)
+        {:ok, value} when is_binary(value) -> Map.put(acc, key, value)
+        _ -> acc
+      end
+    end)
+  end
+
   @doc """
   Parses a comma-separated provider list into a normalized list of names.
   Trims whitespace and drops empty segments. Returns `{:error, :empty}` if no
