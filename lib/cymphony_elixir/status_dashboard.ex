@@ -1409,25 +1409,15 @@ defmodule CymphonyElixir.StatusDashboard do
   defp unwrap_agent_message_payload(message), do: message
 
   defp humanize_agent_payload(%{} = payload) do
-    case map_value(payload, ["method", :method]) do
-      method when is_binary(method) ->
+    case {map_value(payload, ["method", :method]), map_value(payload, ["type", :type])} do
+      {method, _} when is_binary(method) ->
         humanize_agent_method(method, payload)
 
+      {_, type} when is_binary(type) ->
+        humanize_codex_event(type, payload)
+
       _ ->
-        cond do
-          is_binary(map_value(payload, ["session_id", :session_id])) ->
-            "session started (#{map_value(payload, ["session_id", :session_id])})"
-
-          match?(%{"error" => _}, payload) ->
-            "error: #{format_error_value(Map.get(payload, "error"))}"
-
-          true ->
-            payload
-            |> inspect(pretty: true, limit: 30)
-            |> String.replace("\n", " ")
-            |> sanitize_ansi_and_control_bytes()
-            |> String.trim()
-        end
+        humanize_agent_payload_fallback(payload)
     end
   end
 
@@ -1437,6 +1427,73 @@ defmodule CymphonyElixir.StatusDashboard do
     |> sanitize_ansi_and_control_bytes()
     |> String.trim()
   end
+
+  defp humanize_agent_payload_fallback(payload) do
+    cond do
+      is_binary(map_value(payload, ["session_id", :session_id])) ->
+        "session started (#{map_value(payload, ["session_id", :session_id])})"
+
+      match?(%{"error" => _}, payload) ->
+        "error: #{format_error_value(Map.get(payload, "error"))}"
+
+      true ->
+        payload
+        |> inspect(pretty: true, limit: 30)
+        |> String.replace("\n", " ")
+        |> sanitize_ansi_and_control_bytes()
+        |> String.trim()
+    end
+  end
+
+  # Codex `exec --json` events carry {"type": "…"} (dot-separated) rather than
+  # the {"method": "…"} shape of the app-server protocol above.
+  defp humanize_codex_event("thread.started", payload) do
+    case map_value(payload, ["thread_id", :thread_id]) do
+      thread_id when is_binary(thread_id) -> "thread started (#{short_id(thread_id)})"
+      _ -> "thread started"
+    end
+  end
+
+  defp humanize_codex_event("turn.started", _payload), do: "turn started"
+
+  defp humanize_codex_event("turn.completed", payload) do
+    case map_value(payload, ["usage", :usage]) do
+      %{} = usage ->
+        input = map_value(usage, ["input_tokens", :input_tokens]) || 0
+        output = map_value(usage, ["output_tokens", :output_tokens]) || 0
+        "turn completed (tokens in #{input} / out #{output})"
+
+      _ ->
+        "turn completed"
+    end
+  end
+
+  defp humanize_codex_event("turn.failed", payload) do
+    reason =
+      map_path(payload, ["error", "message"]) ||
+        map_path(payload, [:error, :message]) ||
+        "unknown error"
+
+    "turn failed: #{reason}"
+  end
+
+  defp humanize_codex_event("item." <> lifecycle, payload) do
+    item = map_value(payload, ["item", :item]) || %{}
+    item_type = map_value(item, ["type", :type])
+
+    detail =
+      case item_type do
+        "agent_message" -> map_value(item, ["text", :text])
+        "command_execution" -> map_value(item, ["command", :command])
+        "reasoning" -> map_value(item, ["text", :text])
+        _ -> nil
+      end
+
+    base = "item #{lifecycle}: #{humanize_item_type(item_type)}"
+    if is_binary(detail) and detail != "", do: "#{base} — #{truncate(detail, 80)}", else: base
+  end
+
+  defp humanize_codex_event(type, _payload), do: type
 
   defp humanize_agent_payload(payload) do
     payload

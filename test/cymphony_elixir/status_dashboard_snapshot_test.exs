@@ -285,4 +285,47 @@ defmodule CymphonyElixir.StatusDashboardSnapshotTest do
       }
     }
   end
+
+  describe "codex JSONL event humanization" do
+    test "thread.started / turn lifecycle / agent_message / usage" do
+      assert StatusDashboard.humanize_agent_message(%{
+               event: :stream_event,
+               message: %{"type" => "thread.started", "thread_id" => "t-12345678"}
+             }) =~ "thread started"
+
+      assert StatusDashboard.humanize_agent_message(%{
+               event: :stream_event,
+               message: %{"type" => "turn.started"}
+             }) == "turn started"
+
+      assert StatusDashboard.humanize_agent_message(%{
+               event: :stream_event,
+               message: %{
+                 "type" => "item.completed",
+                 "item" => %{"id" => "item_0", "type" => "agent_message", "text" => "did the thing"}
+               }
+             }) =~ "did the thing"
+
+      assert StatusDashboard.humanize_agent_message(%{
+               event: :stream_event,
+               message: %{
+                 "type" => "item.started",
+                 "item" => %{"id" => "item_1", "type" => "command_execution", "command" => "mix test"}
+               }
+             }) =~ "mix test"
+
+      assert StatusDashboard.humanize_agent_message(%{
+               event: :stream_event,
+               message: %{
+                 "type" => "turn.completed",
+                 "usage" => %{"input_tokens" => 10, "output_tokens" => 5}
+               }
+             }) =~ "turn completed"
+
+      assert StatusDashboard.humanize_agent_message(%{
+               event: :stream_event,
+               message: %{"type" => "turn.failed", "error" => %{"message" => "boom"}}
+             }) =~ "boom"
+    end
+  end
 end
