@@ -857,13 +857,16 @@ defmodule CymphonyElixirWeb.DashboardLive do
     |> assign(:last_payload_refresh, System.monotonic_time(:millisecond))
   end
 
-  # Suggestions only — values are pass-through free text; both CLIs evolve
-  # their model lists faster than we release.
-  defp model_suggestions("codex"), do: ["gpt-5.2-codex", "gpt-5.2", "o4-mini"]
-  defp model_suggestions(_kind), do: ["sonnet", "opus", "haiku"]
+  # Suggestions only — values are pass-through free text. Codex entries come
+  # from the live `codex debug models` catalog (cached); claude from its
+  # stable alias vocabulary.
+  defp model_suggestions(kind) do
+    kind
+    |> CymphonyElixir.AgentCatalog.models()
+    |> Enum.map(& &1.value)
+  end
 
-  defp effort_levels("codex"), do: ["minimal", "low", "medium", "high", "xhigh"]
-  defp effort_levels(_kind), do: ["low", "medium", "high", "xhigh", "max"]
+  defp effort_levels(kind), do: CymphonyElixir.AgentCatalog.efforts(kind, nil)
 
   defp orchestrator do
     Endpoint.config(:orchestrator) || CymphonyElixir.Orchestrator

@@ -12,8 +12,19 @@ defmodule CymphonyElixir.Cymphony.OnboardingTest do
     File.mkdir_p!(tmp)
     Application.put_env(:cymphony_elixir, :config_dir_override, tmp)
 
+    # Pin the codex catalog so the numbered menus are deterministic regardless
+    # of whether a codex binary (and which version) is installed locally.
+    CymphonyElixir.AgentCatalog.clear_cache()
+
+    Application.put_env(:cymphony_elixir, :codex_catalog_fetcher, fn ->
+      {:ok,
+       ~s({"models": [{"slug": "gpt-5.2-codex", "description": "Test catalog model", "default_reasoning_level": "medium", "supported_reasoning_levels": [{"effort": "low"}, {"effort": "high"}], "visibility": "list", "priority": 1}]})}
+    end)
+
     on_exit(fn ->
       Application.delete_env(:cymphony_elixir, :config_dir_override)
+      Application.delete_env(:cymphony_elixir, :codex_catalog_fetcher)
+      CymphonyElixir.AgentCatalog.clear_cache()
       File.rm_rf!(tmp)
     end)
 
@@ -56,7 +67,7 @@ defmodule CymphonyElixir.Cymphony.OnboardingTest do
 
     assert output =~ "Model:"
     assert output =~ "1) agent default"
-    assert output =~ "2) sonnet (balanced)"
+    assert output =~ "2) sonnet — Balanced speed and capability"
     assert output =~ "Reasoning effort:"
 
     {:ok, config} = CymphonyConfig.load()
@@ -84,7 +95,8 @@ defmodule CymphonyElixir.Cymphony.OnboardingTest do
 
     {{:ok, _config}, output} = run_wizard(answers)
 
-    assert output =~ "gpt-5.2-codex"
+    # Codex menu comes from the (stubbed) live catalog, description included.
+    assert output =~ "gpt-5.2-codex — Test catalog model"
 
     {:ok, config} = CymphonyConfig.load()
     [project] = CymphonyConfig.projects(config)

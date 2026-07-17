@@ -125,31 +125,33 @@ defmodule CymphonyElixir.Cymphony.Onboarding do
     end
   end
 
-  # {label shown in the menu, value stored in config; nil = agent default}
-  defp model_choices("codex") do
-    [
-      {"agent default", nil},
-      {"gpt-5.2-codex", "gpt-5.2-codex"},
-      {"gpt-5.2", "gpt-5.2"},
-      {"o4-mini", "o4-mini"}
-    ]
+  # {label shown in the menu, value stored in config; nil = agent default}.
+  # Codex choices come from the live `codex debug models` catalog (with
+  # per-model descriptions); claude uses its stable alias vocabulary.
+  defp model_choices(agent_kind) do
+    fetched =
+      agent_kind
+      |> CymphonyElixir.AgentCatalog.models()
+      |> Enum.map(fn model ->
+        label =
+          case model.description do
+            desc when is_binary(desc) and desc != "" -> "#{model.label} — #{desc}"
+            _ -> model.label
+          end
+
+        {label, model.value}
+      end)
+
+    [{"agent default", nil} | fetched]
   end
 
-  defp model_choices(_claude) do
-    [
-      {"agent default", nil},
-      {"sonnet (balanced)", "sonnet"},
-      {"opus (most capable)", "opus"},
-      {"haiku (fastest)", "haiku"}
-    ]
-  end
+  defp effort_choices(agent_kind) do
+    levels =
+      agent_kind
+      |> CymphonyElixir.AgentCatalog.efforts(nil)
+      |> Enum.map(fn level -> {level, level} end)
 
-  defp effort_choices("codex") do
-    [{"agent default", nil}, {"minimal", "minimal"}, {"low", "low"}, {"medium", "medium"}, {"high", "high"}, {"xhigh", "xhigh"}]
-  end
-
-  defp effort_choices(_claude) do
-    [{"agent default", nil}, {"low", "low"}, {"medium", "medium"}, {"high", "high"}, {"xhigh", "xhigh"}, {"max", "max"}]
+    [{"agent default", nil} | levels]
   end
 
   # Numbered menu: pick by number, Enter for option 1, or type a custom value
