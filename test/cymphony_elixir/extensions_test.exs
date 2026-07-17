@@ -890,6 +890,22 @@ defmodule CymphonyElixir.ExtensionsTest do
       refute html =~ "command-bar-row--ops"
     end
 
+    test "root layout carries the prefs bootstrap and wiring scripts" do
+      orchestrator_name = Module.concat(__MODULE__, :PrefsLayoutOrchestrator)
+
+      {:ok, _pid} =
+        StaticOrchestrator.start_link(name: orchestrator_name, snapshot: static_snapshot())
+
+      start_test_endpoint(orchestrator: orchestrator_name, snapshot_timeout_ms: 50)
+
+      html = html_response(get(build_conn(), "/"), 200)
+
+      assert html =~ "cymphony-prefs"
+      assert html =~ "data-hidden-sections"
+      assert html =~ "data-collapse-toggle"
+      assert html =~ "syncPrefControls"
+    end
+
     test "pause_dispatch sends :pause to the orchestrator" do
       orchestrator_name = Module.concat(__MODULE__, :PauseLiveOrchestrator)
 
