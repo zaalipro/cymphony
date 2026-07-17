@@ -1588,11 +1588,28 @@ Minimum endpoints:
     }
     ```
 
+Optional operational-control endpoints (extension; all return `202 Accepted` and accept an
+optional `?project=<name>` scope):
+
+- `POST /api/v1/pause` / `POST /api/v1/resume` — stop/start dispatching new issues; running
+  sessions complete normally.
+- `POST /api/v1/concurrency` — body `{"value": <int>}`; updates `max_concurrent_agents` at
+  runtime and persists to the operator config store.
+- `POST /api/v1/providers` — body `{"value": "a1,a2"}`; updates the active agent kind's
+  provider rotation; applies to subsequent dispatches only.
+- `POST /api/v1/agent` — body with any of `kind` (`"claude"`/`"codex"`), `model`, `effort`
+  (empty string clears model/effort to the agent default); updates runtime agent settings and
+  persists; applies to subsequent dispatches.
+
+Dashboard display preferences (density, hidden sections, visible columns, list lengths) are
+client-side only (browser localStorage); they are not server state and have no API surface.
+
 API design notes:
 
 - The JSON shapes above are the recommended baseline for interoperability and debugging ergonomics.
 - Implementations may add fields, but should avoid breaking existing fields within a version.
-- Endpoints should be read-only except for operational triggers like `/refresh`.
+- Endpoints should be read-only except for operational triggers like `/refresh` and the
+  operational-control endpoints above.
 - Unsupported methods on defined routes should return `405 Method Not Allowed`.
 - API errors should use a JSON envelope such as `{"error":{"code":"...","message":"..."}}`.
 - If the dashboard is a client-side app, it should consume this API rather than duplicating state

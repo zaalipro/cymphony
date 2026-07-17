@@ -402,7 +402,7 @@ When you list multiple providers, Cymphony picks one **at random** for each new 
 
 You can change a project's provider list **at runtime** without restarting:
 
-- **Dashboard**: in each project's section header, edit the `claude command` input (e.g. `cv1,cz`) and press Enter. Persisted to `config.json`, applied to the next dispatch.
+- **Dashboard**: in each project's section header, edit the `providers` input (e.g. `cv1,cz`) and press Enter. Persisted to `config.json`, applied to the next dispatch.
 - **API**: `curl -X POST 'http://localhost:4089/api/v1/providers?project=MyApp' -d '{"value":"cv1,cz"}'`
 - **Per-session live switch**: expand any running session row, type a provider in the per-session form, click **Set** — Cymphony kills that session and immediately re-dispatches it with the new provider.
 
@@ -417,7 +417,7 @@ Different projects can use different providers. Either edit `~/.cymphony/config.
 ]
 ```
 
-Or set them per-project from the dashboard's project header (the `claude command` input is per-project — each project section has its own).
+Or set them per-project from the dashboard's project header (the `providers` input is per-project — each project section has its own; the same header also carries agent/model/effort controls).
 
 ---
 
@@ -454,7 +454,7 @@ Start with `cymphony port 4089`, open `http://localhost:4089`.
 The dashboard shows:
 
 - **Command bar (top)** — running / retry / token / runtime / throughput counters; polling cadence; rate-limit remaining; global Pause-all / Resume-all
-- **Per-project sections** — one card per project. Header has the project name, "X/Y running" count, paused state, inline `concurrency` and `claude command` inputs, and Pause/Resume button
+- **Per-project sections** — one card per project. Header has the project name, "X/Y running" count, paused state, inline `concurrency`, `agent`, `model`, `effort`, and `providers` controls, and Pause/Resume button
 - **Compact session rows** — Linear ID, title, state, provider, host, runtime, total tokens, Kill button. Click a row to expand: session ID, workspace path, recent log events, per-session provider override
 - **Retry queue** — inline at the bottom of each project section
 - **Recent completions** — global ring buffer of the last 100 finished sessions
