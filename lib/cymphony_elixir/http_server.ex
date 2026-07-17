@@ -20,7 +20,7 @@ defmodule CymphonyElixir.HttpServer do
   def start_link(opts \\ []) do
     case Keyword.get(opts, :port, Config.server_port()) do
       port when is_integer(port) and port >= 0 ->
-        host = Keyword.get(opts, :host, Config.settings!().server.host)
+        host = Keyword.get(opts, :host, configured_host())
         orchestrator = Keyword.get(opts, :orchestrator, Orchestrator)
         snapshot_timeout_ms = Keyword.get(opts, :snapshot_timeout_ms, 15_000)
 
@@ -48,6 +48,33 @@ defmodule CymphonyElixir.HttpServer do
     end
   end
 
+  @doc """
+  Start the HTTP server under the main supervisor if it is not already
+  running.
+
+  The Burrito release boots the supervision tree before `CLI.main/1` parses
+  args, so `start_link/1` returns `:ignore` when no port is configured yet.
+  After the CLI sets `:server_port_override` it calls this to bring the
+  endpoint up. No-ops when the supervisor isn't running (escript path — the
+  server starts normally with `ensure_all_started`) or the child is already
+  up.
+  """
+  @spec ensure_started() :: :ok | {:error, term()}
+  def ensure_started do
+    case Process.whereis(CymphonyElixir.Supervisor) do
+      nil ->
+        :ok
+
+      _pid ->
+        case Supervisor.restart_child(CymphonyElixir.Supervisor, __MODULE__) do
+          {:ok, _child} -> :ok
+          {:error, :running} -> :ok
+          {:error, :restarting} -> :ok
+          {:error, reason} -> {:error, reason}
+        end
+    end
+  end
+
   @spec bound_port(term()) :: non_neg_integer() | nil
   def bound_port(_server \\ __MODULE__) do
     case Bandit.PhoenixAdapter.server_info(Endpoint, :http) do
@@ -58,6 +85,15 @@ defmodule CymphonyElixir.HttpServer do
     _error -> nil
   catch
     :exit, _reason -> nil
+  end
+
+  # Boot-safe: workflow config may not exist yet when the release supervision
+  # tree starts; fall back to the schema's default host.
+  defp configured_host do
+    case Config.settings() do
+      {:ok, settings} -> settings.server.host
+      {:error, _reason} -> "127.0.0.1"
+    end
   end
 
   defp parse_host({_, _, _, _} = ip), do: {:ok, ip}

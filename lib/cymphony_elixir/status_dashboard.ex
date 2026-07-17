@@ -99,7 +99,7 @@ defmodule CymphonyElixir.StatusDashboard do
     refresh_ms_override = keyword_override(opts, :refresh_ms)
     enabled_override = keyword_override(opts, :enabled)
     render_interval_ms_override = keyword_override(opts, :render_interval_ms)
-    observability = Config.settings!().observability
+    observability = observability_settings()
     refresh_ms = refresh_ms_override || observability.refresh_ms
     render_interval_ms = render_interval_ms_override || observability.render_interval_ms
     render_fun = Keyword.get(opts, :render_fun, &render_to_terminal/1)
@@ -176,8 +176,17 @@ defmodule CymphonyElixir.StatusDashboard do
   def handle_info({:flush_render, _timer_ref}, state), do: {:noreply, state}
   def handle_info(:tick, state), do: {:noreply, state}
 
+  # Boot-safe: the release supervision tree starts before the CLI points at a
+  # workflow file; fall back to schema defaults until config exists.
+  defp observability_settings do
+    case Config.settings() do
+      {:ok, settings} -> settings.observability
+      {:error, _reason} -> %CymphonyElixir.Config.Schema.Observability{}
+    end
+  end
+
   defp refresh_runtime_config(%__MODULE__{} = state) do
-    observability = Config.settings!().observability
+    observability = observability_settings()
 
     %{
       state
@@ -506,7 +515,13 @@ defmodule CymphonyElixir.StatusDashboard do
   defp linear_project_url(project_slug), do: "https://linear.app/project/#{project_slug}/issues"
 
   defp dashboard_url do
-    url = dashboard_url(Config.settings!().server.host, Config.server_port(), HttpServer.bound_port())
+    host =
+      case Config.settings() do
+        {:ok, settings} -> settings.server.host
+        {:error, _reason} -> "127.0.0.1"
+      end
+
+    url = dashboard_url(host, Config.server_port(), HttpServer.bound_port())
     if is_binary(url), do: maybe_persist_dashboard_url(url)
     url
   end

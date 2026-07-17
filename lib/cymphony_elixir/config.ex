@@ -77,8 +77,17 @@ defmodule CymphonyElixir.Config do
   @spec server_port() :: non_neg_integer() | nil
   def server_port do
     case Application.get_env(:cymphony_elixir, :server_port_override) do
-      port when is_integer(port) and port >= 0 -> port
-      _ -> settings!().server.port
+      port when is_integer(port) and port >= 0 ->
+        port
+
+      _ ->
+        # The supervision tree boots before the CLI has generated/pointed at a
+        # workflow file (Burrito release path), so a missing config must mean
+        # "no port configured", never a boot crash.
+        case settings() do
+          {:ok, settings} -> settings.server.port
+          {:error, _reason} -> nil
+        end
     end
   end
 

@@ -645,7 +645,19 @@ defmodule CymphonyElixir.CLI do
 
   defp set_server_port_override(port) when is_integer(port) and port >= 0 do
     Application.put_env(:cymphony_elixir, :server_port_override, port)
-    :ok
+
+    # In the Burrito release the supervision tree boots before CLI.main runs,
+    # so HttpServer already came up as :ignore (no port yet). Start it now
+    # that the port is known; no-op when the tree isn't running (escript path,
+    # where ensure_all_started boots HttpServer after this override is set).
+    case CymphonyElixir.HttpServer.ensure_started() do
+      :ok ->
+        :ok
+
+      {:error, reason} ->
+        IO.puts(:stderr, "Failed to start dashboard HTTP server: #{inspect(reason)}")
+        :ok
+    end
   end
 
   @spec wait_for_shutdown() :: no_return()
