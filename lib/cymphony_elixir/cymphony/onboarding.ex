@@ -95,6 +95,8 @@ defmodule CymphonyElixir.Cymphony.Onboarding do
          {:ok, workspace_root} <- ask_optional("Workspace root [~/.cymphony/workspaces/#{name}]: ", "~/.cymphony/workspaces/#{name}"),
          {:ok, polling_interval} <- ask_optional("Polling interval in seconds [5]: ", "5"),
          {:ok, agent_kind} <- ask_agent_kind(),
+         {:ok, model} <- ask_numbered("Model", model_choices(agent_kind)),
+         {:ok, effort} <- ask_numbered("Reasoning effort", effort_choices(agent_kind)),
          {:ok, provider} <- ask_provider(providers) do
       polling_ms =
         case Integer.parse(polling_interval) do
@@ -116,7 +118,70 @@ defmodule CymphonyElixir.Cymphony.Onboarding do
       project =
         if provider != nil and provider != "", do: Map.put(project, "provider", provider), else: project
 
+      project = if model, do: Map.put(project, "model", model), else: project
+      project = if effort, do: Map.put(project, "effort", effort), else: project
+
       {:ok, project}
+    end
+  end
+
+  # {label shown in the menu, value stored in config; nil = agent default}
+  defp model_choices("codex") do
+    [
+      {"agent default", nil},
+      {"gpt-5.2-codex", "gpt-5.2-codex"},
+      {"gpt-5.2", "gpt-5.2"},
+      {"o4-mini", "o4-mini"}
+    ]
+  end
+
+  defp model_choices(_claude) do
+    [
+      {"agent default", nil},
+      {"sonnet (balanced)", "sonnet"},
+      {"opus (most capable)", "opus"},
+      {"haiku (fastest)", "haiku"}
+    ]
+  end
+
+  defp effort_choices("codex") do
+    [{"agent default", nil}, {"minimal", "minimal"}, {"low", "low"}, {"medium", "medium"}, {"high", "high"}, {"xhigh", "xhigh"}]
+  end
+
+  defp effort_choices(_claude) do
+    [{"agent default", nil}, {"low", "low"}, {"medium", "medium"}, {"high", "high"}, {"xhigh", "xhigh"}, {"max", "max"}]
+  end
+
+  # Numbered menu: pick by number, Enter for option 1, or type a custom value
+  # (models change faster than this list — free text is always accepted).
+  defp ask_numbered(title, choices) do
+    IO.puts("\n#{title}:")
+
+    choices
+    |> Enum.with_index(1)
+    |> Enum.each(fn {{label, _value}, index} -> IO.puts("  #{index}) #{label}") end)
+
+    case IO.gets("Choose 1-#{length(choices)} or type a custom value [1]: ") do
+      :eof ->
+        {:ok, elem(hd(choices), 1)}
+
+      {:error, _} ->
+        {:ok, elem(hd(choices), 1)}
+
+      input ->
+        case String.trim(input) do
+          "" ->
+            {:ok, elem(hd(choices), 1)}
+
+          value ->
+            case Integer.parse(value) do
+              {n, ""} when n >= 1 and n <= length(choices) ->
+                {:ok, choices |> Enum.at(n - 1) |> elem(1)}
+
+              _ ->
+                {:ok, value}
+            end
+        end
     end
   end
 

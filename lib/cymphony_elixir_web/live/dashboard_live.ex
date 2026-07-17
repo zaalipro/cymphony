@@ -496,7 +496,7 @@ defmodule CymphonyElixirWeb.DashboardLive do
                     value={Map.get(project, :agent_model) || ""}
                     placeholder="default"
                     list={"model-suggestions-#{project.name}"}
-                    class="inline-input inline-input--narrow"
+                    class="inline-input inline-input--model"
                     title="Model override passed to the agent CLI (cli alias: model)"
                   />
                   <datalist id={"model-suggestions-#{project.name}"}>
@@ -618,6 +618,29 @@ defmodule CymphonyElixirWeb.DashboardLive do
                       <div class="session-row-detail">
                         <div class="session-row-detail-grid">
                           <div class="session-stat">
+                            <span class="session-stat-label">Agent</span>
+                            <span class="session-stat-value"><%= Map.get(entry, :agent_kind) || "claude" %></span>
+                          </div>
+                          <div class="session-stat">
+                            <span class="session-stat-label">Model</span>
+                            <span class="session-stat-value"><%= Map.get(entry, :model) || "default" %></span>
+                          </div>
+                          <div class="session-stat">
+                            <span class="session-stat-label">Effort</span>
+                            <span class="session-stat-value"><%= Map.get(entry, :effort) || "default" %></span>
+                          </div>
+                          <div class="session-stat">
+                            <span class="session-stat-label">Provider</span>
+                            <span class="session-stat-value"><%= entry.provider || "default" %></span>
+                          </div>
+                          <div class="session-stat">
+                            <span class="session-stat-label">Tokens</span>
+                            <span class="session-stat-value numeric">
+                              <%= format_int(entry.tokens.total_tokens) %>
+                              <span class="muted small">(in <%= format_int(entry.tokens.input_tokens) %> / out <%= format_int(entry.tokens.output_tokens) %>)</span>
+                            </span>
+                          </div>
+                          <div class="session-stat">
                             <span class="session-stat-label">Turn</span>
                             <span class="session-stat-value numeric"><%= entry.turn_count %></span>
                           </div>
@@ -663,24 +686,32 @@ defmodule CymphonyElixirWeb.DashboardLive do
                                 name="provider"
                                 value={entry.provider || ""}
                                 placeholder="provider"
-                                class="inline-input inline-input--narrow"
+                                class="inline-input inline-input--model"
+                                title="Provider auth alias (empty = keep resolved)"
                               />
                               <input
                                 type="text"
                                 name="model"
                                 value={Map.get(entry, :model) || ""}
                                 placeholder="model"
-                                class="inline-input inline-input--narrow"
+                                list={"model-suggestions-session-#{entry.issue_identifier}"}
+                                class="inline-input inline-input--model"
+                                title="Model passed to the agent CLI (empty = keep resolved)"
                               />
-                              <input
-                                type="text"
-                                name="effort"
-                                value={Map.get(entry, :effort) || ""}
-                                placeholder="effort"
-                                class="inline-input inline-input--narrow"
-                              />
-                              <button type="submit" class="subtle-button">Set</button>
+                              <datalist id={"model-suggestions-session-#{entry.issue_identifier}"}>
+                                <%= for m <- model_suggestions(Map.get(entry, :agent_kind)) do %>
+                                  <option value={m}></option>
+                                <% end %>
+                              </datalist>
+                              <select name="effort" class="inline-input inline-input--narrow" title="Reasoning effort (keep = unchanged)">
+                                <option value="" selected={Map.get(entry, :effort) in [nil, ""]}>keep</option>
+                                <%= for level <- effort_levels(Map.get(entry, :agent_kind)) do %>
+                                  <option value={level} selected={Map.get(entry, :effort) == level}><%= level %></option>
+                                <% end %>
+                              </select>
+                              <button type="submit" class="subtle-button" title="Kill this session and restart it immediately with these overrides">Restart</button>
                             </form>
+                            <span class="muted small">kills the session and redispatches; switch agent via project header or an agent: label</span>
                           </div>
                         </div>
 

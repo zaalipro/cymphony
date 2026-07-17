@@ -805,6 +805,24 @@ button {
   text-align: center;
 }
 
+/* Selects and the model input need real width: 44px truncates their labels. */
+select.inline-input,
+select.inline-input--narrow {
+  width: auto;
+  min-width: 84px;
+  text-align: left;
+  appearance: auto;
+  background: var(--surface-soft);
+  border-radius: 6px;
+  cursor: pointer;
+}
+
+.inline-input--model {
+  width: 110px;
+  flex: 0 0 auto;
+  text-align: left;
+}
+
 .inline-input::placeholder {
   color: var(--ink-mute);
   opacity: 0.7;
