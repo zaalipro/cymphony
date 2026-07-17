@@ -46,7 +46,11 @@ defmodule CymphonyElixir.CLI do
         wait_for_shutdown()
 
       :done ->
-        :ok
+        # One-shot command finished. In the Burrito binary the supervision
+        # tree is already running and would keep the VM (and the status TUI)
+        # alive forever, so halt explicitly; for the escript this matches the
+        # normal exit-0 it did by returning.
+        System.halt(0)
 
       {:error, message} ->
         cleanup_pidfile()
@@ -353,9 +357,22 @@ defmodule CymphonyElixir.CLI do
   end
 
   defp add_project do
-    case Onboarding.add_project() do
+    case run_onboarding_without_tui(&Onboarding.add_project/0) do
       {:ok, _config} -> :done
       {:error, reason} -> {:error, inspect(reason)}
+    end
+  end
+
+  # The Burrito binary boots the status TUI before CLI.main runs; it repaints
+  # the whole screen on its tick and would draw over interactive prompts.
+  # Suspend rendering while the wizard owns the terminal.
+  defp run_onboarding_without_tui(fun) do
+    CymphonyElixir.StatusDashboard.suspend()
+
+    try do
+      fun.()
+    after
+      CymphonyElixir.StatusDashboard.resume()
     end
   end
 
@@ -376,7 +393,7 @@ defmodule CymphonyElixir.CLI do
 
     config =
       if Keyword.get(opts, :setup, false) or not CymphonyConfig.exists?() do
-        Onboarding.run()
+        run_onboarding_without_tui(&Onboarding.run/0)
       else
         CymphonyConfig.load()
       end

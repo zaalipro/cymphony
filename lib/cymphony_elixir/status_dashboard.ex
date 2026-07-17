@@ -53,7 +53,8 @@ defmodule CymphonyElixir.StatusDashboard do
     :last_rendered_at_ms,
     :pending_content,
     :flush_timer_ref,
-    :last_snapshot_fingerprint
+    :last_snapshot_fingerprint,
+    suspended: false
   ]
 
   @type t :: %__MODULE__{
@@ -71,7 +72,8 @@ defmodule CymphonyElixir.StatusDashboard do
           last_rendered_at_ms: integer() | nil,
           pending_content: String.t() | nil,
           flush_timer_ref: reference() | nil,
-          last_snapshot_fingerprint: term() | nil
+          last_snapshot_fingerprint: term() | nil,
+          suspended: boolean()
         }
 
   @spec start_link(keyword()) :: GenServer.on_start()
@@ -91,6 +93,28 @@ defmodule CymphonyElixir.StatusDashboard do
 
       _ ->
         :ok
+    end
+  end
+
+  @doc """
+  Stop rendering to the terminal until `resume/1` — used while an interactive
+  prompt (onboarding wizard) owns the tty, so the status box doesn't clear
+  the screen mid-dialog. No-op when the dashboard isn't running.
+  """
+  @spec suspend(GenServer.name()) :: :ok
+  def suspend(server \\ __MODULE__) do
+    case GenServer.whereis(server) do
+      pid when is_pid(pid) -> GenServer.call(pid, :suspend)
+      _ -> :ok
+    end
+  end
+
+  @doc "Re-enable terminal rendering after `suspend/1`."
+  @spec resume(GenServer.name()) :: :ok
+  def resume(server \\ __MODULE__) do
+    case GenServer.whereis(server) do
+      pid when is_pid(pid) -> GenServer.call(pid, :resume)
+      _ -> :ok
     end
   end
 
@@ -144,7 +168,23 @@ defmodule CymphonyElixir.StatusDashboard do
       :ok
   end
 
+  @spec handle_call(:suspend | :resume, GenServer.from(), t()) :: {:reply, :ok, t()}
+  def handle_call(:suspend, _from, state) do
+    {:reply, :ok, %{state | suspended: true}}
+  end
+
+  def handle_call(:resume, _from, state) do
+    # Force a repaint on the next render: the prompt owned the screen while
+    # we were suspended, so the last-rendered dedup state is stale.
+    {:reply, :ok, %{state | suspended: false, last_snapshot_fingerprint: nil, last_rendered_content: nil}}
+  end
+
   @spec handle_info(term(), t()) :: {:noreply, t()}
+  def handle_info(:tick, %{enabled: true, suspended: true} = state) do
+    schedule_tick(state.refresh_ms, true)
+    {:noreply, state}
+  end
+
   def handle_info(:tick, %{enabled: true} = state) do
     state = refresh_runtime_config(state)
     state = maybe_render(state)
@@ -152,8 +192,13 @@ defmodule CymphonyElixir.StatusDashboard do
     {:noreply, state}
   end
 
+  def handle_info(:refresh, %{suspended: true} = state), do: {:noreply, state}
   def handle_info(:refresh, %{enabled: true} = state), do: {:noreply, maybe_render(refresh_runtime_config(state))}
   def handle_info(:refresh, state), do: {:noreply, state}
+
+  def handle_info({:flush_render, timer_ref}, %{suspended: true, flush_timer_ref: timer_ref} = state) do
+    {:noreply, %{state | flush_timer_ref: nil, pending_content: nil}}
+  end
 
   def handle_info({:flush_render, timer_ref}, %{enabled: true, flush_timer_ref: timer_ref} = state) do
     now_ms = System.monotonic_time(:millisecond)

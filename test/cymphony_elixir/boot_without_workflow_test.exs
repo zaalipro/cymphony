@@ -68,4 +68,32 @@ defmodule CymphonyElixir.BootWithoutWorkflowTest do
 
     Supervisor.stop(sup)
   end
+
+  test "StatusDashboard.suspend/resume gates terminal rendering (interactive prompts own the tty)" do
+    parent = self()
+    name = Module.concat(__MODULE__, :SuspendDashboard)
+
+    {:ok, pid} =
+      StatusDashboard.start_link(
+        name: name,
+        enabled: true,
+        refresh_ms: 60_000,
+        render_interval_ms: 0,
+        render_fun: fn _content -> send(parent, :rendered) end
+      )
+
+    on_exit(fn -> if Process.alive?(pid), do: Process.exit(pid, :normal) end)
+
+    StatusDashboard.notify_update(name)
+    assert_receive :rendered, 500
+
+    :ok = StatusDashboard.suspend(name)
+    StatusDashboard.notify_update(name)
+    send(pid, :tick)
+    refute_receive :rendered, 200
+
+    :ok = StatusDashboard.resume(name)
+    StatusDashboard.notify_update(name)
+    assert_receive :rendered, 500
+  end
 end
