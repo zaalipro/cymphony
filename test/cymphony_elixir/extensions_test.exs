@@ -817,8 +817,8 @@ defmodule CymphonyElixir.ExtensionsTest do
       assert_receive {:orchestrator_call, {:retry_issue_now, "issue-retry"}}, 1_000
     end
 
-    test "set_provider submits the UUID issue_id and provider to the orchestrator" do
-      orchestrator_name = Module.concat(__MODULE__, :SetProviderOrchestrator)
+    test "set_issue_run_spec submits the UUID issue_id and pinned overrides to the orchestrator" do
+      orchestrator_name = Module.concat(__MODULE__, :SetRunSpecOrchestrator)
 
       {:ok, _pid} =
         StaticOrchestrator.start_link(
@@ -831,16 +831,29 @@ defmodule CymphonyElixir.ExtensionsTest do
 
       {:ok, view, _html} = live(build_conn(), "/")
 
-      # Expand the row first so the per-session provider form is rendered.
-      view
-      |> element(~s|button[phx-click="toggle_logs"][phx-value-issue="MT-HTTP"]|)
-      |> render_click()
+      # Expand the row first so the restart-with-overrides form is rendered.
+      expanded =
+        view
+        |> element(~s|button[phx-click="toggle_logs"][phx-value-issue="MT-HTTP"]|)
+        |> render_click()
+
+      assert expanded =~ ~s(phx-submit="set_issue_run_spec")
+      # Agent kind is intentionally not offered per running session.
+      refute expanded =~ ~s(name="agent_kind" form="set_issue_run_spec")
 
       view
-      |> form(~s|form[phx-submit="set_provider"]|, %{issue: "MT-HTTP", provider: "cv2"})
+      |> form(~s|form[phx-submit="set_issue_run_spec"]|, %{
+        issue: "MT-HTTP",
+        provider: "cv2",
+        model: "opus",
+        effort: ""
+      })
       |> render_submit()
 
-      assert_receive {:orchestrator_call, {:set_issue_run_spec, "issue-http", %{provider: "cv2"}}}, 1_000
+      assert_receive {:orchestrator_call, {:set_issue_run_spec, "issue-http", %{provider: "cv2", model: "opus"} = overrides}},
+                     1_000
+
+      refute Map.has_key?(overrides, :effort)
     end
 
     test "pause_dispatch sends :pause to the orchestrator" do

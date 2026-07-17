@@ -186,16 +186,20 @@ defmodule CymphonyElixirWeb.DashboardLive do
   end
 
   @impl true
-  def handle_event("set_provider", %{"issue" => issue_identifier, "provider" => provider}, socket) do
-    provider = String.trim(provider)
-
+  def handle_event("set_issue_run_spec", %{"issue" => issue_identifier} = params, socket) do
     entry =
       Enum.find(socket.assigns.payload.running, &(&1.issue_identifier == issue_identifier)) || %{}
 
     issue_id = Map.get(entry, :issue_id)
 
-    if is_binary(issue_id) and provider != "" do
-      send_set_provider(socket, entry, issue_id, provider)
+    overrides =
+      %{}
+      |> maybe_override_param(:provider, params["provider"])
+      |> maybe_override_param(:model, params["model"])
+      |> maybe_override_param(:effort, params["effort"])
+
+    if is_binary(issue_id) and map_size(overrides) > 0 do
+      send_issue_run_spec(socket, entry, issue_id, overrides)
     end
 
     {:noreply, socket}
@@ -536,6 +540,15 @@ defmodule CymphonyElixirWeb.DashboardLive do
                         <%= if entry.provider do %>
                           <span class="chip chip--accent"><%= entry.provider %></span>
                         <% end %>
+                        <%= if Map.get(entry, :agent_kind) do %>
+                          <span class="chip chip--agent"><%= entry.agent_kind %></span>
+                        <% end %>
+                        <%= if Map.get(entry, :model) do %>
+                          <span class="chip chip--muted chip--truncate" title={entry.model}><%= entry.model %></span>
+                        <% end %>
+                        <%= if Map.get(entry, :effort) do %>
+                          <span class="chip chip--muted"><%= entry.effort %></span>
+                        <% end %>
                         <span class="chip chip--muted"><%= entry.worker_host || "local" %></span>
                       </div>
 
@@ -597,15 +610,29 @@ defmodule CymphonyElixirWeb.DashboardLive do
                               <% end %>
                             </span>
                           </div>
-                          <div class="session-stat">
-                            <span class="session-stat-label">Provider</span>
-                            <form phx-submit="set_provider" class="inline-form">
+                          <div class="session-stat session-stat--wide">
+                            <span class="session-stat-label">Restart with</span>
+                            <form phx-submit="set_issue_run_spec" class="inline-form">
                               <input type="hidden" name="issue" value={entry.issue_identifier} />
                               <input
                                 type="text"
                                 name="provider"
                                 value={entry.provider || ""}
                                 placeholder="provider"
+                                class="inline-input inline-input--narrow"
+                              />
+                              <input
+                                type="text"
+                                name="model"
+                                value={Map.get(entry, :model) || ""}
+                                placeholder="model"
+                                class="inline-input inline-input--narrow"
+                              />
+                              <input
+                                type="text"
+                                name="effort"
+                                value={Map.get(entry, :effort) || ""}
+                                placeholder="effort"
                                 class="inline-input inline-input--narrow"
                               />
                               <button type="submit" class="subtle-button">Set</button>
@@ -701,6 +728,12 @@ defmodule CymphonyElixirWeb.DashboardLive do
                     </div>
                     <div class="session-row-chips">
                       <span class="chip chip--ok">Done</span>
+                      <%= if Map.get(entry, :agent_kind) do %>
+                        <span class="chip chip--agent"><%= entry.agent_kind %></span>
+                      <% end %>
+                      <%= if Map.get(entry, :model) do %>
+                        <span class="chip chip--muted chip--truncate" title={entry.model}><%= entry.model %></span>
+                      <% end %>
                       <span class="chip chip--muted"><%= entry.worker_host || "local" %></span>
                     </div>
                     <div class="session-row-runtime numeric">
@@ -1072,14 +1105,23 @@ defmodule CymphonyElixirWeb.DashboardLive do
 
   defp lookup_orchestrator(_), do: orchestrator()
 
-  defp send_set_provider(socket, entry, issue_id, provider) do
+  defp maybe_override_param(map, _key, nil), do: map
+
+  defp maybe_override_param(map, key, value) when is_binary(value) do
+    case String.trim(value) do
+      "" -> map
+      trimmed -> Map.put(map, key, trimmed)
+    end
+  end
+
+  defp send_issue_run_spec(socket, entry, issue_id, overrides) do
     project_name = Map.get(entry, :project_name)
     orchestrator_pid = lookup_orchestrator(project_name)
 
     if orchestrator_addressable?(orchestrator_pid) do
       Task.Supervisor.start_child(CymphonyElixir.TaskSupervisor, fn ->
         try do
-          GenServer.call(orchestrator_pid, {:set_issue_run_spec, issue_id, %{provider: provider}}, 10_000)
+          GenServer.call(orchestrator_pid, {:set_issue_run_spec, issue_id, overrides}, 10_000)
         catch
           :exit, _ -> {:error, :unavailable}
         end
