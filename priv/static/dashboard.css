@@ -1255,3 +1255,127 @@ button {
     animation-iteration-count: 1 !important;
   }
 }
+
+/* ----- Settings drawer ---------------------------------------------------- */
+.settings-drawer {
+  position: fixed;
+  top: 0;
+  right: 0;
+  height: 100vh;
+  width: 340px;
+  transform: translateX(100%);
+  transition: transform 160ms ease;
+  z-index: 40;
+  overflow-y: auto;
+  padding: 20px;
+  background: var(--surface);
+  border-left: 1px solid var(--line-strong);
+  box-shadow: -12px 0 32px rgba(0, 0, 0, 0.25);
+}
+
+html[data-drawer="open"] .settings-drawer {
+  transform: translateX(0);
+}
+
+.settings-drawer-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  margin-bottom: 8px;
+}
+
+.settings-group {
+  margin-top: 20px;
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+
+.settings-group-title {
+  font-size: 11px;
+  text-transform: uppercase;
+  letter-spacing: 0.08em;
+  opacity: 0.65;
+  margin: 0;
+}
+
+.settings-row {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px 12px;
+  align-items: center;
+  font-size: 13px;
+}
+
+.settings-row label {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  cursor: pointer;
+}
+
+/* ----- Density ------------------------------------------------------------ */
+html[data-density="compact"] .session-row-summary {
+  padding-top: 2px;
+  padding-bottom: 2px;
+  font-size: 12px;
+}
+
+html[data-density="compact"] .metric-pill {
+  padding: 2px 8px;
+}
+
+html[data-density="compact"] .project-section {
+  margin-bottom: 8px;
+}
+
+/* ----- Section visibility + collapse -------------------------------------- */
+html[data-hidden-sections~="metrics"] .section--metrics,
+html[data-hidden-sections~="polling"] .section--polling,
+html[data-hidden-sections~="ratelimits"] .section--ratelimits,
+html[data-hidden-sections~="completions"] .section--completions {
+  display: none;
+}
+
+html[data-collapsed-sections~="completions"] .section--completions .session-row-list {
+  display: none;
+}
+
+/* ----- Session-row column visibility --------------------------------------- */
+html[data-hidden-cols~="title"] .session-row-title {
+  display: none;
+}
+
+html[data-hidden-cols~="chips"] .session-row-chips {
+  display: none;
+}
+
+html[data-hidden-cols~="runtime"] .session-row-runtime {
+  display: none;
+}
+
+html[data-hidden-cols~="tokens"] .session-row-tokens {
+  display: none;
+}
+
+/* ----- Completions display length ------------------------------------------ */
+html[data-completions-limit="25"] .section--completions .session-row:nth-child(n + 26) {
+  display: none;
+}
+
+html[data-completions-limit="50"] .section--completions .session-row:nth-child(n + 51) {
+  display: none;
+}
+
+/* ----- Agent chips ---------------------------------------------------------- */
+.chip--agent {
+  background: var(--accent-soft);
+  color: var(--accent);
+}
+
+.chip--truncate {
+  max-width: 140px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}

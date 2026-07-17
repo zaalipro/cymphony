@@ -856,6 +856,40 @@ defmodule CymphonyElixir.ExtensionsTest do
       refute Map.has_key?(overrides, :effort)
     end
 
+    test "settings drawer renders orchestrator controls and display pref hooks" do
+      orchestrator_name = Module.concat(__MODULE__, :DrawerOrchestrator)
+
+      {:ok, _pid} =
+        StaticOrchestrator.start_link(name: orchestrator_name, snapshot: static_snapshot())
+
+      start_test_endpoint(orchestrator: orchestrator_name, snapshot_timeout_ms: 50)
+
+      {:ok, _view, html} = live(build_conn(), "/")
+
+      # Drawer shell + toggle in the top bar.
+      assert html =~ ~s(class="settings-drawer")
+      assert html =~ "data-drawer-toggle"
+
+      # Orchestrator controls moved into the drawer.
+      assert html =~ ~s(id="drawer-global-concurrency")
+      assert html =~ ~s(phx-click="pause_dispatch")
+
+      # Display pref hooks the layout JS binds to.
+      for hook <- [
+            ~s(data-pref="density"),
+            "data-pref-section",
+            "data-pref-col",
+            ~s(data-pref="completions-limit")
+          ] do
+        assert html =~ hook
+      end
+
+      # Metrics strip absorbed the ops row: section markers present, old row gone.
+      assert html =~ "section--metrics"
+      assert html =~ "section--polling"
+      refute html =~ "command-bar-row--ops"
+    end
+
     test "pause_dispatch sends :pause to the orchestrator" do
       orchestrator_name = Module.concat(__MODULE__, :PauseLiveOrchestrator)
 

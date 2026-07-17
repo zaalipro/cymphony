@@ -276,12 +276,13 @@ defmodule CymphonyElixirWeb.DashboardLive do
               <button type="button" class="theme-toggle-button" data-theme-set="system" title="Follow system" aria-label="Follow system">⌂</button>
             </div>
 
+            <button type="button" class="subtle-button" data-drawer-toggle aria-label="Settings" title="Settings">⚙</button>
             <button type="button" class="subtle-button" phx-click="refresh_now">Refresh</button>
           </div>
         </div>
 
         <%= unless @payload[:error] do %>
-          <div class="command-bar-row command-bar-row--metrics">
+          <div class="command-bar-row command-bar-row--metrics section--metrics">
             <div class="metric-pill">
               <span class="metric-pill-label">Run</span>
               <span class="metric-pill-value numeric"><%= @payload.counts.running %></span>
@@ -306,13 +307,11 @@ defmodule CymphonyElixirWeb.DashboardLive do
               <span class="metric-pill-value numeric"><%= format_tps(current_tps(@token_samples)) %></span>
               <span class="metric-pill-spark numeric"><%= tps_sparkline(@token_samples) %></span>
             </div>
-          </div>
 
-          <div class="command-bar-row command-bar-row--ops">
             <%= if @payload.polling do %>
-              <div class="ops-cluster">
-                <span class="ops-label">Polling</span>
-                <span class="ops-value">
+              <div class="metric-pill metric-pill--ops section--polling">
+                <span class="metric-pill-label">Polling</span>
+                <span class="metric-pill-value">
                   <%= cond do %>
                     <% Map.get(@payload.polling, :paused, false) -> %>
                       <span class="ops-pulse">Paused</span>
@@ -323,8 +322,7 @@ defmodule CymphonyElixirWeb.DashboardLive do
                   <% end %>
                 </span>
                 <%= if @payload.polling.poll_interval_ms do %>
-                  <span class="ops-divider" aria-hidden="true">·</span>
-                  <span class="ops-value muted">every <%= div(@payload.polling.poll_interval_ms, 1_000) %>s</span>
+                  <span class="metric-pill-detail numeric">every <%= div(@payload.polling.poll_interval_ms, 1_000) %>s</span>
                 <% end %>
               </div>
             <% end %>
@@ -333,38 +331,84 @@ defmodule CymphonyElixirWeb.DashboardLive do
               <%= case Presenter.format_rate_limits_for_web(@payload.rate_limits) do %>
                 <% nil -> %>
                 <% formatted -> %>
-                  <div class="ops-cluster">
-                    <span class="ops-label">Limits</span>
+                  <div class="metric-pill metric-pill--ops section--ratelimits">
+                    <span class="metric-pill-label">Limits</span>
                     <%= if formatted.primary do %>
-                      <span class="ops-value">primary <%= formatted.primary.summary %></span>
+                      <span class="metric-pill-detail">primary <%= formatted.primary.summary %></span>
                       <%= if formatted.primary.reset_in_seconds do %>
-                        <span class="ops-value muted">resets <%= formatted.primary.reset_in_seconds %>s</span>
+                        <span class="metric-pill-detail muted">resets <%= formatted.primary.reset_in_seconds %>s</span>
                       <% end %>
                     <% end %>
                     <%= if formatted.secondary do %>
-                      <span class="ops-divider" aria-hidden="true">·</span>
-                      <span class="ops-value">secondary <%= formatted.secondary.summary %></span>
+                      <span class="metric-pill-detail">secondary <%= formatted.secondary.summary %></span>
                     <% end %>
                     <%= if formatted.credits do %>
-                      <span class="ops-divider" aria-hidden="true">·</span>
-                      <span class="ops-value">credits <%= formatted.credits.summary %></span>
+                      <span class="metric-pill-detail">credits <%= formatted.credits.summary %></span>
                     <% end %>
                   </div>
               <% end %>
             <% end %>
-
-            <%= if @payload.polling do %>
-              <div class="ops-cluster ops-cluster--push">
-                <%= if Map.get(@payload.polling, :paused, false) do %>
-                  <button type="button" class="subtle-button subtle-button--accent" phx-click="resume_dispatch">Resume all</button>
-                <% else %>
-                  <button type="button" class="subtle-button" phx-click="pause_dispatch">Pause all</button>
-                <% end %>
-              </div>
-            <% end %>
           </div>
         <% end %>
       </header>
+
+      <aside class="settings-drawer" aria-label="Dashboard settings">
+        <div class="settings-drawer-header">
+          <h2 class="section-title">Settings</h2>
+          <button type="button" class="subtle-button" data-drawer-toggle>Close</button>
+        </div>
+
+        <section class="settings-group">
+          <h3 class="settings-group-title">Orchestrator</h3>
+
+          <%= if @payload[:polling] do %>
+            <%= if Map.get(@payload.polling, :paused, false) do %>
+              <button type="button" class="subtle-button subtle-button--accent" phx-click="resume_dispatch">Resume all projects</button>
+            <% else %>
+              <button type="button" class="subtle-button" phx-click="pause_dispatch">Pause all projects</button>
+            <% end %>
+          <% end %>
+
+          <form phx-submit="set_concurrency" class="inline-form">
+            <label class="inline-label" for="drawer-global-concurrency">global concurrency</label>
+            <input id="drawer-global-concurrency" type="number" name="value" min="1" class="inline-input inline-input--narrow" />
+            <button type="submit" class="subtle-button">Set</button>
+          </form>
+        </section>
+
+        <section class="settings-group" data-prefs>
+          <h3 class="settings-group-title">Display</h3>
+
+          <div class="settings-row">
+            <span class="inline-label">density</span>
+            <label><input type="radio" name="pref-density" data-pref="density" value="comfortable" checked /> comfortable</label>
+            <label><input type="radio" name="pref-density" data-pref="density" value="compact" /> compact</label>
+          </div>
+
+          <div class="settings-row">
+            <span class="inline-label">sections</span>
+            <%= for {label, key} <- [{"Metrics", "metrics"}, {"Polling", "polling"}, {"Rate limits", "ratelimits"}, {"Completions", "completions"}] do %>
+              <label><input type="checkbox" data-pref-section={key} checked /> <%= label %></label>
+            <% end %>
+          </div>
+
+          <div class="settings-row">
+            <span class="inline-label">columns</span>
+            <%= for {label, key} <- [{"Title", "title"}, {"Chips", "chips"}, {"Runtime", "runtime"}, {"Tokens", "tokens"}] do %>
+              <label><input type="checkbox" data-pref-col={key} checked /> <%= label %></label>
+            <% end %>
+          </div>
+
+          <div class="settings-row">
+            <span class="inline-label">completions shown</span>
+            <select data-pref="completions-limit" class="inline-input inline-input--narrow">
+              <option value="25">25</option>
+              <option value="50">50</option>
+              <option value="100" selected>100</option>
+            </select>
+          </div>
+        </section>
+      </aside>
 
       <%= if info = @flash["info"] do %>
         <div class="alert-banner alert-info"><%= info %></div>
@@ -709,12 +753,13 @@ defmodule CymphonyElixirWeb.DashboardLive do
         <% end %>
 
         <%= if @payload[:recent_completed] && @payload.recent_completed != [] do %>
-          <section class="section-card">
+          <section class="section-card section--completions">
             <div class="section-header">
               <div>
                 <h2 class="section-title">Recent completions</h2>
                 <p class="section-copy">Last <%= length(@payload.recent_completed) %> agent runs. Cleared on daemon restart.</p>
               </div>
+              <button type="button" class="subtle-button" data-collapse-toggle="completions" aria-label="Collapse section">▾</button>
             </div>
 
             <div class="session-row-list">
