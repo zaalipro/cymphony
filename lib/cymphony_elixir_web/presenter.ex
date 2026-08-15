@@ -45,10 +45,7 @@ defmodule CymphonyElixirWeb.Presenter do
 
             %{
               generated_at: generated_at,
-              counts: %{
-                running: length(running),
-                retrying: length(retrying)
-              },
+              counts: payload_counts(running, retrying),
               running: running,
               retrying: retrying,
               recent_completed:
@@ -105,18 +102,45 @@ defmodule CymphonyElixirWeb.Presenter do
 
         %{
           generated_at: generated_at,
-          counts: %{
-            running: length(flat_running),
-            retrying: length(flat_retrying)
-          },
+          counts: payload_counts(flat_running, flat_retrying),
           running: flat_running,
           retrying: flat_retrying,
           recent_completed: Enum.map(merged.recent_completed, &completed_entry_payload/1),
-          token_totals: merged.token_totals,
+          token_totals: normalize_token_totals(merged.token_totals),
           rate_limits: merged.rate_limits,
           polling: merged.polling,
           projects: projects
         }
+    end
+  end
+
+  @spec count_breakdowns([map()]) :: %{
+          by_state: %{String.t() => non_neg_integer()},
+          by_kind: %{String.t() => non_neg_integer()}
+        }
+  def count_breakdowns(running) when is_list(running) do
+    Enum.reduce(running, %{by_state: %{}, by_kind: %{}}, fn
+      entry, acc when is_map(entry) ->
+        %{
+          acc
+          | by_state: increment_count(acc.by_state, breakdown_state(entry)),
+            by_kind: increment_count(acc.by_kind, breakdown_kind(entry))
+        }
+
+      _entry, acc ->
+        acc
+    end)
+  end
+
+  @spec session_tokens_per_second(number() | nil, number() | nil) :: float()
+  def session_tokens_per_second(total_tokens, seconds) do
+    total = numeric_or_zero(total_tokens)
+    elapsed = numeric_or_zero(seconds)
+
+    if total == 0 do
+      0.0
+    else
+      total / max(elapsed, 1)
     end
   end
 
@@ -168,20 +192,9 @@ defmodule CymphonyElixirWeb.Presenter do
         {:error, :issue_not_found}
 
       pid ->
-        case Orchestrator.snapshot(pid, snapshot_timeout_ms) do
-          %{} = snapshot ->
-            running = Enum.find(snapshot.running, &(&1.identifier == issue_identifier))
-            retry = Enum.find(snapshot.retrying, &(&1.identifier == issue_identifier))
-
-            if is_nil(running) and is_nil(retry) do
-              {:error, :issue_not_found}
-            else
-              {:ok, issue_payload_body(issue_identifier, running, retry)}
-            end
-
-          _ ->
-            {:error, :issue_not_found}
-        end
+        pid
+        |> Orchestrator.snapshot(snapshot_timeout_ms)
+        |> maybe_issue_payload_from_snapshot(issue_identifier) || {:error, :issue_not_found}
     end
   end
 
@@ -189,20 +202,9 @@ defmodule CymphonyElixirWeb.Presenter do
       when is_binary(issue_identifier) do
     # Search primary orchestrator first (legacy single-project mode)
     primary_result =
-      case Orchestrator.snapshot(orchestrator, snapshot_timeout_ms) do
-        %{} = snapshot ->
-          running = Enum.find(snapshot.running, &(&1.identifier == issue_identifier))
-          retry = Enum.find(snapshot.retrying, &(&1.identifier == issue_identifier))
-
-          if is_nil(running) and is_nil(retry) do
-            nil
-          else
-            {:ok, issue_payload_body(issue_identifier, running, retry)}
-          end
-
-        _ ->
-          nil
-      end
+      orchestrator
+      |> Orchestrator.snapshot(snapshot_timeout_ms)
+      |> maybe_issue_payload_from_snapshot(issue_identifier)
 
     # If found in primary, return immediately
     if primary_result do
@@ -217,25 +219,28 @@ defmodule CymphonyElixirWeb.Presenter do
     ProjectSupervisor.list_orchestrators()
     |> Enum.find_value(fn {_project_name, pid} ->
       try do
-        case Orchestrator.snapshot(pid, snapshot_timeout_ms) do
-          %{} = snapshot ->
-            running = Enum.find(snapshot.running, &(&1.identifier == issue_identifier))
-            retry = Enum.find(snapshot.retrying, &(&1.identifier == issue_identifier))
-
-            if is_nil(running) and is_nil(retry) do
-              nil
-            else
-              {:ok, issue_payload_body(issue_identifier, running, retry)}
-            end
-
-          _ ->
-            nil
-        end
+        pid
+        |> Orchestrator.snapshot(snapshot_timeout_ms)
+        |> maybe_issue_payload_from_snapshot(issue_identifier)
       catch
         :exit, _ -> nil
       end
     end) ||
       {:error, :issue_not_found}
+  end
+
+  defp maybe_issue_payload_from_snapshot(%{} = snapshot, issue_identifier) do
+    running = Enum.find(snapshot.running, &(&1.identifier == issue_identifier))
+    retry = Enum.find(snapshot.retrying, &(&1.identifier == issue_identifier))
+    issue_payload_from_entries(issue_identifier, running, retry)
+  end
+
+  defp maybe_issue_payload_from_snapshot(_snapshot, _issue_identifier), do: nil
+
+  defp issue_payload_from_entries(_issue_identifier, nil, nil), do: nil
+
+  defp issue_payload_from_entries(issue_identifier, running, retry) do
+    {:ok, issue_payload_body(issue_identifier, running, retry)}
   end
 
   @spec refresh_payload(GenServer.name()) :: {:ok, map()} | {:error, :unavailable}
@@ -249,7 +254,7 @@ defmodule CymphonyElixirWeb.Presenter do
     end
   end
 
-  @spec format_rate_limits_for_web(map() | nil) :: map()
+  @spec format_rate_limits_for_web(map() | nil) :: map() | nil
   def format_rate_limits_for_web(nil), do: nil
 
   def format_rate_limits_for_web(rate_limits) when is_map(rate_limits) do
@@ -395,7 +400,12 @@ defmodule CymphonyElixirWeb.Presenter do
         input_tokens: entry.input_tokens,
         output_tokens: entry.output_tokens,
         total_tokens: entry.total_tokens
-      }
+      },
+      tokens_per_second:
+        session_tokens_per_second(
+          entry.total_tokens,
+          runtime_seconds_from_started_at(entry.started_at)
+        )
     }
   end
 
@@ -581,16 +591,74 @@ defmodule CymphonyElixirWeb.Presenter do
     }
   end
 
+  defp payload_counts(running, retrying) do
+    breakdowns = count_breakdowns(running)
+
+    %{
+      running: length(running),
+      retrying: length(retrying),
+      by_state: breakdowns.by_state,
+      by_kind: breakdowns.by_kind
+    }
+  end
+
+  defp increment_count(map, key) do
+    Map.update(map, key, 1, &(&1 + 1))
+  end
+
+  defp breakdown_state(entry) do
+    case fetch_entry_value(entry, :state) do
+      nil -> ""
+      state when is_binary(state) -> state
+      state -> to_string(state)
+    end
+  end
+
+  defp breakdown_kind(entry) do
+    case fetch_entry_value(entry, :agent_kind) do
+      nil -> "unknown"
+      "" -> "unknown"
+      kind when is_binary(kind) -> kind
+      kind -> to_string(kind)
+    end
+  end
+
+  defp fetch_entry_value(entry, key) when is_map(entry) and is_atom(key) do
+    Map.get(entry, key) || Map.get(entry, Atom.to_string(key))
+  end
+
+  defp numeric_or_zero(value) when is_number(value), do: value
+  defp numeric_or_zero(_value), do: 0
+
+  defp runtime_seconds_from_started_at(%DateTime{} = started_at) do
+    max(0, DateTime.diff(DateTime.utc_now(), started_at, :second))
+  end
+
+  defp runtime_seconds_from_started_at(started_at) when is_binary(started_at) do
+    case DateTime.from_iso8601(started_at) do
+      {:ok, parsed, _offset} -> runtime_seconds_from_started_at(parsed)
+      _ -> 0
+    end
+  end
+
+  defp runtime_seconds_from_started_at(_started_at), do: 0
+
   defp normalize_token_totals(nil) do
-    %{input_tokens: 0, output_tokens: 0, total_tokens: 0, seconds_running: 0}
+    %{input_tokens: 0, output_tokens: 0, total_tokens: 0, seconds_running: 0, tokens_per_second: 0.0}
   end
 
   defp normalize_token_totals(totals) when is_map(totals) do
+    input_tokens = Map.get(totals, :input_tokens, 0)
+    output_tokens = Map.get(totals, :output_tokens, 0)
+    total_tokens = Map.get(totals, :total_tokens, 0)
+    seconds_running = Map.get(totals, :seconds_running, 0)
+
     %{
-      input_tokens: Map.get(totals, :input_tokens, 0),
-      output_tokens: Map.get(totals, :output_tokens, 0),
-      total_tokens: Map.get(totals, :total_tokens, 0),
-      seconds_running: Map.get(totals, :seconds_running, 0)
+      input_tokens: input_tokens,
+      output_tokens: output_tokens,
+      total_tokens: total_tokens,
+      seconds_running: seconds_running,
+      tokens_per_second: session_tokens_per_second(total_tokens, seconds_running)
     }
   end
 end

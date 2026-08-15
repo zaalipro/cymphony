@@ -32,6 +32,12 @@ claude:
   thread_sandbox: workspace-write
   turn_sandbox_policy:
     type: workspaceWrite
+# Optional Antigravity CLI section (used when agent.kind is antigravity).
+# Labels `agent:antigravity` / `cymphony: agent=antigravity` also select it.
+antigravity:
+  command: agy
+  output_format: stream-json
+  skip_permissions: true
 ---
 
 

@@ -16,11 +16,13 @@ defmodule CymphonyElixir.Cymphony.WorkflowGenerator do
   end
 
   @spec write_temp(map()) :: {:ok, String.t()} | {:error, term()}
-  def write_temp(config) do
+  @spec write_temp(map(), keyword()) :: {:ok, String.t()} | {:error, term()}
+  def write_temp(config, opts \\ []) do
     content = generate(config)
     project_slug = safe_project_slug(Map.get(config, "name"))
     suffix = :erlang.unique_integer([:positive])
-    path = Path.join(System.tmp_dir!(), "cymphony_workflow_#{project_slug}_#{suffix}.md")
+    tmp_dir = Keyword.get(opts, :tmp_dir, System.tmp_dir!())
+    path = Path.join(tmp_dir, "cymphony_workflow_#{project_slug}_#{suffix}.md")
 
     case File.write(path, content) do
       :ok -> {:ok, path}

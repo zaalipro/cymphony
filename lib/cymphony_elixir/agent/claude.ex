@@ -107,15 +107,7 @@ defmodule CymphonyElixir.Agent.Claude do
   defp parse_stream_json_output(lines, on_message) do
     result =
       Enum.reduce(lines, %{last_result: nil}, fn line, acc ->
-        case Jason.decode(line) do
-          {:ok, %{} = event} ->
-            emit(on_message, %{event: :stream_event, payload: event, raw: line})
-
-            if event["type"] == "result", do: %{acc | last_result: event}, else: acc
-
-          {:error, _} ->
-            acc
-        end
+        reduce_stream_line(line, acc, on_message)
       end)
 
     case result.last_result do
@@ -130,6 +122,18 @@ defmodule CymphonyElixir.Agent.Claude do
            usage: last_result["usage"],
            raw: Jason.encode!(last_result)
          }}
+    end
+  end
+
+  defp reduce_stream_line(line, acc, on_message) do
+    case Jason.decode(line) do
+      {:ok, %{} = event} ->
+        emit(on_message, %{event: :stream_event, payload: event, raw: line})
+
+        if event["type"] == "result", do: %{acc | last_result: event}, else: acc
+
+      {:error, _} ->
+        acc
     end
   end
 

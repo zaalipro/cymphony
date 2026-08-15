@@ -212,8 +212,7 @@ defmodule CymphonyElixir.Linear.Client do
 
       ids ->
         with {:ok, assignee_filter} <- routing_assignee_filter(config) do
-          graphql_fun = fn query, variables -> graphql(query, variables, graphql_opts_for_config(config)) end
-          do_fetch_issue_states(ids, assignee_filter, graphql_fun)
+          do_fetch_issue_states(ids, assignee_filter, config_graphql_fun(config))
         end
     end
   end
@@ -498,7 +497,14 @@ defmodule CymphonyElixir.Linear.Client do
   def graphql_opts_for_config(nil), do: []
 
   def graphql_opts_for_config(config) when is_struct(config, Config.Schema) do
-    [request_fun: fn payload, headers -> post_graphql_request(payload, headers, config) end, graphql_headers_fun: fn -> graphql_headers(config) end]
+    [
+      request_fun: fn payload, headers -> post_graphql_request(payload, headers, config) end,
+      graphql_headers_fun: fn -> graphql_headers(config) end
+    ]
+  end
+
+  defp config_graphql_fun(config) do
+    fn query, variables -> graphql(query, variables, graphql_opts_for_config(config)) end
   end
 
   defp decode_linear_response(%{"data" => %{"issues" => %{"nodes" => nodes}}}, assignee_filter) do

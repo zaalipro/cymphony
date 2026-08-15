@@ -328,4 +328,190 @@ defmodule CymphonyElixir.StatusDashboardSnapshotTest do
              }) =~ "boom"
     end
   end
+
+  describe "antigravity NDJSON event humanization" do
+    test "init includes a shortened conversation id" do
+      humanized =
+        StatusDashboard.humanize_agent_message(%{
+          event: :stream_event,
+          message: %{
+            "event" => "init",
+            "conversation_id" => "conv-abcdefghijklmnop",
+            "init" => %{"cwd" => "/tmp/ws", "tools" => [], "permission_mode" => "default"}
+          }
+        })
+
+      assert humanized == "antigravity init (conv-abcdefg)"
+    end
+
+    test "init falls back to init.conversation_id and omits empty ids" do
+      from_init =
+        StatusDashboard.humanize_agent_message(%{
+          event: :stream_event,
+          payload: %{"event" => "init", "init" => %{"conversation_id" => "nested-1"}}
+        })
+
+      assert from_init == "antigravity init (nested-1)"
+
+      assert StatusDashboard.humanize_agent_message(%{
+               event: :stream_event,
+               message: %{"event" => "init"}
+             }) == "antigravity init"
+    end
+
+    test "step_update uses step_type and state plus truncated text_delta" do
+      humanized =
+        StatusDashboard.humanize_agent_message(%{
+          event: :stream_event,
+          message: %{
+            "event" => "step_update",
+            "step_update" => %{
+              "step_type" => "think",
+              "state" => "ACTIVE",
+              "text_delta" => "planning the change to the orchestrator"
+            }
+          }
+        })
+
+      assert humanized == "think ACTIVE planning the change to the orchestrator"
+
+      long_delta = String.duplicate("x", 90)
+
+      truncated =
+        StatusDashboard.humanize_agent_message(%{
+          event: :stream_event,
+          message: %{
+            "event" => "step_update",
+            "step_update" => %{"step_type" => "think", "state" => "DONE", "text_delta" => long_delta}
+          }
+        })
+
+      assert truncated == "think DONE " <> String.duplicate("x", 80) <> "..."
+    end
+
+    test "step_update tool steps prefer tool <tool_name>" do
+      humanized =
+        StatusDashboard.humanize_agent_message(%{
+          event: :stream_event,
+          message: %{
+            "event" => "step_update",
+            "step_update" => %{
+              "step_type" => "tool",
+              "state" => "ACTIVE",
+              "tool_name" => "read_file",
+              "text_delta" => "opening WORKFLOW.md"
+            }
+          }
+        })
+
+      assert humanized == "tool read_file opening WORKFLOW.md"
+    end
+
+    test "step_update accepts flattened fields and missing type or state" do
+      assert StatusDashboard.humanize_agent_message(%{
+               event: :stream_event,
+               message: %{"event" => "step_update", "step_type" => "think", "state" => "DONE"}
+             }) == "think DONE"
+
+      assert StatusDashboard.humanize_agent_message(%{
+               event: :stream_event,
+               message: %{"event" => "step_update", "step_update" => %{"step_type" => "think"}}
+             }) == "think"
+
+      assert StatusDashboard.humanize_agent_message(%{
+               event: :stream_event,
+               message: %{"event" => "step_update", "step_update" => %{"state" => "ACTIVE"}}
+             }) == "ACTIVE"
+
+      assert StatusDashboard.humanize_agent_message(%{
+               event: :stream_event,
+               message: %{"event" => "step_update"}
+             }) == "step_update"
+    end
+
+    test "result includes status and usage summary" do
+      humanized =
+        StatusDashboard.humanize_agent_message(%{
+          event: :stream_event,
+          message: %{
+            "event" => "result",
+            "result" => %{
+              "status" => "SUCCESS",
+              "conversation_id" => "conv-1",
+              "response" => "done",
+              "usage" => %{"input_tokens" => 10, "output_tokens" => 5, "total_tokens" => 15}
+            }
+          }
+        })
+
+      assert humanized == "result SUCCESS (in 10, out 5, total 15)"
+
+      assert StatusDashboard.humanize_agent_message(%{
+               event: :stream_event,
+               message: %{"event" => "result", "result" => %{"status" => "ERROR", "error" => "boom"}}
+             }) == "result ERROR"
+    end
+
+    test "unknown antigravity event names fall back to the event name" do
+      assert StatusDashboard.humanize_agent_message(%{
+               event: :stream_event,
+               message: %{"event" => "waiting"}
+             }) == "waiting"
+    end
+
+    test "type=turn.completed still uses the Codex path when event is absent" do
+      humanized =
+        StatusDashboard.humanize_agent_message(%{
+          event: :stream_event,
+          message: %{
+            "type" => "turn.completed",
+            "usage" => %{"input_tokens" => 10, "output_tokens" => 5}
+          }
+        })
+
+      assert humanized == "turn completed (tokens in 10 / out 5)"
+      refute humanized =~ "result"
+      refute humanized =~ "antigravity"
+    end
+
+    test "string event wins over type so Antigravity NDJSON is not mistaken for Codex" do
+      humanized =
+        StatusDashboard.humanize_agent_message(%{
+          event: :stream_event,
+          message: %{"event" => "result", "type" => "turn.completed", "status" => "SUCCESS"}
+        })
+
+      assert humanized == "result SUCCESS"
+    end
+
+    test "harness_stdout and harness_heartbeat leak as harness, not a TUI log line" do
+      assert StatusDashboard.humanize_agent_message(%{event: :harness_stdout, raw: "agy -p hello"}) == "harness"
+
+      assert StatusDashboard.humanize_agent_message(%{
+               event: :harness_heartbeat,
+               timestamp: DateTime.utc_now()
+             }) == "harness"
+
+      assert StatusDashboard.humanize_agent_message(%{
+               event: :harness_stdout,
+               message: %{"raw" => "should not be inspected"}
+             }) == "harness"
+    end
+
+    test "running row event column humanizes antigravity init" do
+      row =
+        StatusDashboard.format_running_summary_for_test(
+          running_entry(%{
+            last_agent_event: :stream_event,
+            last_agent_message: %{
+              event: :stream_event,
+              message: %{"event" => "init", "conversation_id" => "conv-abcdefghijklmnop"}
+            }
+          }),
+          @terminal_columns
+        )
+
+      assert row =~ "antigravity init (conv-abcdefg)"
+    end
+  end
 end

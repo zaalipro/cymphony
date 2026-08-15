@@ -5,8 +5,8 @@ defmodule CymphonyElixirWeb.StaticAssetController do
 
   use Phoenix.Controller, formats: []
 
-  alias Plug.Conn
   alias CymphonyElixirWeb.StaticAssets
+  alias Plug.Conn
 
   @spec dashboard_css(Conn.t(), map()) :: Conn.t()
   def dashboard_css(conn, _params), do: serve(conn, "/dashboard.css")

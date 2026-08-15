@@ -3,14 +3,17 @@ defmodule CymphonyElixir.CLI do
   Escript entrypoint for running Cymphony with an explicit WORKFLOW.md path.
   """
 
+  alias CymphonyElixir.Agent
   alias CymphonyElixir.LogFile
   alias CymphonyElixir.Shell
 
   alias CymphonyElixir.Cymphony.Config, as: CymphonyConfig
   alias CymphonyElixir.Cymphony.Onboarding
+  alias CymphonyElixir.Cymphony.UrlFile
   alias CymphonyElixir.Cymphony.WorkflowGenerator
 
   @acknowledgement_switch :i_understand_that_this_will_be_running_without_the_usual_guardrails
+  @cymphony_mode_opt_keys [:project, :setup, :agent, :model, :effort, :provider, :concurrency]
   @switches [
     {@acknowledgement_switch, :boolean},
     agent: :string,
@@ -61,8 +64,12 @@ defmodule CymphonyElixir.CLI do
 
   @spec evaluate([String.t()], deps()) :: :ok | :done | {:error, String.t()}
   def evaluate(args, deps \\ runtime_deps()) do
-    args = expand_shorthands(args)
+    args
+    |> expand_shorthands()
+    |> dispatch_evaluate(deps)
+  end
 
+  defp dispatch_evaluate(args, deps) do
     cond do
       help_requested?(args) ->
         {:error, help_text()}
@@ -79,6 +86,13 @@ defmodule CymphonyElixir.CLI do
       add_project_requested?(args) ->
         add_project()
 
+      true ->
+        dispatch_lifecycle(args, deps)
+    end
+  end
+
+  defp dispatch_lifecycle(args, deps) do
+    cond do
       stop_background_requested?(args) ->
         stop_background()
 
@@ -92,11 +106,15 @@ defmodule CymphonyElixir.CLI do
         run_background(args, deps)
 
       true ->
-        if cymphony_mode?(args) do
-          cymphony_evaluate(args, deps)
-        else
-          legacy_evaluate(args, deps)
-        end
+        evaluate_run_mode(args, deps)
+    end
+  end
+
+  defp evaluate_run_mode(args, deps) do
+    if cymphony_mode?(args) do
+      cymphony_evaluate(args, deps)
+    else
+      legacy_evaluate(args, deps)
     end
   end
 
@@ -176,40 +194,31 @@ defmodule CymphonyElixir.CLI do
   defp webui_requested?(args), do: args == ["webui"]
 
   defp show_log(args) do
-    tail_count =
-      case args do
-        ["log"] ->
-          nil
-
-        ["log", count | _] ->
-          case Integer.parse(count) do
-            {n, ""} when n > 0 -> n
-            _ -> nil
-          end
-
-        _ ->
-          nil
-      end
-
+    tail_count = parse_log_tail_count(args)
     log_path = CymphonyElixir.LogFile.default_log_file()
+    write_log_output(log_path, tail_count)
+    :done
+  end
 
+  defp parse_log_tail_count(["log", count | _]) do
+    case Integer.parse(count) do
+      {n, ""} when n > 0 -> n
+      _ -> nil
+    end
+  end
+
+  defp parse_log_tail_count(_), do: nil
+
+  defp write_log_output(log_path, tail_count) do
     if File.exists?(log_path) or has_rotated_logs?(log_path) do
-      output =
-        case tail_count do
-          nil ->
-            read_all_logs(log_path)
-
-          n ->
-            read_all_logs(log_path) |> tail_lines(n)
-        end
-
-      IO.binwrite(output)
+      IO.binwrite(log_contents(log_path, tail_count))
     else
       IO.puts(:stderr, "No log file found at #{log_path}")
     end
-
-    :done
   end
+
+  defp log_contents(log_path, nil), do: read_all_logs(log_path)
+  defp log_contents(log_path, n), do: log_path |> read_all_logs() |> tail_lines(n)
 
   defp has_rotated_logs?(log_path) do
     log_dir = Path.dirname(log_path)
@@ -225,40 +234,39 @@ defmodule CymphonyElixir.CLI do
   end
 
   defp read_all_logs(log_path) do
+    # Read rotated logs (oldest rotation index first, then newer), then current
+    all_paths = Enum.reverse(rotated_log_paths(log_path)) ++ [log_path]
+    Enum.map_join(all_paths, &read_log_file/1)
+  end
+
+  defp rotated_log_paths(log_path) do
     log_dir = Path.dirname(log_path)
     base = Path.basename(log_path)
 
-    rotated =
-      case File.ls(log_dir) do
-        {:ok, files} ->
-          files
-          |> Enum.filter(&String.starts_with?(&1, base <> "."))
-          |> Enum.sort_by(
-            fn f ->
-              case String.trim_leading(f, base <> ".") |> Integer.parse() do
-                {n, ""} -> n
-                _ -> 0
-              end
-            end,
-            :desc
-          )
-          |> Enum.map(&Path.join(log_dir, &1))
+    case File.ls(log_dir) do
+      {:ok, files} ->
+        files
+        |> Enum.filter(&String.starts_with?(&1, base <> "."))
+        |> Enum.sort_by(&rotation_index(&1, base), :desc)
+        |> Enum.map(&Path.join(log_dir, &1))
 
-        {:error, _} ->
-          []
-      end
+      {:error, _} ->
+        []
+    end
+  end
 
-    # Read rotated logs (oldest rotation index first, then newer), then current
-    all_paths = Enum.reverse(rotated) ++ [log_path]
+  defp rotation_index(filename, base) do
+    case filename |> String.trim_leading(base <> ".") |> Integer.parse() do
+      {n, ""} -> n
+      _ -> 0
+    end
+  end
 
-    all_paths
-    |> Enum.map(fn path ->
-      case File.read(path) do
-        {:ok, content} -> content
-        {:error, _} -> ""
-      end
-    end)
-    |> Enum.join()
+  defp read_log_file(path) do
+    case File.read(path) do
+      {:ok, content} -> content
+      {:error, _} -> ""
+    end
   end
 
   defp tail_lines(content, n) do
@@ -266,6 +274,12 @@ defmodule CymphonyElixir.CLI do
     |> String.split("\n")
     |> Enum.take(-n)
     |> Enum.join("\n")
+  end
+
+  defp format_agent_kinds do
+    kinds = Agent.known_kinds()
+    {leading, [last]} = Enum.split(kinds, -1)
+    Enum.join(leading, ", ") <> ", or " <> last
   end
 
   defp help_text do
@@ -297,7 +311,7 @@ defmodule CymphonyElixir.CLI do
     Flags:
       --setup                  Force onboarding wizard
       --project <name>         Run a specific project
-      --agent <kind>           Coding agent: claude or codex
+      --agent <kind>           Coding agent: #{format_agent_kinds()}
       --model <name>           Model override passed to the agent CLI
       --effort <level>         Reasoning effort passed to the agent CLI
       --provider <name>        Provider rotation (comma-separated auth aliases)
@@ -314,46 +328,52 @@ defmodule CymphonyElixir.CLI do
 
   defp cymphony_mode?(args) do
     {opts, positional, invalid} = OptionParser.parse(args, strict: @switches)
+    cymphony_mode_flag?(opts) or implicit_cymphony_mode?(opts, positional, invalid)
+  end
 
-    # Daemon-internal processes are always spawned by cymphony itself
-    # and should always use config-based cymphony mode.
+  defp cymphony_mode_flag?(opts) do
     Keyword.get(opts, :daemon_internal, false) or
-      Keyword.has_key?(opts, :project) or
-      Keyword.has_key?(opts, :setup) or
-      Keyword.has_key?(opts, :agent) or
-      Keyword.has_key?(opts, :model) or
-      Keyword.has_key?(opts, :effort) or
-      Keyword.has_key?(opts, :provider) or
-      Keyword.has_key?(opts, :concurrency) or
-      (positional == [] and invalid == [] and
-         not Keyword.has_key?(opts, @acknowledgement_switch) and
-         (CymphonyConfig.exists?() or
-            not File.regular?(Path.expand("WORKFLOW.md"))))
+      Enum.any?(@cymphony_mode_opt_keys, &Keyword.has_key?(opts, &1))
+  end
+
+  defp implicit_cymphony_mode?(opts, positional, invalid) do
+    implicit_cymphony_args?(positional, invalid) and
+      not Keyword.has_key?(opts, @acknowledgement_switch) and
+      implicit_cymphony_config?()
+  end
+
+  defp implicit_cymphony_args?([], []), do: true
+  defp implicit_cymphony_args?(_positional, _invalid), do: false
+
+  defp implicit_cymphony_config? do
+    CymphonyConfig.exists?() or not File.regular?(Path.expand("WORKFLOW.md"))
   end
 
   defp list_projects do
     case Onboarding.list_projects() do
       {:ok, projects} ->
-        case projects do
-          [] ->
-            IO.puts("No projects configured. Run `cymphony s` to set up.")
-            :done
-
-          projects ->
-            IO.puts("Configured projects:\n")
-
-            Enum.each(projects, fn project ->
-              name = Map.get(project, "name", "unnamed")
-              slug = Map.get(project, "linear_project_slug", "n/a")
-              IO.puts("  #{name} (slug: #{slug})")
-            end)
-
-            :done
-        end
+        print_projects(projects)
 
       {:error, reason} ->
         {:error, "Configuration error: #{inspect(reason)}"}
     end
+  end
+
+  defp print_projects([]) do
+    IO.puts("No projects configured. Run `cymphony s` to set up.")
+    :done
+  end
+
+  defp print_projects(projects) do
+    IO.puts("Configured projects:\n")
+    Enum.each(projects, &print_project/1)
+    :done
+  end
+
+  defp print_project(project) do
+    name = Map.get(project, "name", "unnamed")
+    slug = Map.get(project, "linear_project_slug", "n/a")
+    IO.puts("  #{name} (slug: #{slug})")
   end
 
   defp add_project do
@@ -385,104 +405,118 @@ defmodule CymphonyElixir.CLI do
 
   defp cymphony_evaluate(args, deps) do
     {opts, _, _} = OptionParser.parse(args, strict: @switches)
-    project_filter = Keyword.get(opts, :project)
+    maybe_write_daemon_pidfile(opts)
 
-    if Keyword.get(opts, :daemon_internal, false) do
-      :ok = write_pidfile(System.pid())
-    end
-
-    config =
-      if Keyword.get(opts, :setup, false) or not CymphonyConfig.exists?() do
-        run_onboarding_without_tui(&Onboarding.run/0)
-      else
-        CymphonyConfig.load()
-      end
-
-    case config do
+    case load_or_onboard_config(opts) do
       {:ok, cfg} ->
-        projects = CymphonyConfig.projects(cfg)
-        filtered_projects = filter_projects(projects, project_filter)
-
-        filtered_projects =
-          case Keyword.get(opts, :provider) do
-            nil ->
-              filtered_projects
-
-            value ->
-              providers = parse_provider_list(value)
-
-              Enum.map(filtered_projects, fn project ->
-                project
-                |> Map.put("provider", hd(providers))
-                |> Map.put("providers", providers)
-              end)
-          end
-
-        filtered_projects =
-          case Keyword.get(opts, :agent) do
-            kind when kind in ["claude", "codex"] ->
-              Enum.map(filtered_projects, &Map.put(&1, "agent", kind))
-
-            nil ->
-              filtered_projects
-
-            other ->
-              IO.puts(:stderr, "Unknown agent '#{other}' — using configured agent")
-              filtered_projects
-          end
-
-        filtered_projects =
-          case Keyword.get(opts, :model) do
-            model when is_binary(model) and model != "" ->
-              Enum.map(filtered_projects, &Map.put(&1, "model", model))
-
-            _ ->
-              filtered_projects
-          end
-
-        filtered_projects =
-          case Keyword.get(opts, :effort) do
-            effort when is_binary(effort) and effort != "" ->
-              Enum.map(filtered_projects, &Map.put(&1, "effort", effort))
-
-            _ ->
-              filtered_projects
-          end
-
-        filtered_projects =
-          case Keyword.get(opts, :concurrency) do
-            n when is_integer(n) and n > 0 ->
-              Enum.map(filtered_projects, &Map.put(&1, "max_concurrent_agents", n))
-
-            _ ->
-              filtered_projects
-          end
-
-        case filtered_projects do
-          [] ->
-            {:error,
-             if project_filter do
-               "Project '#{project_filter}' not found in config"
-             else
-               "No projects configured. Run `cymphony s` to set up."
-             end}
-
-          projects ->
-            case generate_workflow_files(projects) do
-              {:ok, project_workflow_pairs} ->
-                with :ok <- maybe_set_logs_root(opts, deps),
-                     :ok <- maybe_set_server_port(opts, deps) do
-                  run_multi_project(project_workflow_pairs, deps)
-                end
-
-              {:error, reason} ->
-                {:error, "Failed to generate workflow: #{inspect(reason)}"}
-            end
-        end
+        start_from_config(cfg, opts, deps)
 
       {:error, reason} ->
         {:error, "Configuration error: #{inspect(reason)}"}
     end
+  end
+
+  defp maybe_write_daemon_pidfile(opts) do
+    if Keyword.get(opts, :daemon_internal, false) do
+      :ok = write_pidfile(System.pid())
+    end
+  end
+
+  defp load_or_onboard_config(opts) do
+    if Keyword.get(opts, :setup, false) or not CymphonyConfig.exists?() do
+      run_onboarding_without_tui(&Onboarding.run/0)
+    else
+      CymphonyConfig.load()
+    end
+  end
+
+  defp start_from_config(cfg, opts, deps) do
+    project_filter = Keyword.get(opts, :project)
+
+    cfg
+    |> CymphonyConfig.projects()
+    |> filter_projects(project_filter)
+    |> apply_cli_overrides(opts)
+    |> start_filtered_projects(project_filter, opts, deps)
+  end
+
+  defp apply_cli_overrides(projects, opts) do
+    projects
+    |> apply_provider_override(Keyword.get(opts, :provider))
+    |> apply_agent_override(Keyword.get(opts, :agent))
+    |> apply_model_override(Keyword.get(opts, :model))
+    |> apply_effort_override(Keyword.get(opts, :effort))
+    |> apply_concurrency_override(Keyword.get(opts, :concurrency))
+  end
+
+  defp apply_provider_override(projects, nil), do: projects
+
+  defp apply_provider_override(projects, value) do
+    providers = parse_provider_list(value)
+
+    Enum.map(projects, fn project ->
+      project
+      |> Map.put("provider", hd(providers))
+      |> Map.put("providers", providers)
+    end)
+  end
+
+  defp apply_agent_override(projects, kind) when is_binary(kind) do
+    if Agent.known_kind?(kind) do
+      Enum.map(projects, &Map.put(&1, "agent", kind))
+    else
+      IO.puts(:stderr, "Unknown agent '#{kind}' — using configured agent")
+      projects
+    end
+  end
+
+  defp apply_agent_override(projects, _), do: projects
+
+  defp apply_model_override(projects, model) when is_binary(model) and model != "" do
+    Enum.map(projects, &Map.put(&1, "model", model))
+  end
+
+  defp apply_model_override(projects, _), do: projects
+
+  defp apply_effort_override(projects, effort) when is_binary(effort) and effort != "" do
+    Enum.map(projects, &Map.put(&1, "effort", effort))
+  end
+
+  defp apply_effort_override(projects, _), do: projects
+
+  defp apply_concurrency_override(projects, n) when is_integer(n) and n > 0 do
+    Enum.map(projects, &Map.put(&1, "max_concurrent_agents", n))
+  end
+
+  defp apply_concurrency_override(projects, _), do: projects
+
+  defp start_filtered_projects([], project_filter, _opts, _deps) do
+    empty_projects_error(project_filter)
+  end
+
+  defp start_filtered_projects(projects, _project_filter, opts, deps) do
+    case generate_workflow_files(projects) do
+      {:ok, project_workflow_pairs} ->
+        start_generated_projects(project_workflow_pairs, opts, deps)
+
+      {:error, reason} ->
+        {:error, "Failed to generate workflow: #{inspect(reason)}"}
+    end
+  end
+
+  defp start_generated_projects(project_workflow_pairs, opts, deps) do
+    with :ok <- maybe_set_logs_root(opts, deps),
+         :ok <- maybe_set_server_port(opts, deps) do
+      run_multi_project(project_workflow_pairs, deps)
+    end
+  end
+
+  defp empty_projects_error(nil) do
+    {:error, "No projects configured. Run `cymphony s` to set up."}
+  end
+
+  defp empty_projects_error(project_filter) do
+    {:error, "Project '#{project_filter}' not found in config"}
   end
 
   defp parse_provider_list(value) when is_binary(value) do
@@ -753,22 +787,30 @@ defmodule CymphonyElixir.CLI do
         {:error, "Cymphony is not running in background"}
 
       {:ok, pid} ->
-        if not process_alive?(pid) do
-          remove_pidfile()
-          {:error, "Cymphony is not running in background (stale pidfile removed)"}
-        else
-          System.cmd("kill", ["-TERM", pid])
+        stop_background_pid(pid)
+    end
+  end
 
-          case wait_for_process_death(pid, 10_000) do
-            :ok ->
-              remove_pidfile()
-              IO.puts("Cymphony stopped (PID: #{pid})")
-              :done
+  defp stop_background_pid(pid) do
+    if process_alive?(pid) do
+      terminate_background_pid(pid)
+    else
+      remove_pidfile()
+      {:error, "Cymphony is not running in background (stale pidfile removed)"}
+    end
+  end
 
-            :timeout ->
-              {:error, "Timed out waiting for Cymphony (PID: #{pid}) to stop"}
-          end
-        end
+  defp terminate_background_pid(pid) do
+    System.cmd("kill", ["-TERM", pid])
+
+    case wait_for_process_death(pid, 10_000) do
+      :ok ->
+        remove_pidfile()
+        IO.puts("Cymphony stopped (PID: #{pid})")
+        :done
+
+      :timeout ->
+        {:error, "Timed out waiting for Cymphony (PID: #{pid}) to stop"}
     end
   end
 
@@ -778,8 +820,6 @@ defmodule CymphonyElixir.CLI do
   end
 
   defp open_webui do
-    alias CymphonyElixir.Cymphony.UrlFile
-
     with {:ok, url} <- UrlFile.read(),
          :ok <- launch_browser(url) do
       IO.puts("Opening #{url}")
@@ -833,10 +873,6 @@ defmodule CymphonyElixir.CLI do
     File.write(pidfile_path(), pid)
   end
 
-  defp write_pidfile(pid) when is_integer(pid) do
-    write_pidfile(Integer.to_string(pid))
-  end
-
   defp remove_pidfile do
     case File.rm(pidfile_path()) do
       :ok -> :ok
@@ -849,7 +885,7 @@ defmodule CymphonyElixir.CLI do
       {:ok, pid} ->
         if pid == System.pid() do
           remove_pidfile()
-          CymphonyElixir.Cymphony.UrlFile.delete()
+          UrlFile.delete()
         end
 
       :error ->
@@ -865,23 +901,22 @@ defmodule CymphonyElixir.CLI do
   end
 
   defp escript_path do
-    script = :escript.script_name()
-
-    cond do
-      is_binary(script) and script != "" ->
-        script
-
-      is_list(script) and script != [] ->
+    case :escript.script_name() do
+      script when is_list(script) and script != [] ->
         List.to_string(script)
 
-      true ->
-        case :init.get_argument(:progname) do
-          {:ok, [[path]]} when path != ~c"erl" and path != ~c"erlexec" ->
-            List.to_string(path)
+      _ ->
+        progname_or_default()
+    end
+  end
 
-          _ ->
-            System.find_executable("cymphony") || "cymphony"
-        end
+  defp progname_or_default do
+    case :init.get_argument(:progname) do
+      {:ok, [[path]]} when path != ~c"erl" and path != ~c"erlexec" ->
+        List.to_string(path)
+
+      _ ->
+        System.find_executable("cymphony") || "cymphony"
     end
   end
 

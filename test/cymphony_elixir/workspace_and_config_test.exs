@@ -1,8 +1,8 @@
 defmodule CymphonyElixir.WorkspaceAndConfigTest do
   use CymphonyElixir.TestSupport
-  alias Ecto.Changeset
   alias CymphonyElixir.Config.Schema
   alias CymphonyElixir.Linear.Client
+  alias Ecto.Changeset
 
   test "workspace bootstrap can be implemented in after_create hook" do
     test_root =

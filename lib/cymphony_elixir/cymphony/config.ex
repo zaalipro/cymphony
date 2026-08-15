@@ -1,6 +1,7 @@
 defmodule CymphonyElixir.Cymphony.Config do
   @moduledoc false
 
+  alias CymphonyElixir.Agent
   alias CymphonyElixir.Cymphony.Defaults
 
   @config_dir "~/.cymphony"
@@ -174,8 +175,10 @@ defmodule CymphonyElixir.Cymphony.Config do
   end
 
   defp validate_agent_kind(nil), do: :ok
-  defp validate_agent_kind(kind) when kind in ["claude", "codex"], do: :ok
-  defp validate_agent_kind(_kind), do: {:error, :invalid_agent_kind}
+
+  defp validate_agent_kind(kind) do
+    if kind in Agent.known_kinds(), do: :ok, else: {:error, :invalid_agent_kind}
+  end
 
   defp apply_agent_settings(%{"projects" => projects} = config, project_name, settings)
        when is_list(projects) do
@@ -276,17 +279,16 @@ defmodule CymphonyElixir.Cymphony.Config do
         "max_turns" => Defaults.max_turns()
       },
       "claude" => agent_section_map(config, "claude"),
-      "codex" => agent_section_map(config, "codex")
+      "codex" => agent_section_map(config, "codex"),
+      "antigravity" => agent_section_map(config, "antigravity")
     }
 
     maybe_put_hooks(base, config)
   end
 
   defp agent_kind(config) do
-    case Map.get(config, "agent") do
-      kind when kind in ["claude", "codex"] -> kind
-      _ -> Defaults.agent_kind()
-    end
+    kind = Map.get(config, "agent")
+    if kind in Agent.known_kinds(), do: kind, else: Defaults.agent_kind()
   end
 
   defp agent_section_map(config, "claude") do
@@ -297,6 +299,15 @@ defmodule CymphonyElixir.Cymphony.Config do
   defp agent_section_map(config, "codex") do
     %{"command" => Defaults.codex_command(), "sandbox" => Defaults.codex_sandbox()}
     |> maybe_put_provider_keys(config, "codex")
+  end
+
+  defp agent_section_map(config, "antigravity") do
+    %{
+      "command" => Defaults.antigravity_command(),
+      "output_format" => "stream-json",
+      "skip_permissions" => true
+    }
+    |> maybe_put_provider_keys(config, "antigravity")
   end
 
   # Providers are auth aliases for a specific backend: they belong to the

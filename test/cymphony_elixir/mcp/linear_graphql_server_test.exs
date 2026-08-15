@@ -50,7 +50,7 @@ defmodule CymphonyElixir.Mcp.LinearGraphqlServerTest do
     test "unknown method returns -32601" do
       frame = Jason.encode!(%{"jsonrpc" => "2.0", "id" => 3, "method" => "totally/unknown"})
       {:ok, decoded} = Jason.decode(Server.handle_message(frame, %{}))
-      assert decoded["error"]["code"] == -32601
+      assert decoded["error"]["code"] == -32_601
     end
 
     test "notification (no id) returns :no_reply" do
@@ -60,13 +60,13 @@ defmodule CymphonyElixir.Mcp.LinearGraphqlServerTest do
 
     test "invalid JSON returns -32700" do
       {:ok, decoded} = Jason.decode(Server.handle_message("{not json", %{}))
-      assert decoded["error"]["code"] == -32700
+      assert decoded["error"]["code"] == -32_700
     end
 
     test "non-2.0 jsonrpc returns -32600" do
       frame = Jason.encode!(%{"id" => 1, "method" => "initialize"})
       {:ok, decoded} = Jason.decode(Server.handle_message(frame, %{}))
-      assert decoded["error"]["code"] == -32600
+      assert decoded["error"]["code"] == -32_600
     end
 
     test "tools/call with unknown tool name returns -32602" do
@@ -79,7 +79,7 @@ defmodule CymphonyElixir.Mcp.LinearGraphqlServerTest do
         })
 
       {:ok, decoded} = Jason.decode(Server.handle_message(frame, %{}))
-      assert decoded["error"]["code"] == -32602
+      assert decoded["error"]["code"] == -32_602
     end
   end
 

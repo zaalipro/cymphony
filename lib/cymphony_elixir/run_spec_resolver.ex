@@ -116,26 +116,34 @@ defmodule CymphonyElixir.RunSpecResolver do
 
     rest
     |> String.split(whitespace, trim: true)
-    |> Enum.reduce(%{}, fn token, acc ->
-      case Regex.run(pair_pattern, token) do
-        [_, raw_key, raw_value] ->
-          key = String.downcase(raw_key)
-
-          case Map.fetch(@override_keys, key) do
-            {:ok, field} ->
-              value = if field in [:agent_kind, :effort], do: String.downcase(raw_value), else: raw_value
-              put_validated(acc, field, value)
-
-            :error ->
-              Logger.debug("run_spec: unknown directive key #{inspect(raw_key)} — ignored")
-              acc
-          end
-
-        nil ->
-          acc
-      end
-    end)
+    |> Enum.reduce(%{}, fn token, acc -> apply_directive_token(acc, token, pair_pattern) end)
   end
+
+  defp apply_directive_token(acc, token, pair_pattern) do
+    case Regex.run(pair_pattern, token) do
+      [_, raw_key, raw_value] -> put_directive_pair(acc, raw_key, raw_value)
+      nil -> acc
+    end
+  end
+
+  defp put_directive_pair(acc, raw_key, raw_value) do
+    key = String.downcase(raw_key)
+
+    case Map.fetch(@override_keys, key) do
+      {:ok, field} ->
+        put_validated(acc, field, normalize_directive_value(field, raw_value))
+
+      :error ->
+        Logger.debug("run_spec: unknown directive key #{inspect(raw_key)} — ignored")
+        acc
+    end
+  end
+
+  defp normalize_directive_value(field, raw_value) when field in [:agent_kind, :effort] do
+    String.downcase(raw_value)
+  end
+
+  defp normalize_directive_value(_field, raw_value), do: raw_value
 
   defp parse_label(label) when is_binary(label) do
     case String.split(label, ":", parts: 2) do

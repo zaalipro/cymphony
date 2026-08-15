@@ -324,6 +324,8 @@ Top-level keys:
 - `hooks`
 - `agent`
 - `claude`
+- `codex`
+- `antigravity`
 
 Unknown keys should be ignored for forward compatibility.
 
@@ -404,17 +406,19 @@ Agent-neutral settings shared by every coding-agent backend.
 
 Fields:
 
-- `kind` (string, `"claude"` | `"codex"`)
+- `kind` (string, `"claude"` | `"codex"` | `"antigravity"`)
   - Default: `"claude"`
   - Selects the coding-agent CLI adapter used for dispatched sessions.
   - Unknown values are a validation error.
 - `model` (string or null)
   - Default: null (the agent CLI's own default model).
-  - Passed through to the agent CLI verbatim (`--model` for Claude Code, `-m` for Codex).
+  - Passed through to the agent CLI verbatim (`--model` for Claude Code and
+    Antigravity, `-m` for Codex).
   - Not validated against a model list; invalid values surface as run failures.
 - `effort` (string or null)
   - Default: null (the agent CLI's own default effort).
-  - Passed through verbatim (`--effort` for Claude Code, `-c model_reasoning_effort=…` for Codex).
+  - Passed through verbatim (`--effort` for Claude Code and Antigravity,
+    `-c model_reasoning_effort=…` for Codex).
 - `max_concurrent_agents` (integer or string integer)
   - Default: `10`
   - Changes should be re-applied at runtime and affect subsequent dispatch decisions.
@@ -484,7 +488,100 @@ Codex CLI-specific settings. Only consulted when `agent.kind` is `"codex"`.
 
 Completion conditions for a Codex turn: a `turn.completed` JSONL event is success; a
 `turn.failed` event, missing terminal event, nonzero process exit, or turn timeout is failure.
-Session identifiers come from the `thread.started` event's `thread_id`.
+Session identifiers come from the `thread.started` event's `thread_id`. If `thread.started` is
+missing, a later event's `thread_id` is accepted. A `turn.completed` event with no
+`item.completed` agent message is still success (`result` may be null). Non-JSON and blank
+lines (including mixed stderr noise on the merged stream) are ignored.
+
+#### 5.3.8 `antigravity` (object)
+
+Antigravity CLI-specific settings (Google Antigravity / `agy`, successor to Gemini CLI).
+Only consulted when `agent.kind` is `"antigravity"`.
+
+The binary is `run_spec.command || settings.command || "agy"` (empty string falls through,
+same rule as Codex). `ANTIGRAVITY_CLI_BIN` / `AGY_CLI_BIN` are not read; operators override
+via `antigravity.command`.
+
+Headless invocation: `agy -p <prompt>` (`-p` aliases `--print` / `--prompt`). stdout is the
+result; stderr is diagnostics. The runner merges stderr into stdout (`:stderr_to_stdout`) so
+both land in the same line stream.
+
+Fields:
+
+- `command` (string shell command)
+  - Default: `agy`
+  - Required. Override the Antigravity CLI binary.
+- `output_format` (string, `text` | `json` | `stream-json`)
+  - Default: `stream-json`.
+  - Passed as `--output-format`.
+- `extra_args` (string or null)
+  - Default: null.
+  - Trusted operator input. A non-empty string is appended unescaped as a trailing
+    fragment. A list of binaries is escaped item-by-item and appended.
+- `skip_permissions` (boolean)
+  - Default: `true`.
+  - When true, passes `--dangerously-skip-permissions` (same spirit as Claude
+    `acceptEdits`).
+- `sandbox` (boolean)
+  - Default: `false`.
+  - When true, passes `--sandbox`.
+- `print_timeout` (string or null)
+  - Default: null.
+  - When a non-empty string, passed as `--print-timeout <value>`. Do not auto-wire
+    `agent.turn_timeout_ms` to `--print-timeout`.
+- `provider` / `providers` (string / list of strings)
+  - Auth aliases, as for Claude/Codex. Env capture keeps `ANTIGRAVITY_*`, `GOOGLE_*`,
+    `GEMINI_*`, and `API_TIMEOUT` variables. Fallback keys: `GOOGLE_API_KEY`,
+    `GEMINI_API_KEY`.
+
+Argv (space-joined; prompt, session id, model, and effort are shell-escaped):
+
+```text
+<cmd> -p <escaped prompt> --output-format <output_format>
+  [--model <escaped model>]          when model is a non-empty binary
+  [--effort <escaped effort>]        when effort is a non-empty binary
+  [--conversation <escaped id>]      when session_id is a non-empty binary
+  [--dangerously-skip-permissions]   when skip_permissions is true
+  [--sandbox]                        when sandbox is true
+  [--print-timeout <print_timeout>]  when print_timeout is a non-empty binary
+  <extra_args fragment>
+```
+
+Resume uses `--conversation <conversation_id>` only. Never emit `-c` / `--continue`
+(those resume the last session in cwd and would cross-pollute issues). Do not emit
+`--resume`. Do not invent MCP flags (`--mcp-config` is not in the official headless
+table); operators may pass extras via `extra_args`.
+
+Output parse contract:
+
+- `stream-json` (NDJSON): decode each line; emit `%{event: :stream_event, payload, raw, timestamp}`
+  for every decoded map. Fold:
+  - `event=="init"` → `session_id = conversation_id` (top-level or `init.conversation_id`)
+  - `event=="step_update"` → append `step_update.text_delta` (binaries only) onto
+    `last_message`; keep the latest `step_update.usage` map
+  - `event=="result"` → take `result` (or the event itself); `session_id` from
+    `conversation_id`; `result_text` from `response`; `usage` from `usage`; `status`
+    from `status`
+  - After fold: if a completed map has `status` present and `status != "SUCCESS"` →
+    `{:error, {:turn_failed, error}}`; if a completed map is present →
+    `{:ok, %{session_id, result, usage, raw}}`; else
+    `{:error, {:no_result_in_stream, joined}}`.
+- `json`: last trimmed line that starts with `{` and ends with `}` (same find-last-json
+  as Claude). Decode. `status` present and not `SUCCESS` → `{:error, {:turn_failed, error}}`;
+  else `{:ok, %{session_id: conversation_id, result: response, usage, raw}}`. Errors:
+  `{:no_json_output, joined}`, `{:json_decode_failed, err, line}`. The json path emits
+  no `:stream_event`.
+- `text` (anything else): `{:ok, %{session_id: nil, result: joined, usage: nil, raw: joined}}`.
+
+`json` envelope fields: `conversation_id`, `status`
+(`SUCCESS|ERROR|CANCELED|INTERRUPTED|INVALID|WAITING|RUNNING`), `response`, `error?`,
+`duration_seconds`, `num_turns`, `usage:{input_tokens,output_tokens,thinking_tokens,cache_read_tokens,total_tokens}`.
+
+Normalized usage keeps only `input_tokens`, `output_tokens`, and `total_tokens`
+(integer-or-zero). Missing `total_tokens` is `input + output`. `thinking_tokens` and
+cache fields are dropped from the normalized map. Non-JSON lines are ignored and do
+not fail the turn. An unknown `--model` slug exits nonzero with `status ERROR`.
+Invalid `--effort` (not `low|medium|high`) fails the run.
 
 ### 5.4 Prompt Template Contract
 
@@ -611,6 +708,7 @@ This section is intentionally redundant so a coding agent can implement the conf
 - `hooks.after_run`: shell script or null
 - `hooks.before_remove`: shell script or null
 - `hooks.timeout_ms`: integer, default `60000`
+- `agent.kind`: string, `claude` | `codex` | `antigravity`, default `claude`
 - `agent.max_concurrent_agents`: integer, default `10`
 - `agent.max_turns`: integer, default `20`
 - `agent.max_retry_backoff_ms`: integer, default `300000` (5m)
@@ -622,6 +720,13 @@ This section is intentionally redundant so a coding agent can implement the conf
 - `claude.turn_timeout_ms`: integer, default `3600000`
 - `claude.read_timeout_ms`: integer, default `5000`
 - `claude.stall_timeout_ms`: integer, default `300000`
+- `antigravity.command`: shell command string, default `agy`
+- `antigravity.output_format`: `text` | `json` | `stream-json`, default `stream-json`
+- `antigravity.extra_args`: string or null
+- `antigravity.skip_permissions`: boolean, default `true`
+- `antigravity.sandbox`: boolean, default `false`
+- `antigravity.print_timeout`: string or null
+- `antigravity.provider` / `antigravity.providers`: string / list of strings
 - `server.port` (extension): integer, optional; enables the optional HTTP server, `0` may be used
   for ephemeral local bind, and CLI `--port` overrides it
 
@@ -789,6 +894,12 @@ Rules:
   the agent kind away from the project default, the provider falls back to that kind's
   configured `provider` (rotation lists are per-kind).
 - The dispatch log line records `agent=… model=… effort=… source=labels|directive|config`.
+- Known kinds include `claude`, `codex`, and `antigravity`. Labels such as
+  `agent:antigravity` and a description directive `cymphony: agent=antigravity`
+  are valid once `agent.kind` accepts that union.
+- Dashboard/API `set_issue_run_spec` may pin `:provider`, `:model`, `:effort`,
+  and `:agent_kind` (all optional; empty / `"keep"` skips). A restart kills the
+  running session and redispatches with those overrides for the next attempt.
 
 ### 8.3 Concurrency Control
 
@@ -1218,6 +1329,58 @@ Note:
 
 - Workspaces are intentionally preserved after successful runs.
 
+### 10.8 Harness stdout streaming
+
+The agent runner emits live CLI stdout incrementally so a dashboard can tail a
+session without flooding LiveView or ingesting raw lines into orchestrator
+`log_events`.
+
+Pipeline:
+
+1. `Agent.Runner.collect_output` emits `%{event: :harness_stdout, raw, timestamp}`
+   after each completed stdout line (`{:eol, chunk}`) and for a leftover buffer
+   on exit 0. `raw` is truncated to 2048 bytes. `{:noeol, _}` chunks stay
+   buffered and are not emitted. `parse_output` still runs only after a
+   successful (exit 0) process; a nonzero exit is `{:agent_exit, status, remaining}`
+   with no parse. Adapter `:stream_event` emissions stay post-exit (or still go
+   through `on_message` if an adapter later streams parse).
+2. `AgentRunner` does **not** forward `:harness_stdout` to the orchestrator. It
+   calls `HarnessStream.append(issue_id, raw)` and may send
+   `%{event: :harness_heartbeat, timestamp}` to the orchestrator at most once
+   per 2000 ms per issue (stall detection only).
+3. `HarnessStream` (GenServer + ETS) keeps a per-issue ring of at most 400
+   newest lines (each truncated to 2048 bytes), with a monotonic `seq` starting
+   at 1. `dropped` counts lines discarded by the ring. Broadcasts are coalesced:
+   at most one broadcast per issue per 80 ms; each broadcast carries at most 40
+   newly-appended lines since the last flush. The first append after a quiet
+   period flushes immediately.
+4. `ObservabilityPubSub.broadcast_harness/2` publishes a **map** (never a bare
+   atom) on topic `observability:issue:<issue_id>:harness`:
+
+   ```elixir
+   %{event: :harness_stream, issue_id: String.t(), last_seq: non_neg_integer(),
+     lines: [%{seq: pos_integer(), at: DateTime.t(), text: String.t()}],
+     dropped: non_neg_integer()}
+   ```
+
+   Existing `subscribe` / `broadcast_update` / `subscribe_issue` /
+   `broadcast_issue_update` still send the bare atom `:observability_updated`.
+5. LiveView subscribes on session-row expand, snapshots the ring, and appends
+   only lines with `seq` greater than the stored `last_seq` (cap 400). Collapse
+   unsubscribes and drops the tail assign. A Follow/Paused toggle controls
+   autoscroll. Expanding a row must not spawn a full presenter payload reload
+   for harness ticks.
+6. The orchestrator treats `:harness_heartbeat` as a timestamp-only stall poke:
+   it updates `running_entry.last_agent_timestamp` and does **not**
+   `append_log_event`, `notify_dashboard`, or `broadcast_issue_update`.
+   `:harness_stdout` / `:harness_heartbeat` must never appear in the 50-event
+   `log_events` ring. On every path that removes a running entry (success, kill,
+   fail, abandon) the orchestrator calls `HarnessStream.drop(issue_id)`.
+
+Public `HarnessStream` API: `start_link/1`, `append/2`, `snapshot/1`, `drop/1`.
+`snapshot/1` returns `%{issue_id, last_seq, lines, dropped}` with `last_seq` 0
+and `lines` `[]` when the issue is unknown.
+
 ## 11. Issue Tracker Integration Contract (Linear-Compatible)
 
 ### 11.1 Required Operations
@@ -1394,16 +1557,33 @@ correctness.
 Token accounting rules:
 
 - Agent events may include token counts in multiple payload shapes.
+- `Tokens.extract_token_delta` takes the first integer token map found, in this
+  order:
+  1. `update[:usage]` / `update["usage"]` when that value itself is an integer
+     token map (this is how `:turn_completed` from `Agent.Runner` counts)
+  2. `payload["usage"]` / `payload[:usage]` when `payload` is `update[:payload]`
+  3. `payload["type"]` in `["turn.completed", "turn/completed"]` → `payload["usage"]`
+     (Codex JSONL)
+  4. `payload["event"] == "result"` → `result["usage"]` or `payload["usage"]`
+     (Antigravity result envelope)
+  5. `payload["event"] == "step_update"` → `step_update["usage"]` (Antigravity
+     mid-turn)
+  6. Existing Claude paths (`params.msg…total_token_usage`, `tokenUsage.total`,
+     `method == "turn/completed"`)
 - Prefer absolute thread totals when available, such as:
   - `thread/tokenUsage/updated` payloads
   - `total_token_usage` within token-count wrapper events
 - Ignore delta-style payloads such as `last_token_usage` for dashboard/API totals.
 - Extract input/output/total token counts leniently from common field names within the selected
   payload.
+- If `total_tokens` is missing, `total = input + output`. `thinking_tokens` is
+  not added to output.
 - For absolute totals, track deltas relative to last reported totals to avoid double-counting.
 - Do not treat generic `usage` maps as cumulative totals unless the event type defines them that
   way.
 - Accumulate aggregate totals in orchestrator state.
+- Mid-turn Antigravity `step_update` usage and Codex stream-event
+  `turn.completed` usage increment the running entry the same way.
 
 Runtime accounting:
 
@@ -1517,6 +1697,11 @@ Minimum endpoints:
     }
     ```
 
+- `GET /api/v1/<issue_identifier>/harness`
+  - Must be declared **before** the `GET /api/v1/<issue_identifier>` catch-all.
+  - Optional query `?project=<name>`.
+  - `200`: `HarnessStream.snapshot(issue_id)` plus `issue_identifier`.
+  - `404`: the issue is not running and there is no leftover snapshot.
 - `GET /api/v1/<issue_identifier>`
   - Returns issue-specific runtime/debug details for the identified issue, including any information
     the implementation tracks that is useful for debugging.
@@ -1597,9 +1782,14 @@ optional `?project=<name>` scope):
   runtime and persists to the operator config store.
 - `POST /api/v1/providers` — body `{"value": "a1,a2"}`; updates the active agent kind's
   provider rotation; applies to subsequent dispatches only.
-- `POST /api/v1/agent` — body with any of `kind` (`"claude"`/`"codex"`), `model`, `effort`
-  (empty string clears model/effort to the agent default); updates runtime agent settings and
-  persists; applies to subsequent dispatches.
+- `POST /api/v1/agent` — body with any of `kind` (`"claude"`/`"codex"`/`"antigravity"`),
+  `model`, `effort` (empty string clears model/effort to the agent default); updates
+  runtime agent settings and persists; applies to subsequent dispatches. Error when
+  none of those keys are present or `kind` is not a known kind:
+  `"body must include at least one of kind/model/effort; kind must be one of: claude, codex, antigravity"`.
+- Dashboard `set_issue_run_spec` (LiveView / orchestrator) accepts optional
+  `:provider`, `:model`, `:effort`, and `:agent_kind` overrides and kills +
+  redispatches the session. Empty / `"keep"` skips a field.
 
 Dashboard display preferences (density, hidden sections, visible columns, list lengths) are
 client-side only (browser localStorage); they are not server state and have no API surface.

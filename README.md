@@ -175,10 +175,10 @@ How often Cymphony checks Linear for new "Todo" issues. The default of 5 seconds
 ### Step 7 — Coding agent *(optional)*
 
 ```
-Coding agent (claude/codex) [claude]:
+Coding agent (claude/codex/antigravity) [claude]:
 ```
 
-Which coding agent runs this project's sessions: Claude Code (`claude`) or Codex CLI (`codex`). Press **Enter** for Claude Code. You can switch later with `cymphony agent codex` or the per-project `agent` key in `~/.cymphony/config.json`.
+Which coding agent runs this project's sessions: Claude Code (`claude`), Codex CLI (`codex`), or Antigravity CLI (`agy`). Press **Enter** for Claude Code. You can switch later with `cymphony agent antigravity` / `cymphony agent codex` or the per-project `agent` key in `~/.cymphony/config.json`.
 
 ### Step 8 — Add another project? *(optional)*
 
@@ -230,6 +230,7 @@ cymphony project MyApp                  # run only the "MyApp" project
 cymphony cr 3                           # cap concurrent sessions at 3
 cymphony c cv1,cz2                      # rotate across providers cv1 and cz2
 cymphony agent codex                    # run with the Codex CLI instead of Claude Code
+cymphony agent antigravity              # run with the Antigravity CLI (`agy`)
 cymphony model opus effort high         # model + reasoning effort passed to the agent CLI
 cymphony port 4089                      # enable dashboard
 cymphony project MyApp cr 5 c cv1,cz port 4089  # combine flags
@@ -247,11 +248,12 @@ Long-form flags also work: `--project`, `--agent`, `--model`, `--effort`, `--con
 
 ### Per-issue overrides
 
-Add Linear labels — `agent:codex`, `model:gpt-5.2-codex`, `effort:high`, `provider:cz1` —
-or a directive line in the issue description:
+Add Linear labels — `agent:codex`, `agent:antigravity`, `model:gpt-5.2-codex`,
+`effort:high`, `provider:cz1` — or a directive line in the issue description:
 
 ```
 cymphony: agent=codex model=gpt-5.2-codex effort=high
+cymphony: agent=antigravity model=gemini-3.7-flash-high effort=high
 ```
 
 Labels win over the directive; both win over project config. Changes apply on the
@@ -278,7 +280,7 @@ Because Cymphony reuses the workspace per-issue, the agent keeps full context ac
 
 ## Multiple Claude providers
 
-When you run a few sessions in parallel, the upstream API hits rate limits fast. Cymphony solves this by letting you spread sessions across multiple Claude-compatible backends. Each is just a different `ANTHROPIC_BASE_URL` + `ANTHROPIC_API_KEY` combo — Anthropic's official API, [z.ai](https://z.ai/) (GLM), [Kimi](https://kimi.com/) (Moonshot), [OpenRouter](https://openrouter.ai/), or any vendor that exposes an Anthropic-compatible API.
+When you run a few sessions in parallel, the upstream API hits rate limits fast. Cymphony solves this by letting you spread sessions across multiple backends. For Claude, each provider is a different `ANTHROPIC_BASE_URL` + `ANTHROPIC_API_KEY` combo — Anthropic's official API, [z.ai](https://z.ai/) (GLM), [Kimi](https://kimi.com/) (Moonshot), [OpenRouter](https://openrouter.ai/), or any vendor that exposes an Anthropic-compatible API. Codex providers export `OPENAI_*` / `CODEX_*`. Antigravity providers export `ANTIGRAVITY_*` / `GOOGLE_*` / `GEMINI_*` (plus `API_TIMEOUT`; fallback keys `GOOGLE_API_KEY` / `GEMINI_API_KEY`).
 
 You can configure providers two ways. **Pick whichever fits how you already work.**
 
@@ -361,7 +363,7 @@ cymphony c cv1,cz,ck           # rotate across three providers
 cymphony project MyApp c cv1,cz   # rotate, but only for MyApp
 ```
 
-Cymphony spawns each session in a sub-shell, sources your rc files, calls your function, captures the resulting `ANTHROPIC_*` env, and hands them to Claude Code. The result is cached so it's only resolved once per provider per daemon run.
+Cymphony spawns each session in a sub-shell, sources your rc files, calls your function, captures the resulting env vars for the active agent (Claude: `ANTHROPIC_*` / `CLAUDE_CODE_*`; Codex: `OPENAI_*` / `CODEX_*`; Antigravity: `ANTIGRAVITY_*` / `GOOGLE_*` / `GEMINI_*` plus `API_TIMEOUT`; fallback keys `GOOGLE_API_KEY` / `GEMINI_API_KEY`), and hands them to the agent CLI. The result is cached so it's only resolved once per provider per daemon run.
 
 ### Option B — Config-based providers (simpler, no shell editing)
 
@@ -451,13 +453,15 @@ cymphony project Backend cr 5 c cv1,cz     # ...with a custom concurrency + prov
 
 Start with `cymphony port 4089`, open `http://localhost:4089`.
 
+The dashboard opens in **Simple** mode: plain-language autonomy status, the active work queue, and the safety controls people use day to day. Switch to **Advanced** in the top bar to reveal model/provider configuration, token detail, workspace data, logs, and restart overrides. The choice is saved only in that browser and does not change orchestration behavior.
+
 The dashboard shows:
 
-- **Command bar (top)** — running / retry / token / runtime / throughput counters; polling cadence; rate-limit remaining; global Pause-all / Resume-all
-- **Per-project sections** — one card per project. Header has the project name, "X/Y running" count, paused state, inline `concurrency`, `agent`, `model`, `effort`, and `providers` controls, and Pause/Resume button
-- **Compact session rows** — Linear ID, title, state, provider, host, runtime, total tokens, Kill button. Click a row to expand: session ID, workspace path, recent log events, per-session provider override
+- **Command bar (top)** — autonomy state plus working / waiting / usage / runtime counters in Simple mode; throughput, polling cadence, and rate limits in Advanced mode
+- **Per-project sections** — one card per project with the project name, running count, "tasks at once", and Pause/Resume. Advanced mode adds `agent` (`claude` / `codex` / `antigravity`), `model`, `effort`, and `providers` controls
+- **Compact session rows** — Linear ID, title, state, runtime, and Stop. Advanced mode adds provider, host, token, workspace, log, and restart details. Expanding a row shows a **Harness** pane (live CLI stdout, Follow/Paused) and a restart form that can pin `agent_kind` / provider / model / effort for that session
 - **Retry queue** — inline at the bottom of each project section
-- **Recent completions** — global ring buffer of the last 100 finished sessions
+- **Recent completions** — global ring buffer of the last 100 finished sessions, collapsed by default in Simple mode
 
 Live updates are pushed via Phoenix Channels — no manual refresh.
 
@@ -481,6 +485,7 @@ All under `/api/v1/`:
 | `GET` | `/state` | full snapshot JSON |
 | `GET` | `/projects` | one-line summary per project |
 | `GET` | `/<issue_identifier>` | one running session's details |
+| `GET` | `/<issue_identifier>/harness` | live CLI stdout ring (`HarnessStream` snapshot) |
 | `POST` | `/refresh` | force a Linear poll right now |
 | `POST` | `/pause` `?project=Name` | stop dispatching new issues |
 | `POST` | `/resume` `?project=Name` | resume |
@@ -555,6 +560,7 @@ workspace:
 ```
 CymphonyElixir.Supervisor (one_for_one)
 ├── Phoenix.PubSub
+├── HarnessStream (ETS ring of live CLI stdout)
 ├── Registry (ProjectRegistry)
 ├── Task.Supervisor (AgentRunner tasks)
 ├── DynamicSupervisor (ProjectDynamicSupervisor)

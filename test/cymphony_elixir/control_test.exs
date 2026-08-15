@@ -35,6 +35,12 @@ defmodule CymphonyElixirWeb.ControlTest do
       assert {:ok, %{"agent" => "codex", "model" => "m", "effort" => "high"}} =
                Control.parse_agent_settings(%{"kind" => "codex", "model" => "m", "effort" => "high"})
 
+      assert {:ok, %{"agent" => "antigravity"}} = Control.parse_agent_settings(%{"kind" => "antigravity"})
+
+      for kind <- CymphonyElixir.Agent.known_kinds() do
+        assert {:ok, %{"agent" => ^kind}} = Control.parse_agent_settings(%{"kind" => kind})
+      end
+
       assert {:ok, %{"model" => "m"}} = Control.parse_agent_settings(%{"model" => "m"})
       assert {:ok, %{"model" => ""}} = Control.parse_agent_settings(%{"model" => "  "})
       assert :error = Control.parse_agent_settings(%{"kind" => "gemini"})

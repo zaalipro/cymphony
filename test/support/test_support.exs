@@ -6,9 +6,9 @@ defmodule CymphonyElixir.TestSupport do
       use ExUnit.Case
       import ExUnit.CaptureLog
 
+      alias CymphonyElixir.Agent.Runner
       alias CymphonyElixir.AgentRunner
       alias CymphonyElixir.CLI
-      alias CymphonyElixir.Agent.Runner
       alias CymphonyElixir.Config
       alias CymphonyElixir.HttpServer
       alias CymphonyElixir.Linear.Client
@@ -22,7 +22,13 @@ defmodule CymphonyElixir.TestSupport do
       alias CymphonyElixir.Workspace
 
       import CymphonyElixir.TestSupport,
-        only: [write_workflow_file!: 1, write_workflow_file!: 2, restore_env: 2, stop_default_http_server: 0, stop_all_projects: 0]
+        only: [
+          write_workflow_file!: 1,
+          write_workflow_file!: 2,
+          restore_env: 2,
+          stop_default_http_server: 0,
+          stop_all_projects: 0
+        ]
 
       setup do
         stop_all_projects()
@@ -142,6 +148,11 @@ defmodule CymphonyElixir.TestSupport do
           codex_command: "codex",
           codex_sandbox: "workspace-write",
           codex_network_access: true,
+          antigravity_command: "agy",
+          antigravity_output_format: "stream-json",
+          antigravity_skip_permissions: true,
+          antigravity_provider: nil,
+          antigravity_providers: [],
           hook_after_create: nil,
           hook_before_run: nil,
           hook_after_run: nil,
@@ -192,6 +203,11 @@ defmodule CymphonyElixir.TestSupport do
     codex_command = Keyword.get(config, :codex_command)
     codex_sandbox = Keyword.get(config, :codex_sandbox)
     codex_network_access = Keyword.get(config, :codex_network_access)
+    antigravity_command = Keyword.get(config, :antigravity_command)
+    antigravity_output_format = Keyword.get(config, :antigravity_output_format)
+    antigravity_skip_permissions = Keyword.get(config, :antigravity_skip_permissions)
+    antigravity_provider = Keyword.get(config, :antigravity_provider)
+    antigravity_providers = Keyword.get(config, :antigravity_providers)
     hook_after_create = Keyword.get(config, :hook_after_create)
     hook_before_run = Keyword.get(config, :hook_before_run)
     hook_after_run = Keyword.get(config, :hook_after_run)
@@ -247,6 +263,12 @@ defmodule CymphonyElixir.TestSupport do
         "  command: #{yaml_value(codex_command)}",
         "  sandbox: #{yaml_value(codex_sandbox)}",
         "  network_access: #{yaml_value(codex_network_access)}",
+        "antigravity:",
+        "  command: #{yaml_value(antigravity_command)}",
+        "  output_format: #{yaml_value(antigravity_output_format)}",
+        "  skip_permissions: #{yaml_value(antigravity_skip_permissions)}",
+        "  provider: #{yaml_value(antigravity_provider)}",
+        "  providers: #{yaml_value(antigravity_providers)}",
         hooks_yaml(hook_after_create, hook_before_run, hook_after_run, hook_before_remove, hook_timeout_ms),
         observability_yaml(observability_enabled, observability_refresh_ms, observability_render_interval_ms),
         server_yaml(server_port, server_host),

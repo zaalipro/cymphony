@@ -147,45 +147,63 @@ defmodule CymphonyElixir.Workspace do
 
     case File.ls(workspace_root) do
       {:ok, entries} ->
-        candidates =
-          entries
-          |> Enum.map(&Path.join(workspace_root, &1))
-          |> Enum.filter(fn path ->
-            File.dir?(path) and not MapSet.member?(exclude, path) and stale?(path, cutoff)
-          end)
-
-        if dry_run do
-          {:dry_run, candidates}
-        else
-          removed =
-            Enum.flat_map(candidates, fn path ->
-              # Sanity-check: refuse to delete anything that isn't a direct child of workspace_root.
-              # (Defense in depth — Path.join above already enforces this.)
-              if Path.dirname(path) == Path.expand(workspace_root) do
-                maybe_run_before_remove_hook(path, nil)
-
-                case File.rm_rf(path) do
-                  {:ok, _} ->
-                    [path]
-
-                  {:error, reason, _} ->
-                    Logger.warning("Workspace cleanup failed for #{path}: #{inspect(reason)}")
-                    []
-                end
-              else
-                Logger.warning("Workspace cleanup refused for #{path}: not a direct child of #{workspace_root}")
-                []
-              end
-            end)
-
-          {:ok, removed}
-        end
+        finish_clean_stale(workspace_root, entries, exclude, cutoff, dry_run)
 
       {:error, :enoent} ->
-        if dry_run, do: {:dry_run, []}, else: {:ok, []}
+        empty_clean_stale_result(dry_run)
 
       {:error, reason} ->
         {:error, reason}
+    end
+  end
+
+  defp empty_clean_stale_result(true), do: {:dry_run, []}
+  defp empty_clean_stale_result(false), do: {:ok, []}
+
+  defp finish_clean_stale(workspace_root, entries, exclude, cutoff, true) do
+    {:dry_run, stale_candidates(workspace_root, entries, exclude, cutoff)}
+  end
+
+  defp finish_clean_stale(workspace_root, entries, exclude, cutoff, false) do
+    removed =
+      workspace_root
+      |> stale_candidates(entries, exclude, cutoff)
+      |> Enum.flat_map(&remove_stale_path(&1, workspace_root))
+
+    {:ok, removed}
+  end
+
+  defp stale_candidates(workspace_root, entries, exclude, cutoff) do
+    entries
+    |> Enum.map(&Path.join(workspace_root, &1))
+    |> Enum.filter(&stale_candidate?(&1, exclude, cutoff))
+  end
+
+  defp stale_candidate?(path, exclude, cutoff) do
+    File.dir?(path) and not MapSet.member?(exclude, path) and stale?(path, cutoff)
+  end
+
+  defp remove_stale_path(path, workspace_root) do
+    # Sanity-check: refuse to delete anything that isn't a direct child of workspace_root.
+    # (Defense in depth — Path.join above already enforces this.)
+    if Path.dirname(path) == Path.expand(workspace_root) do
+      delete_stale_workspace(path)
+    else
+      Logger.warning("Workspace cleanup refused for #{path}: not a direct child of #{workspace_root}")
+      []
+    end
+  end
+
+  defp delete_stale_workspace(path) do
+    maybe_run_before_remove_hook(path, nil)
+
+    case File.rm_rf(path) do
+      {:ok, _} ->
+        [path]
+
+      {:error, reason, _} ->
+        Logger.warning("Workspace cleanup failed for #{path}: #{inspect(reason)}")
+        []
     end
   end
 
@@ -294,23 +312,26 @@ defmodule CymphonyElixir.Workspace do
   end
 
   defp maybe_run_after_create_hook(workspace, issue_context, created?, worker_host, config) do
-    hooks = hooks_config(config)
-
     case created? do
-      true ->
-        case hooks.after_create do
-          nil ->
-            :ok
-
-          command ->
-            with_after_create_lock(config, fn ->
-              run_hook(command, workspace, issue_context, "after_create", worker_host, config)
-            end)
-        end
-
-      false ->
-        :ok
+      true -> run_after_create_hook(workspace, issue_context, worker_host, config)
+      false -> :ok
     end
+  end
+
+  defp run_after_create_hook(workspace, issue_context, worker_host, config) do
+    case hooks_config(config).after_create do
+      nil ->
+        :ok
+
+      command ->
+        run_locked_after_create(command, workspace, issue_context, worker_host, config)
+    end
+  end
+
+  defp run_locked_after_create(command, workspace, issue_context, worker_host, config) do
+    with_after_create_lock(config, fn ->
+      run_hook(command, workspace, issue_context, "after_create", worker_host, config)
+    end)
   end
 
   # Serialize after_create across the whole node so the storm of `git clone`s on
@@ -504,10 +525,6 @@ defmodule CymphonyElixir.Workspace do
 
   defp validate_workspace_path(workspace, nil) when is_binary(workspace) do
     validate_workspace_path(workspace, nil, nil)
-  end
-
-  defp validate_workspace_path(workspace, worker_host) when is_binary(worker_host) do
-    validate_workspace_path(workspace, worker_host, nil)
   end
 
   defp remote_shell_assign(variable_name, raw_path)

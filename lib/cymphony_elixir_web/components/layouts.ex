@@ -25,6 +25,8 @@ defmodule CymphonyElixirWeb.Layouts do
         <script>
           // Apply persisted theme + display prefs before paint to avoid FOUC.
           (function() {
+            document.documentElement.setAttribute('data-ui-mode', 'simple');
+
             try {
               var t = localStorage.getItem('cymphony-theme');
               if (t === 'dark' || t === 'light') {
@@ -35,12 +37,21 @@ defmodule CymphonyElixirWeb.Layouts do
             try {
               var prefs = JSON.parse(localStorage.getItem('cymphony-prefs') || '{}');
               var html = document.documentElement;
+              html.setAttribute('data-ui-mode', prefs.uiMode === 'advanced' ? 'advanced' : 'simple');
               if (prefs.density === 'compact') html.setAttribute('data-density', 'compact');
               if (prefs.hiddenSections && prefs.hiddenSections.length) {
                 html.setAttribute('data-hidden-sections', prefs.hiddenSections.join(' '));
               }
               if (prefs.collapsedSections && prefs.collapsedSections.length) {
                 html.setAttribute('data-collapsed-sections', prefs.collapsedSections.join(' '));
+              }
+              var expandedSections = Array.isArray(prefs.expandedSections) ? prefs.expandedSections : [];
+              var legacyExpandedCompletions = !Object.prototype.hasOwnProperty.call(prefs, 'expandedSections') &&
+                Object.prototype.hasOwnProperty.call(prefs, 'collapsedSections') &&
+                Array.isArray(prefs.collapsedSections) && prefs.collapsedSections.length === 0;
+              if (legacyExpandedCompletions) expandedSections = ['completions'];
+              if (expandedSections.length) {
+                html.setAttribute('data-expanded-sections', expandedSections.join(' '));
               }
               if (prefs.hiddenCols && prefs.hiddenCols.length) {
                 html.setAttribute('data-hidden-cols', prefs.hiddenCols.join(' '));
@@ -70,7 +81,19 @@ defmodule CymphonyElixirWeb.Layouts do
             }
 
             var liveSocket = new window.LiveView.LiveSocket("/live", window.Phoenix.Socket, {
-              params: {_csrf_token: csrfToken}
+              params: {_csrf_token: csrfToken},
+              hooks: {
+                HarnessTail: {
+                  mounted() { this.updated(); },
+                  updated() {
+                    var el = this.el;
+                    if (el.getAttribute('data-follow') === 'true') {
+                      var body = el.querySelector('.harness-tail-body');
+                      if (body) body.scrollTop = body.scrollHeight;
+                    }
+                  }
+                }
+              }
             });
 
             liveSocket.connect();
@@ -98,6 +121,15 @@ defmodule CymphonyElixirWeb.Layouts do
               try { localStorage.setItem('cymphony-prefs', JSON.stringify(prefs)); } catch (e) {}
             }
 
+            function applyMode(value) {
+              var mode = value === 'advanced' ? 'advanced' : 'simple';
+              var prefs = readPrefs();
+              prefs.uiMode = mode;
+              document.documentElement.setAttribute('data-ui-mode', mode);
+              writePrefs(prefs);
+              syncPrefControls();
+            }
+
             function setToken(attr, key, on) {
               var html = document.documentElement;
               var tokens = (html.getAttribute(attr) || '').split(' ').filter(Boolean);
@@ -109,8 +141,33 @@ defmodule CymphonyElixirWeb.Layouts do
               return tokens;
             }
 
+            function prefTokens(prefs, key) {
+              if (key === 'expandedSections' &&
+                  !Object.prototype.hasOwnProperty.call(prefs, key) &&
+                  Object.prototype.hasOwnProperty.call(prefs, 'collapsedSections') &&
+                  Array.isArray(prefs.collapsedSections) &&
+                  prefs.collapsedSections.length === 0) {
+                return ['completions'];
+              }
+
+              return Array.isArray(prefs[key]) ? prefs[key] : [];
+            }
+
+            function sectionIsCollapsed(key, prefs) {
+              if (prefTokens(prefs, 'collapsedSections').indexOf(key) !== -1) return true;
+              if (prefTokens(prefs, 'expandedSections').indexOf(key) !== -1) return false;
+
+              var mode = document.documentElement.getAttribute('data-ui-mode') || 'simple';
+              return mode === 'simple' && key === 'completions';
+            }
+
             function syncPrefControls() {
               var prefs = readPrefs();
+              var mode = document.documentElement.getAttribute('data-ui-mode') || 'simple';
+              document.querySelectorAll('[data-mode-set]').forEach(function(el) {
+                var pressed = el.getAttribute('data-mode-set') === mode ? 'true' : 'false';
+                if (el.getAttribute('aria-pressed') !== pressed) el.setAttribute('aria-pressed', pressed);
+              });
               document.querySelectorAll('[data-pref="density"]').forEach(function(el) {
                 el.checked = (prefs.density || 'comfortable') === el.value;
               });
@@ -123,12 +180,25 @@ defmodule CymphonyElixirWeb.Layouts do
               document.querySelectorAll('[data-pref="completions-limit"]').forEach(function(el) {
                 el.value = prefs.completionsLimit || '100';
               });
+              document.querySelectorAll('[data-collapse-toggle]').forEach(function(el) {
+                var collapsed = sectionIsCollapsed(el.getAttribute('data-collapse-toggle'), prefs);
+                var marker = collapsed ? '▸' : '▾';
+                if (el.textContent !== marker) el.textContent = marker;
+                el.setAttribute('aria-expanded', collapsed ? 'false' : 'true');
+                el.setAttribute('aria-label', collapsed ? 'Expand section' : 'Collapse section');
+              });
             }
 
             document.addEventListener('click', function(e) {
               var target = e.target.closest('[data-theme-set]');
               if (target) {
                 applyTheme(target.getAttribute('data-theme-set'));
+                return;
+              }
+
+              var modeTarget = e.target.closest('[data-mode-set]');
+              if (modeTarget) {
+                applyMode(modeTarget.getAttribute('data-mode-set'));
                 return;
               }
 
@@ -146,13 +216,24 @@ defmodule CymphonyElixirWeb.Layouts do
               if (collapse) {
                 var key = collapse.getAttribute('data-collapse-toggle');
                 var prefs = readPrefs();
-                var collapsed = prefs.collapsedSections || [];
-                var now = collapsed.indexOf(key) !== -1
-                  ? collapsed.filter(function(k) { return k !== key; })
-                  : collapsed.concat([key]);
-                prefs.collapsedSections = now;
+                var wasCollapsed = sectionIsCollapsed(key, prefs);
+                var collapsed = prefTokens(prefs, 'collapsedSections');
+                var expanded = prefTokens(prefs, 'expandedSections');
+
+                if (wasCollapsed) {
+                  collapsed = collapsed.filter(function(k) { return k !== key; });
+                  if (expanded.indexOf(key) === -1) expanded = expanded.concat([key]);
+                } else {
+                  if (collapsed.indexOf(key) === -1) collapsed = collapsed.concat([key]);
+                  expanded = expanded.filter(function(k) { return k !== key; });
+                }
+
+                prefs.collapsedSections = collapsed;
+                prefs.expandedSections = expanded;
                 writePrefs(prefs);
-                setToken('data-collapsed-sections', key, now.indexOf(key) !== -1);
+                setToken('data-collapsed-sections', key, collapsed.indexOf(key) !== -1);
+                setToken('data-expanded-sections', key, expanded.indexOf(key) !== -1);
+                syncPrefControls();
               }
             });
 
@@ -178,6 +259,19 @@ defmodule CymphonyElixirWeb.Layouts do
 
               writePrefs(prefs);
             });
+
+            syncPrefControls();
+            window.addEventListener('phx:page-loading-stop', syncPrefControls);
+
+            var liveRoot = document.querySelector('[data-phx-main]');
+            if (liveRoot && window.MutationObserver) {
+              new MutationObserver(syncPrefControls).observe(liveRoot, {
+                attributes: true,
+                attributeFilter: ['aria-pressed'],
+                childList: true,
+                subtree: true
+              });
+            }
           })();
         </script>
       </body>

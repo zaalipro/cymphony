@@ -21,18 +21,20 @@ defmodule CymphonyElixir.BurritoCLI do
            Supervisor.start_link(children, strategy: :one_for_one, name: CymphonyElixir.Supervisor) do
       args = Args.argv()
 
-      Task.start(fn ->
-        try do
-          CLI.main(args)
-        catch
-          kind, reason ->
-            Logger.error("Unhandled CLI error: #{inspect({kind, reason})}")
-            System.halt(1)
-        end
-      end)
+      Task.start(__MODULE__, :run_cli, [args])
 
       {:ok, sup_pid}
     end
+  end
+
+  @doc false
+  @spec run_cli([String.t()]) :: no_return()
+  def run_cli(args) do
+    CLI.main(args)
+  catch
+    kind, reason ->
+      Logger.error("Unhandled CLI error: #{inspect({kind, reason})}")
+      System.halt(1)
   end
 
   @impl true

@@ -61,14 +61,13 @@ defmodule CymphonyElixir.ProjectSupervisor do
   Lists all registered project names.
   """
   @spec list_project_names() :: [String.t()]
-  def list_project_names do
-    Registry.select(CymphonyElixir.ProjectRegistry, [{{:"$1", :"$2", :_}, [], [:"$1"]}])
+  @spec list_project_names(atom()) :: [String.t()]
+  def list_project_names(registry \\ CymphonyElixir.ProjectRegistry) do
+    Registry.select(registry, [{{:"$1", :"$2", :_}, [], [:"$1"]}])
     |> Enum.map(fn {project_name, _role} -> project_name end)
     |> Enum.uniq()
   rescue
     _ -> []
-  catch
-    :exit, _ -> []
   end
 
   @doc """
@@ -76,8 +75,9 @@ defmodule CymphonyElixir.ProjectSupervisor do
   Returns a list of `{project_name, pid}` tuples.
   """
   @spec list_orchestrators() :: [{String.t(), pid()}]
-  def list_orchestrators do
-    Registry.select(CymphonyElixir.ProjectRegistry, [{{:"$1", :"$2", :_}, [], [{{:"$1", :"$2"}}]}])
+  @spec list_orchestrators(atom()) :: [{String.t(), pid()}]
+  def list_orchestrators(registry \\ CymphonyElixir.ProjectRegistry) do
+    Registry.select(registry, [{{:"$1", :"$2", :_}, [], [{{:"$1", :"$2"}}]}])
     |> Enum.flat_map(fn
       {{project_name, :orchestrator}, pid} when is_binary(project_name) and is_pid(pid) ->
         [{project_name, pid}]
@@ -87,7 +87,5 @@ defmodule CymphonyElixir.ProjectSupervisor do
     end)
   rescue
     _ -> []
-  catch
-    :exit, _ -> []
   end
 end

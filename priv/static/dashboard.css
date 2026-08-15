@@ -46,7 +46,7 @@
     0 12px 48px rgba(95, 77, 189, 0.32);
 
   /* Typography */
-  --font-sans: "Inter", "SF Pro Text", "Helvetica Neue", "Segoe UI", system-ui, sans-serif;
+  --font-sans: "Avenir Next", "Segoe UI Variable", "SF Pro Text", "Helvetica Neue", system-ui, sans-serif;
   --font-mono: "JetBrains Mono", "SFMono-Regular", "SF Mono", Consolas, "Liberation Mono", monospace;
   --text-caption: 11px;
   --text-body-sm: 13px;
@@ -184,6 +184,13 @@ button {
 
 .muted { color: var(--ink-mute); }
 .small { font-size: var(--text-body-sm); }
+
+/* The head bootstrap always sets one mode before this stylesheet loads. */
+html[data-ui-mode="simple"] .advanced-only,
+html[data-ui-mode="advanced"] .simple-only {
+  display: none !important;
+}
+
 .empty-state {
   margin: 0.75rem 0 0;
   color: var(--ink-mute);
@@ -391,6 +398,11 @@ button {
   letter-spacing: 0;
 }
 
+.metric-pill--states,
+.metric-pill--kinds {
+  min-width: 8rem;
+}
+
 /* ----- Ops strip (polling + rate limits + pause-all) ----- */
 .command-bar-row--ops {
   gap: 16px;
@@ -474,7 +486,6 @@ button {
 }
 
 .status-badge-live {
-  display: none;
   background: var(--ok-soft);
   border-color: rgba(110, 231, 183, 0.3);
   color: var(--ok);
@@ -492,8 +503,10 @@ button {
   color: var(--ink-mute);
 }
 
-[data-phx-main].phx-connected .status-badge-live { display: inline-flex; }
-[data-phx-main].phx-connected .status-badge-offline { display: none; }
+.status-badge-payload { display: none; }
+
+[data-phx-main].phx-connected .status-badge-transport { display: none; }
+[data-phx-main].phx-connected .status-badge-payload { display: inline-flex; }
 
 .version-badge {
   display: inline-flex;
@@ -551,6 +564,85 @@ button {
   background: var(--accent-soft);
   color: var(--ink);
   box-shadow: 0 0 0 1px var(--accent), 0 0 12px rgba(233, 179, 242, 0.4);
+}
+
+/* ----- Simple / advanced experience switch ------------------------------- */
+.mode-switch {
+  display: inline-flex;
+  padding: 3px;
+  gap: 2px;
+  border: 1px solid var(--line-strong);
+  border-radius: var(--radius-pill);
+  background: var(--surface-soft);
+}
+
+.mode-switch-button {
+  min-height: 26px;
+  padding: 3px 10px;
+  border: 0;
+  border-radius: var(--radius-pill);
+  background: transparent;
+  color: var(--ink-mute);
+  font-size: var(--text-caption);
+  font-weight: 600;
+  letter-spacing: 0.02em;
+  box-shadow: none;
+}
+
+.mode-switch-button:hover {
+  color: var(--ink);
+  background: var(--surface-deep);
+}
+
+html[data-ui-mode="simple"] .mode-switch-button[data-mode-set="simple"],
+html[data-ui-mode="advanced"] .mode-switch-button[data-mode-set="advanced"] {
+  background: var(--ink);
+  color: var(--page);
+  box-shadow: 0 4px 12px rgba(7, 11, 18, 0.2);
+}
+
+.mode-switch-button:focus-visible,
+.mode-option:focus-visible,
+.subtle-button:focus-visible,
+.session-row-disclosure:focus-visible,
+.session-row-link:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
+}
+
+/* ----- Simple-mode autonomy summary --------------------------------------- */
+.simple-mode-summary {
+  min-height: 34px;
+  padding: 3px 2px 0;
+  gap: 10px;
+}
+
+.autonomy-indicator {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  color: var(--ok);
+  font-size: var(--text-body-sm);
+  font-weight: 600;
+}
+
+.autonomy-indicator-dot {
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  background: currentColor;
+  box-shadow: 0 0 10px currentColor;
+}
+
+.autonomy-indicator--paused,
+.autonomy-indicator--partial { color: var(--warn); }
+
+.autonomy-indicator--unknown { color: var(--ink-mute); }
+
+.simple-mode-summary-copy {
+  color: var(--ink-soft);
+  font-size: var(--text-body-sm);
+  text-wrap: pretty;
 }
 
 /* ============================================================
@@ -955,6 +1047,11 @@ select.inline-input--narrow {
   font-family: var(--font-mono);
 }
 
+.session-row-tokens .tps {
+  color: var(--ink-mute);
+  font-size: 0.75em;
+}
+
 .session-row-detail {
   border-top: 1px dashed var(--line);
   padding: 14px 16px 16px;
@@ -1019,6 +1116,19 @@ select.inline-input--narrow {
   padding: 8px 10px;
   background: var(--surface-deep);
   border-radius: 8px;
+}
+
+.autonomy-note {
+  margin: 0;
+  max-width: 68ch;
+  padding: 10px 12px;
+  border-left: 3px solid var(--ok);
+  border-radius: 0 8px 8px 0;
+  background: var(--ok-soft);
+  color: var(--ink-soft);
+  font-size: var(--text-body-sm);
+  line-height: 1.55;
+  text-wrap: pretty;
 }
 
 .session-activity-message {
@@ -1095,6 +1205,46 @@ select.inline-input--narrow {
 }
 
 /* ============================================================
+   HARNESS TAIL (live CLI stdout in expanded session)
+   ============================================================ */
+.harness-tail {
+  margin-top: 0.75rem;
+  border: 1px solid var(--line);
+  border-radius: 6px;
+  background: var(--surface-soft);
+}
+
+.harness-tail-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  padding: 0.25rem 0.5rem;
+}
+
+.harness-tail-title {
+  font-size: 0.75rem;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+  color: var(--ink-mute);
+}
+
+.harness-tail-body {
+  max-height: 18rem;
+  overflow: auto;
+  margin: 0;
+  padding: 0.5rem;
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-size: 11px;
+  line-height: 1.35;
+  white-space: pre-wrap;
+  word-break: break-word;
+}
+
+.harness-tail-line {
+  color: var(--ink-soft);
+}
+
+/* ============================================================
    RETRY ROW
    ============================================================ */
 .retry-row-list {
@@ -1148,6 +1298,11 @@ select.inline-input--narrow {
   text-overflow: ellipsis;
   white-space: nowrap;
   color: var(--ink-mute);
+}
+
+.retry-row-guidance {
+  color: var(--ink-soft);
+  font-size: var(--text-body-sm);
 }
 
 /* ============================================================
@@ -1279,8 +1434,8 @@ select.inline-input--narrow {
   position: fixed;
   top: 0;
   right: 0;
-  height: 100vh;
-  width: 340px;
+  height: 100dvh;
+  width: min(380px, 100vw);
   transform: translateX(100%);
   transition: transform 160ms ease;
   z-index: 40;
@@ -1317,6 +1472,58 @@ html[data-drawer="open"] .settings-drawer {
   margin: 0;
 }
 
+.settings-help {
+  max-width: 42ch;
+  margin: 0;
+  color: var(--ink-mute);
+  font-size: var(--text-body-sm);
+  line-height: 1.5;
+  text-wrap: pretty;
+}
+
+.mode-option-list {
+  display: grid;
+  gap: 8px;
+}
+
+.mode-option {
+  width: 100%;
+  display: grid;
+  gap: 3px;
+  padding: 11px 12px;
+  text-align: left;
+  border-radius: 10px;
+  border-color: var(--line);
+  background: var(--surface-soft);
+  box-shadow: none;
+}
+
+.mode-option:hover {
+  border-color: var(--line-strong);
+  background: var(--surface-deep);
+  transform: translateY(-1px);
+}
+
+html[data-ui-mode="simple"] .mode-option[data-mode-set="simple"],
+html[data-ui-mode="advanced"] .mode-option[data-mode-set="advanced"] {
+  border-color: var(--accent);
+  background: var(--accent-soft);
+  box-shadow: inset 3px 0 0 var(--accent);
+}
+
+.mode-option-title {
+  color: var(--ink);
+  font-size: var(--text-body);
+  font-weight: 600;
+}
+
+.mode-option-copy {
+  color: var(--ink-mute);
+  font-size: var(--text-caption);
+  font-weight: 400;
+  line-height: 1.45;
+}
+
 .settings-row {
   display: flex;
   flex-wrap: wrap;
@@ -1351,10 +1558,13 @@ html[data-density="compact"] .project-section {
 html[data-hidden-sections~="metrics"] .section--metrics,
 html[data-hidden-sections~="polling"] .section--polling,
 html[data-hidden-sections~="ratelimits"] .section--ratelimits,
-html[data-hidden-sections~="completions"] .section--completions {
+html[data-hidden-sections~="completions"] .section--completions,
+html[data-hidden-sections~="states"] .section--states,
+html[data-hidden-sections~="kinds"] .section--kinds {
   display: none;
 }
 
+html[data-ui-mode="simple"]:not([data-expanded-sections~="completions"]) .section--completions .session-row-list,
 html[data-collapsed-sections~="completions"] .section--completions .session-row-list {
   display: none;
 }
@@ -1383,6 +1593,91 @@ html[data-completions-limit="25"] .section--completions .session-row:nth-child(n
 
 html[data-completions-limit="50"] .section--completions .session-row:nth-child(n + 51) {
   display: none;
+}
+
+/* ----- Experience modes ---------------------------------------------------- */
+html[data-ui-mode="simple"] .session-row-tokens,
+html[data-ui-mode="simple"] .session-row-detail-grid {
+  display: none;
+}
+
+html[data-ui-mode="simple"] .session-row-summary {
+  grid-template-columns: auto auto minmax(0, 1fr) auto auto auto;
+  padding-top: 11px;
+  padding-bottom: 11px;
+}
+
+html[data-ui-mode="simple"] .project-section-header {
+  align-items: start;
+}
+
+html[data-ui-mode="simple"] .project-section-controls {
+  justify-content: flex-end;
+}
+
+html[data-ui-mode="simple"] .session-row-detail {
+  gap: 10px;
+}
+
+html[data-ui-mode="simple"] .session-row-activity {
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr);
+}
+
+@media (max-width: 960px) {
+  html[data-ui-mode="simple"] .session-row-summary {
+    grid-template-columns: auto auto minmax(0, 1fr) auto;
+  }
+
+  html[data-ui-mode="simple"] .project-section-controls {
+    justify-content: flex-start;
+  }
+}
+
+@media (max-width: 560px) {
+  .mode-switch { width: 100%; }
+  .mode-switch-button { flex: 1; }
+
+  html[data-ui-mode="simple"] .project-concurrency-control {
+    width: 100%;
+  }
+
+  html[data-ui-mode="advanced"] .project-section-controls {
+    width: 100%;
+    min-width: 0;
+  }
+
+  html[data-ui-mode="advanced"] .project-section-controls .inline-form {
+    max-width: 100%;
+  }
+
+  html[data-ui-mode="advanced"] .inline-form--agent,
+  html[data-ui-mode="advanced"] .session-stat--wide .inline-form {
+    width: 100%;
+    flex-wrap: wrap;
+    border-radius: 10px;
+  }
+
+  html[data-ui-mode="advanced"] .inline-form--agent .inline-input--model,
+  html[data-ui-mode="advanced"] .session-stat--wide .inline-input--model {
+    width: auto;
+    flex: 1 1 110px;
+  }
+
+  html[data-ui-mode="advanced"] .inline-form--wide {
+    width: 100%;
+  }
+
+  html[data-ui-mode="simple"] .session-row-summary {
+    grid-template-columns: auto minmax(0, 1fr) auto;
+  }
+
+  html[data-ui-mode="simple"] .session-row-id { grid-column: 2; }
+  html[data-ui-mode="simple"] .session-row-title { grid-column: 2 / -1; }
+  html[data-ui-mode="simple"] .session-row-chips,
+  html[data-ui-mode="simple"] .session-row-runtime {
+    grid-column: 2 / -1;
+  }
 }
 
 /* ----- Agent chips ---------------------------------------------------------- */

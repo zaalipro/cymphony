@@ -125,6 +125,7 @@ defmodule CymphonyElixir.SSHTest do
 
     assert {:ok, port} = SSH.start_port("localhost", "printf ok")
     assert is_port(port)
+    flush_port_messages(port)
     wait_for_trace!(trace_file)
 
     trace = File.read!(trace_file)
@@ -151,6 +152,7 @@ defmodule CymphonyElixir.SSHTest do
 
     assert {:ok, port} = SSH.start_port("localhost:2222", "printf ok", line: 256)
     assert is_port(port)
+    flush_port_messages(port)
     wait_for_trace!(trace_file)
 
     trace = File.read!(trace_file)
@@ -182,7 +184,7 @@ defmodule CymphonyElixir.SSHTest do
     System.put_env("PATH", fake_bin_dir <> ":" <> (System.get_env("PATH") || ""))
   end
 
-  defp wait_for_trace!(trace_file, attempts \\ 20)
+  defp wait_for_trace!(trace_file, attempts \\ 80)
   defp wait_for_trace!(trace_file, 0), do: flunk("timed out waiting for fake ssh trace at #{trace_file}")
 
   defp wait_for_trace!(trace_file, attempts) do
@@ -191,6 +193,19 @@ defmodule CymphonyElixir.SSHTest do
     else
       Process.sleep(25)
       wait_for_trace!(trace_file, attempts - 1)
+    end
+  end
+
+  defp flush_port_messages(port, attempts \\ 40)
+  defp flush_port_messages(_port, 0), do: :ok
+
+  defp flush_port_messages(port, attempts) do
+    receive do
+      {^port, _message} ->
+        flush_port_messages(port, attempts - 1)
+    after
+      25 ->
+        :ok
     end
   end
 

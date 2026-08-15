@@ -172,6 +172,80 @@ defmodule CymphonyElixir.OrchestratorStatusTest do
     assert hd(snapshot_entry.log_events).event == :notification
   end
 
+  test "harness_heartbeat flood updates last_agent_timestamp only" do
+    issue_id = "issue-harness-heartbeat"
+
+    issue = %Issue{
+      id: issue_id,
+      identifier: "MT-190",
+      title: "Harness heartbeat",
+      description: "Heartbeat must not grow log_events or notify the dashboard",
+      state: "In Progress",
+      url: "https://example.org/issues/MT-190"
+    }
+
+    orchestrator_name = Module.concat(__MODULE__, :HarnessHeartbeatOrchestrator)
+    {:ok, pid} = Orchestrator.start_link(name: orchestrator_name)
+
+    on_exit(fn ->
+      if Process.alive?(pid) do
+        Process.exit(pid, :normal)
+      end
+    end)
+
+    # Let the startup poll tick (delay 0 + 20ms render gap) settle so later
+    # refute_receive is not racing dashboard notify from init.
+    Process.sleep(80)
+
+    initial_state = :sys.get_state(pid)
+    started_at = DateTime.utc_now()
+    seeded_timestamp = DateTime.add(started_at, -30, :second)
+    seeded_logs = [%{at: seeded_timestamp, event: :session_started, message: "started"}]
+
+    running_entry = %{
+      pid: self(),
+      ref: make_ref(),
+      identifier: issue.identifier,
+      issue: issue,
+      session_id: "thread-heartbeat",
+      turn_count: 1,
+      last_agent_message: %{event: :session_started, message: "started", timestamp: seeded_timestamp},
+      last_agent_timestamp: seeded_timestamp,
+      last_agent_event: :session_started,
+      started_at: started_at,
+      log_events: seeded_logs
+    }
+
+    :sys.replace_state(pid, fn _ ->
+      initial_state
+      |> Map.put(:running, %{issue_id => running_entry})
+      |> Map.put(:claimed, MapSet.put(initial_state.claimed, issue_id))
+    end)
+
+    :ok = CymphonyElixirWeb.ObservabilityPubSub.subscribe()
+    :ok = CymphonyElixirWeb.ObservabilityPubSub.subscribe_issue(issue_id)
+    flush_observability_messages()
+
+    now = DateTime.utc_now()
+
+    send(pid, {:agent_worker_update, "missing-issue", %{event: :harness_heartbeat, timestamp: now}})
+    send(pid, {:agent_worker_update, issue_id, %{event: :harness_heartbeat}})
+
+    for _ <- 1..25 do
+      send(pid, {:agent_worker_update, issue_id, %{event: :harness_heartbeat, timestamp: now}})
+    end
+
+    snapshot = GenServer.call(pid, :snapshot)
+    assert %{running: [snapshot_entry]} = snapshot
+    assert snapshot_entry.last_agent_timestamp == now
+    assert snapshot_entry.last_agent_event == :session_started
+    assert snapshot_entry.last_agent_message.event == :session_started
+    assert length(snapshot_entry.log_events) == 1
+    assert hd(snapshot_entry.log_events).event == :session_started
+
+    refute_receive :observability_updated, 80
+  end
+
   test "orchestrator snapshot tracks claude thread totals and app-server pid" do
     issue_id = "issue-usage-snapshot"
 
@@ -1620,6 +1694,14 @@ defmodule CymphonyElixir.OrchestratorStatusTest do
 
     assert rendered =~ "app_status=offline"
     refute rendered =~ "Timestamp:"
+  end
+
+  defp flush_observability_messages do
+    receive do
+      :observability_updated -> flush_observability_messages()
+    after
+      20 -> :ok
+    end
   end
 
   defp wait_for_snapshot(pid, predicate, timeout_ms \\ 200) when is_function(predicate, 1) do

@@ -135,7 +135,7 @@ defmodule CymphonyElixir.Config.Schema do
         ],
         empty_values: []
       )
-      |> validate_inclusion(:kind, ["claude", "codex"])
+      |> validate_inclusion(:kind, CymphonyElixir.Agent.known_kinds())
       |> validate_number(:max_concurrent_agents, greater_than: 0)
       |> validate_number(:max_turns, greater_than: 0)
       |> validate_number(:max_retry_backoff_ms, greater_than: 0)
@@ -222,6 +222,45 @@ defmodule CymphonyElixir.Config.Schema do
     end
   end
 
+  defmodule Antigravity do
+    @moduledoc false
+    use Ecto.Schema
+    import Ecto.Changeset
+
+    @primary_key false
+    embedded_schema do
+      field(:command, :string, default: "agy")
+      field(:output_format, :string, default: "stream-json")
+      field(:extra_args, :string)
+      field(:skip_permissions, :boolean, default: true)
+      field(:sandbox, :boolean, default: false)
+      field(:print_timeout, :string)
+      field(:provider, :string)
+      field(:providers, {:array, :string}, default: [])
+    end
+
+    @spec changeset(%__MODULE__{}, map()) :: Ecto.Changeset.t()
+    def changeset(schema, attrs) do
+      schema
+      |> cast(
+        attrs,
+        [
+          :command,
+          :output_format,
+          :extra_args,
+          :skip_permissions,
+          :sandbox,
+          :print_timeout,
+          :provider,
+          :providers
+        ],
+        empty_values: []
+      )
+      |> validate_required([:command])
+      |> validate_inclusion(:output_format, ["text", "json", "stream-json"])
+    end
+  end
+
   defmodule Hooks do
     @moduledoc false
     use Ecto.Schema
@@ -292,6 +331,7 @@ defmodule CymphonyElixir.Config.Schema do
     embeds_one(:agent, Agent, on_replace: :update, defaults_to_struct: true)
     embeds_one(:claude, Claude, on_replace: :update, defaults_to_struct: true)
     embeds_one(:codex, Codex, on_replace: :update, defaults_to_struct: true)
+    embeds_one(:antigravity, Antigravity, on_replace: :update, defaults_to_struct: true)
     embeds_one(:hooks, Hooks, on_replace: :update, defaults_to_struct: true)
     embeds_one(:observability, Observability, on_replace: :update, defaults_to_struct: true)
     embeds_one(:server, Server, on_replace: :update, defaults_to_struct: true)
@@ -357,6 +397,7 @@ defmodule CymphonyElixir.Config.Schema do
     |> cast_embed(:agent, with: &Agent.changeset/2)
     |> cast_embed(:claude, with: &Claude.changeset/2)
     |> cast_embed(:codex, with: &Codex.changeset/2)
+    |> cast_embed(:antigravity, with: &Antigravity.changeset/2)
     |> cast_embed(:hooks, with: &Hooks.changeset/2)
     |> cast_embed(:observability, with: &Observability.changeset/2)
     |> cast_embed(:server, with: &Server.changeset/2)

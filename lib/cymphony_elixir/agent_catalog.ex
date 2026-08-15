@@ -9,6 +9,8 @@ defmodule CymphonyElixir.AgentCatalog do
   list is only a fallback when the binary is missing or the output doesn't
   parse. Claude Code has no equivalent listing command — its stable alias
   vocabulary (sonnet/opus/haiku) and effort levels are kept statically.
+  Antigravity is also static: Gemini/Claude slugs plus low/medium/high
+  efforts. There is no `agy models` fetch in v1.
 
   Everything here is advisory: model/effort values remain pass-through free
   text end to end.
@@ -40,6 +42,18 @@ defmodule CymphonyElixir.AgentCatalog do
 
   @codex_fallback_efforts ["minimal", "low", "medium", "high", "xhigh"]
 
+  @antigravity_models [
+    %{value: "gemini-3.7-flash-high", label: "gemini-3.7-flash-high", description: nil, efforts: nil, default_effort: nil},
+    %{value: "gemini-3.7-flash-medium", label: "gemini-3.7-flash-medium", description: nil, efforts: nil, default_effort: nil},
+    %{value: "gemini-3.6-flash-high", label: "gemini-3.6-flash-high", description: nil, efforts: nil, default_effort: nil},
+    %{value: "gemini-3.6-flash-medium", label: "gemini-3.6-flash-medium", description: nil, efforts: nil, default_effort: nil},
+    %{value: "gemini-3.5-flash-medium", label: "gemini-3.5-flash-medium", description: nil, efforts: nil, default_effort: nil},
+    %{value: "gemini-3.1-pro-high", label: "gemini-3.1-pro-high", description: nil, efforts: nil, default_effort: nil},
+    %{value: "claude-sonnet-4-6", label: "claude-sonnet-4-6", description: nil, efforts: nil, default_effort: nil}
+  ]
+
+  @antigravity_efforts ["low", "medium", "high"]
+
   @cache_key {__MODULE__, :codex_catalog}
   @fetch_timeout_ms 5_000
 
@@ -52,6 +66,8 @@ defmodule CymphonyElixir.AgentCatalog do
     end
   end
 
+  def models("antigravity"), do: @antigravity_models
+
   def models(_claude), do: @claude_models
 
   @doc """
@@ -59,7 +75,7 @@ defmodule CymphonyElixir.AgentCatalog do
 
   For codex the levels come from the model's catalog entry; with no model (or
   an unknown one) the union across visible models is returned so no valid
-  level is hidden. Claude levels are model-independent.
+  level is hidden. Claude and Antigravity levels are model-independent.
   """
   @spec efforts(String.t(), String.t() | nil) :: [String.t()]
   def efforts("codex", model) do
@@ -75,6 +91,8 @@ defmodule CymphonyElixir.AgentCatalog do
     end
   end
 
+  def efforts("antigravity", _model), do: @antigravity_efforts
+
   def efforts(_claude, _model), do: @claude_efforts
 
   @doc false
@@ -82,8 +100,6 @@ defmodule CymphonyElixir.AgentCatalog do
   def clear_cache do
     :persistent_term.erase(@cache_key)
     :ok
-  rescue
-    ArgumentError -> :ok
   end
 
   defp effort_union(models) do
@@ -148,17 +164,28 @@ defmodule CymphonyElixir.AgentCatalog do
   # Shells out to `codex debug models` (measured ~60ms). The task wrapper
   # bounds the wait so a hung binary can't stall the wizard or dashboard.
   defp default_fetcher do
+    fun = catalog_cmd()
+    timeout = fetch_timeout_ms()
+
     task =
       Task.async(fn ->
-        System.cmd("codex", ["debug", "models"], stderr_to_stdout: false)
+        fun.("codex", ["debug", "models"], stderr_to_stdout: false)
       end)
 
-    case Task.yield(task, @fetch_timeout_ms) || Task.shutdown(task, :brutal_kill) do
+    case Task.yield(task, timeout) || Task.shutdown(task, :brutal_kill) do
       {:ok, {output, 0}} -> {:ok, output}
       {:ok, {_output, code}} -> {:error, {:exit, code}}
       _ -> {:error, :timeout}
     end
   rescue
     error -> {:error, error}
+  end
+
+  defp catalog_cmd do
+    Application.get_env(:cymphony_elixir, :codex_catalog_cmd, &System.cmd/3)
+  end
+
+  defp fetch_timeout_ms do
+    Application.get_env(:cymphony_elixir, :codex_catalog_timeout_ms, @fetch_timeout_ms)
   end
 end

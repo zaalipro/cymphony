@@ -14,8 +14,8 @@ configurable (per-browser display preferences + the new agent knobs).
 
 ## Layout (top to bottom)
 
-1. **Top bar** — status badge, project count, version, theme toggle, Refresh, and a new **⚙
-   Settings** button that opens the settings drawer.
+1. **Top bar** — status badge, project count, version, a browser-local **Simple / Advanced** mode
+   switch, theme toggle, Refresh, and a new **⚙ Settings** button that opens the settings drawer.
 2. **Metrics strip** — one row of stat tiles: Running, Retrying, Tokens (in/out detail), Runtime,
    Throughput + sparkline, and the rate-limit buckets compacted into small labeled meters
    (primary/secondary/credits with reset countdowns). Polling status + next-poll countdown lives
@@ -23,11 +23,17 @@ configurable (per-browser display preferences + the new agent knobs).
 3. **Alert banners** — flash + stalled-agent alerts, unchanged position.
 4. **Project cards** — the primary content, one per project (existing sections, reorganized
    header — see below).
-5. **Recent completions** — collapsed by default.
+5. **Recent completions** — collapsed by default in Simple mode and expanded by default in Advanced
+   mode. An explicit browser expand/collapse choice wins in either mode.
 
 ### Settings drawer
 
-A right-side panel (CSS-driven open/close, `data-drawer="open"` on `<html>`) with two groups:
+A right-side panel (CSS-driven open/close, `data-drawer="open"` on `<html>`) with three groups:
+
+- **Experience** (client-side): Simple (default) or Advanced. Simple keeps autonomy/status and
+  critical Pause/Stop/Retry controls visible while translating concurrency into "tasks at once"
+  and hiding expert-only model, provider, token, workspace, log, and restart detail. Advanced
+  exposes the full operational surface.
 
 - **Orchestrator** (server-side, LiveView forms — these move out of the page body):
   - Pause/Resume all (from ops row)
@@ -46,10 +52,15 @@ key off the attributes. Because the attributes live on `<html>` — outside the 
 LiveView DOM patches never clobber them, and no server round-trip or server state is involved.
 
 - `data-density="compact"` → tighter paddings/font sizes via CSS.
+- `data-ui-mode="simple|advanced"` → selects the information depth without changing runtime
+  behavior. Missing/invalid values resolve to `simple` before first paint.
 - `data-hidden-sections="ratelimits completions"` → `html[data-hidden-sections~="completions"]
   .section--completions { display: none }` (token-list attribute selector per section).
 - `data-collapsed-sections="metrics"` → hides section bodies, keeps headers with a ▸/▾ marker.
   Every section header gets a collapse control.
+- `data-expanded-sections="completions"` → records an explicit expansion, allowing Simple mode to
+  default completions closed without overriding the user's browser preference or Advanced's open
+  default.
 - `data-hidden-cols="title runtime"` → hides session-row cells.
 - `data-completions-limit="25"` → `.completion-row:nth-child(n+26) { display: none }` (payload
   keeps sending up to 100; trimming is visual).

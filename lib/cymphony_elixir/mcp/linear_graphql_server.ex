@@ -19,6 +19,8 @@ defmodule CymphonyElixir.Mcp.LinearGraphqlServer do
 
   require Logger
 
+  alias CymphonyElixir.Linear.Client
+
   @protocol_version "2024-11-05"
   @server_name "cymphony-linear"
   @server_version "1.0.0"
@@ -57,10 +59,10 @@ defmodule CymphonyElixir.Mcp.LinearGraphqlServer do
         respond(msg, env)
 
       {:ok, _other} ->
-        encode_error(nil, -32600, "Invalid Request")
+        encode_error(nil, -32_600, "Invalid Request")
 
       {:error, _reason} ->
-        encode_error(nil, -32700, "Parse error")
+        encode_error(nil, -32_700, "Parse error")
     end
   end
 
@@ -106,10 +108,10 @@ defmodule CymphonyElixir.Mcp.LinearGraphqlServer do
   end
 
   def dispatch("tools/call", %{"name" => other}, _env) when is_binary(other) do
-    {:error, -32602, "Unknown tool: #{other}"}
+    {:error, -32_602, "Unknown tool: #{other}"}
   end
 
-  def dispatch(_method, _params, _env), do: {:error, -32601, "Method not found"}
+  def dispatch(_method, _params, _env), do: {:error, -32_601, "Method not found"}
 
   defp tool_result(payload_map) when is_map(payload_map) do
     %{
@@ -160,7 +162,7 @@ defmodule CymphonyElixir.Mcp.LinearGraphqlServer do
   end
 
   defp default_graphql(query, variables, opts) do
-    CymphonyElixir.Linear.Client.graphql(query, variables, opts)
+    Client.graphql(query, variables, opts)
   end
 
   defp build_graphql_opts(api_key, endpoint) when is_binary(api_key) and api_key != "" do

@@ -54,6 +54,8 @@ defmodule CymphonyElixirWeb.Router do
     match(:*, "/api/v1/providers", ObservabilityApiController, :method_not_allowed)
     post("/api/v1/agent", ObservabilityApiController, :agent)
     match(:*, "/api/v1/agent", ObservabilityApiController, :method_not_allowed)
+    get("/api/v1/:issue_identifier/harness", ObservabilityApiController, :harness)
+    match(:*, "/api/v1/:issue_identifier/harness", ObservabilityApiController, :method_not_allowed)
     get("/api/v1/:issue_identifier", ObservabilityApiController, :issue)
     match(:*, "/api/v1/:issue_identifier", ObservabilityApiController, :method_not_allowed)
     match(:*, "/*path", ObservabilityApiController, :not_found)

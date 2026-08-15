@@ -1,6 +1,6 @@
 # Cymphony Elixir
 
-The Elixir agent orchestration service that polls Linear, creates per-issue workspaces, and runs Claude Code in headless mode.
+The Elixir agent orchestration service that polls Linear, creates per-issue workspaces, and runs a coding-agent CLI (Claude Code, Codex, or Antigravity) in headless mode.
 
 ## Environment
 
@@ -12,6 +12,8 @@ The Elixir agent orchestration service that polls Linear, creates per-issue work
 ## Codebase-Specific Conventions
 
 - Runtime config is loaded from `WORKFLOW.md` front matter via `CymphonyElixir.Workflow` and `CymphonyElixir.Config`.
+- Agent kinds are the closed set from `CymphonyElixir.Agent.known_kinds/0` (`claude`, `codex`, `antigravity`). Select at run time with `cymphony agent antigravity`, a Linear label `agent:antigravity`, or a description directive `cymphony: agent=antigravity`. Antigravity provider env prefixes are `ANTIGRAVITY_` / `GOOGLE_` / `GEMINI_` (plus `API_TIMEOUT`; fallback keys `GOOGLE_API_KEY` / `GEMINI_API_KEY`).
+- The dashboard expanded session row has a live Harness stdout pane (`HarnessStream`) and a per-session agent-kind select on `set_issue_run_spec`.
 - Keep the implementation aligned with [`SPEC.md`](SPEC.md) where practical.
   - The implementation may be a superset of the spec.
   - The implementation must not conflict with the spec.
@@ -62,3 +64,4 @@ If behavior/config changes, update docs in the same PR:
 - `README.md` for project concept and goals.
 - `README.md` for Elixir implementation and run instructions.
 - `WORKFLOW.md` for workflow/config contract changes.
+- `CLAUDE.md` / `AGENTS.md` for CLI, labels, dashboard Harness pane, and provider prefixes.

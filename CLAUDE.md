@@ -37,7 +37,7 @@ Defined in `lib/cymphony_elixir/cli.ex`.
 | Command | Expands to | Description |
 |---------|-----------|-------------|
 | `project <name>` / `projects <name>` | `--project <name>` | Run a specific project |
-| `agent <kind>` | `--agent <kind>` | Coding agent: `claude` or `codex` |
+| `agent <kind>` | `--agent <kind>` | Coding agent: `claude`, `codex`, or `antigravity` |
 | `model <name>` | `--model <name>` | Model override passed to the agent CLI |
 | `effort <level>` | `--effort <level>` | Reasoning effort passed to the agent CLI |
 | `c <value>` | `--provider <value>` | Provider rotation (comma-separated auth aliases) |
@@ -78,12 +78,13 @@ Comma-separated provider names are randomly assigned per session. Each provider 
 
 ```bash
 cymphony agent codex                       # Run every project with the Codex CLI
+cymphony agent antigravity                 # Run every project with the Antigravity CLI (`agy`)
 cymphony agent codex model gpt-5.2-codex   # Codex with an explicit model
 cymphony effort high                       # Reasoning effort for the configured agent
 ```
 
-`agent <kind>` picks the coding-agent backend (`claude` or `codex`) for this run; `model` and
-`effort` are passed through to the agent CLI verbatim (Claude: `--model`/`--effort`;
+`agent <kind>` picks the coding-agent backend (`claude`, `codex`, or `antigravity`) for this run; `model` and
+`effort` are passed through to the agent CLI verbatim (Claude / Antigravity: `--model`/`--effort`;
 Codex: `-m`/`-c model_reasoning_effort=…`). Per-project defaults live in
 `~/.cymphony/config.json` as `agent`, `model`, `effort` keys.
 
@@ -92,13 +93,14 @@ Codex: `-m`/`-c model_reasoning_effort=…`). Per-project defaults live in
 Choose the agent, model, effort, or provider for a single issue from Linear itself — add labels:
 
 ```
-agent:codex   model:gpt-5.2-codex   effort:high   provider:cz1
+agent:codex   agent:antigravity   model:gpt-5.2-codex   effort:high   provider:cz1
 ```
 
 or a directive line anywhere in the issue description:
 
 ```
 cymphony: agent=codex model=gpt-5.2-codex effort=high
+cymphony: agent=antigravity model=gemini-3.7-flash-high effort=high
 ```
 
 Labels win over the directive; both win over project config. Resolution happens at dispatch and
@@ -121,17 +123,17 @@ The application is an escript CLI (`main_module: CymphonyElixir.CLI`) that start
 ### Core Data Flow
 
 ```
-CLI → CymphonyConfig → WorkflowStore → Orchestrator (GenServer, per-project) → AgentRunner (Task) → Agent.Runner (Port) → Agent.Claude | Agent.Codex adapter
+CLI → CymphonyConfig → WorkflowStore → Orchestrator (GenServer, per-project) → AgentRunner (Task) → Agent.Runner (Port) → Agent.Claude | Agent.Codex | Agent.Antigravity adapter
 ```
 
 1. **CLI** (`cli.ex`) — Escript entrypoint. Handles onboarding, multi-project mode, background process management, concurrency control, provider rotation, and legacy WORKFLOW.md mode.
 2. **CymphonyConfig** (`cymphony/config.ex`) — Reads/writes `~/.cymphony/config.json`, generates temporary `WORKFLOW.md` with YAML front matter from project config. Converts `--concurrency` and `c` flags into workflow YAML.
 3. **WorkflowStore** (`workflow_store.ex`) — GenServer that loads and hot-reloads `WORKFLOW.md`. Holds current workflow state per project.
-4. **Config** (`config.ex` + `config/schema.ex`) — Validates workflow config via Ecto embedded schemas. Resolves `$ENV_VAR` references and provides typed access to all settings (tracker, polling, workspace, agent, claude, codex, hooks, etc.).
+4. **Config** (`config.ex` + `config/schema.ex`) — Validates workflow config via Ecto embedded schemas. Resolves `$ENV_VAR` references and provides typed access to all settings (tracker, polling, workspace, agent, claude, codex, antigravity, hooks, etc.).
 5. **Orchestrator** (`orchestrator.ex`) — Central GenServer per project. Poll tick loop dispatches issues, enforces concurrency via `available_slots/1`, selects providers via `select_provider/1` (random rotation from `providers` list), handles retries with exponential backoff, tracks token usage, and detects stalled agents.
 6. **AgentRunner** (`agent_runner.ex`) — Spawns a Task per issue. Creates workspace, runs lifecycle hooks, then calls `Agent.Runner` for multi-turn execution. Accepts `agent_kind`/`model`/`effort`/`provider_override` opts for this session.
-7. **ShellProvider** (`cymphony/shell_provider.ex`) — Reads provider env vars (API keys, model config) from shell functions in `~/.cld`, `~/.zshrc`, or `~/.bashrc`. Sources the rc files in a zsh subprocess with `claude`/`codex` noop'd, calls the provider function, and captures env vars matching the active agent's prefixes (Claude: `ANTHROPIC_*`/`CLAUDE_CODE_*`; Codex: `OPENAI_*`/`CODEX_*`). Results are cached via `persistent_term`.
-8. **Agent behaviour** (`agent.ex`, `agent/runner.ex`, `agent/claude.ex`, `agent/codex.ex`) — `Agent.Runner` owns the shared machinery (port spawn, SSH remoting, env injection, timeouts, workspace validation) and delegates argv construction + output parsing to the `CymphonyElixir.Agent` adapter for `agent.kind`. The Claude adapter drives `claude --bare -p … --resume`; the Codex adapter drives `codex exec --json` / `codex exec resume <id>` and parses its JSONL events.
+7. **ShellProvider** (`cymphony/shell_provider.ex`) — Reads provider env vars (API keys, model config) from shell functions in `~/.cld`, `~/.zshrc`, or `~/.bashrc`. Sources the rc files in a zsh subprocess with `claude`/`codex`/`agy`/`antigravity` noop'd, calls the provider function, and captures env vars matching the active agent's prefixes (Claude: `ANTHROPIC_*`/`CLAUDE_CODE_*`; Codex: `OPENAI_*`/`CODEX_*`; Antigravity: `ANTIGRAVITY_*`/`GOOGLE_*`/`GEMINI_*` plus `API_TIMEOUT`; fallback keys `GOOGLE_API_KEY`/`GEMINI_API_KEY`). Results are cached via `persistent_term`.
+8. **Agent behaviour** (`agent.ex`, `agent/runner.ex`, `agent/claude.ex`, `agent/codex.ex`, `agent/antigravity.ex`) — `Agent.Runner` owns the shared machinery (port spawn, SSH remoting, env injection, timeouts, workspace validation) and delegates argv construction + output parsing to the `CymphonyElixir.Agent` adapter for `agent.kind`. The Claude adapter drives `claude --bare -p … --resume`; the Codex adapter drives `codex exec --json` / `codex exec resume <id>` and parses its JSONL events; the Antigravity adapter drives `agy -p … --output-format stream-json` and resumes with `--conversation <id>` (never `-c`/`--continue`).
 9. **Workspace** (`workspace.ex`) — Isolated per-issue directories with path safety validation, lifecycle hooks (after_create, before_run, after_run, before_remove), and SSH worker support. Optional retention sweep (`workspace.retention_days` in config) deletes stale workspaces every 6 hours, skipping currently-running ones.
 10. **Tracker** (`tracker.ex`) — Behaviour-based adapter for issue trackers. `Linear.Adapter` is the production implementation; `Tracker.Memory` is for testing.
 
@@ -146,7 +148,7 @@ CLI → CymphonyConfig → WorkflowStore → Orchestrator (GenServer, per-projec
 ### Provider Rotation
 
 - `providers` list stored in Orchestrator `%State{}` struct
-- `extract_providers/1` reads from the **active agent kind's** section (`config.claude.*` or `config.codex.*`): `providers` list first, single `provider` fallback
+- `extract_providers/1` reads from the **active agent kind's** section (`config.claude.*`, `config.codex.*`, or `config.antigravity.*`): `providers` list first, single `provider` fallback
 - `select_provider/1` picks randomly via `Enum.random(providers)` for even distribution
 - `spawn_issue_on_worker_host/6` selects a provider per dispatch and passes it as `provider_override` to AgentRunner
 - Dashboard can change a running session's provider (kill & restart with new provider)
@@ -156,6 +158,7 @@ CLI → CymphonyConfig → WorkflowStore → Orchestrator (GenServer, per-projec
 ```
 CymphonyElixir.Supervisor (one_for_one)
 ├── Phoenix.PubSub
+├── HarnessStream (ETS ring of live CLI stdout; after PubSub, before HttpServer)
 ├── Registry (ProjectRegistry, :unique)
 ├── Task.Supervisor (for AgentRunner tasks)
 ├── DynamicSupervisor (ProjectDynamicSupervisor)
@@ -176,7 +179,7 @@ The Phoenix LiveView dashboard (`lib/cymphony_elixir_web/live/dashboard_live.ex`
 
 - **Top bar** — Status badge (Live/Offline), version, theme toggle (☀ light / ☾ dark / ⌂ system), ⚙ Settings drawer toggle, Refresh button
 - **Metrics strip** — One row of stat tiles: running count, retrying count, total tokens (input/output), runtime, throughput sparkline (10-minute window), plus compact polling-countdown and rate-limit (Primary/Secondary/Credits) tiles
-- **Per-project sections** — One section per project. Header shows project name, running count vs concurrency cap, paused state, and inline controls: concurrency input (`cr`), agent select (claude/codex), model input (with per-kind suggestions), effort select, providers input (`c`, comma-separated aliases), and Pause/Resume button. Each session is a compact one-line row with issue identifier (linked), title (or last activity), state/provider/agent/model/effort/host chips, runtime, tokens, and a Kill button. Click a row to expand and see session ID (copyable), workspace path (copyable), recent log events, and a restart-with-overrides form (provider/model/effort). The retry queue lives inline at the bottom of each project section.
+- **Per-project sections** — One section per project. Header shows project name, running count vs concurrency cap, paused state, and inline controls: concurrency input (`cr`), agent select (`claude`/`codex`/`antigravity`), model input (with per-kind suggestions), effort select, providers input (`c`, comma-separated aliases), and Pause/Resume button. Each session is a compact one-line row with issue identifier (linked), title (or last activity), state/provider/agent/model/effort/host chips, runtime, tokens, and a Kill button. Click a row to expand and see session ID (copyable), workspace path (copyable), recent log events, a live **Harness** stdout pane (Follow/Paused; `HarnessStream` ring of 400 × 2048-byte lines), and a restart-with-overrides form (agent_kind/provider/model/effort). The retry queue lives inline at the bottom of each project section.
 - **Recent completions** — Last 100 sessions that wrapped up: identifier, agent/model chips, runtime, total tokens, ended-at timestamp. Collapsible; backed by the persistent completion store.
 - **Settings drawer** — Right-side panel with orchestrator controls (global Pause/Resume, global concurrency) and client-side display preferences (density, section visibility, session-row columns, completions length). Display prefs persist per browser in localStorage (`cymphony-prefs`) as `data-*` attributes on `<html>`; no server state.
 
@@ -184,12 +187,13 @@ The Phoenix LiveView dashboard (`lib/cymphony_elixir_web/live/dashboard_live.ex`
 
 | Event | Description |
 |-------|-------------|
-| `toggle_logs` | Expand/collapse a session row to reveal session ID, workspace path, recent logs, restart-with-overrides form |
+| `toggle_logs` | Expand/collapse a session row to reveal session ID, workspace path, recent logs, Harness stdout pane, restart-with-overrides form |
 | `dismiss_stalled_alert` | Dismiss stalled-agent warning |
 | `kill_issue` | Terminate a running session |
 | `retry_issue` | Immediately retry a queued issue |
 | `refresh_now` | Trigger Linear refresh from dashboard |
-| `set_issue_run_spec` | Kill a running session and restart it with pinned provider/model/effort overrides (agent kind deliberately not offered — drive kind via labels/config) |
+| `set_issue_run_spec` | Kill a running session and restart it with pinned `agent_kind`/provider/model/effort overrides (empty / "keep" skips a field) |
+| `toggle_harness_follow` | Flip Follow/Paused on the expanded session's Harness stdout pane |
 | `pause_dispatch` / `resume_dispatch` | Stop/start dispatching new issues for **all** projects; running sessions complete normally |
 | `toggle_project_pause` | Pause or resume dispatching for a single project from its section header |
 | `set_concurrency` | Update `max_concurrent_agents` for **all** projects (legacy global form); persists to `~/.cymphony/config.json` |
@@ -226,13 +230,14 @@ Routes defined in `lib/cymphony_elixir_web/router.ex`:
 | `/` | GET | LiveView dashboard |
 | `/api/v1/state` | GET | Full state snapshot JSON |
 | `/api/v1/projects` | GET | Project list with running/retrying counts |
+| `/api/v1/:issue_identifier/harness` | GET | Live CLI stdout ring (`HarnessStream.snapshot`); optional `?project=`. Must be declared before the issue catch-all. |
 | `/api/v1/:issue_identifier` | GET | Single issue details (optional `?project=` filter) |
 | `/api/v1/refresh` | POST | Trigger Linear refresh (returns 202) |
 | `/api/v1/pause` | POST | Stop dispatching new issues; running sessions continue. Optional `?project=<name>` to scope to one project. Returns 202. |
 | `/api/v1/resume` | POST | Resume dispatching new issues. Optional `?project=<name>`. Returns 202. |
 | `/api/v1/concurrency` | POST | Update `max_concurrent_agents` at runtime. JSON body `{"value": <int>}`, optional `?project=<name>`. Persists to `~/.cymphony/config.json`. Returns 202. |
 | `/api/v1/providers` | POST | Update provider list at runtime. JSON body `{"value": "cv1,cz2,ck1"}` (comma-separated aliases), optional `?project=<name>`. Persists `provider` (head) + `providers` (full list) to `~/.cymphony/config.json`. Applies to next dispatch only — running sessions unchanged. Returns 202 with `{"providers": [...]}`. |
-| `/api/v1/agent` | POST | Update agent settings at runtime. JSON body `{"kind": "codex", "model": "...", "effort": "..."}` (each optional, at least one required; empty string clears model/effort), optional `?project=<name>`. Persists to `~/.cymphony/config.json`. Applies to next dispatch. Returns 202. |
+| `/api/v1/agent` | POST | Update agent settings at runtime. JSON body `{"kind": "codex", "model": "...", "effort": "..."}` (each optional, at least one required; `kind` must be one of `claude`, `codex`, `antigravity`; empty string clears model/effort), optional `?project=<name>`. Persists to `~/.cymphony/config.json`. Applies to next dispatch. Returns 202. |
 | `/api/v1/completed` | GET | Recent completed sessions (last 100, in-memory ring buffer). Optional `?project=<name>` and `?limit=N`. |
 
 All other methods return 405; all other paths return 404.
@@ -284,7 +289,7 @@ Triggered by pushing a `v*` tag. Three jobs:
 
 ## Provider System
 
-Providers supply the auth env vars the agent CLI uses (`ANTHROPIC_*` for Claude Code, `OPENAI_*` for Codex). Two sources:
+Providers supply the auth env vars the agent CLI uses (`ANTHROPIC_*` for Claude Code, `OPENAI_*` for Codex, `ANTIGRAVITY_*` / `GOOGLE_*` / `GEMINI_*` for Antigravity). Two sources:
 
 ### 1. Config-based providers (`~/.cymphony/config.json`)
 
@@ -308,7 +313,7 @@ Set `provider` on a project to use one by default. Override per-run with `cympho
 
 Shell functions (e.g., `ck`, `ck1`, `cz`) sourced by `.zshrc`. Each calls `_unset` to clear `ANTHROPIC_*` vars, then sets new exports.
 
-Cymphony resolves these via `ShellProvider`: shells out to zsh, noop's `claude`, calls the function, and captures the resulting env vars. Results are cached via `persistent_term`.
+Cymphony resolves these via `ShellProvider`: shells out to zsh, noops `claude`/`codex`/`agy`/`antigravity`, calls the function, and captures the resulting env vars for the active agent's prefixes. Results are cached via `persistent_term`.
 
 ### Provider rotation
 
@@ -320,4 +325,4 @@ Comma-separated providers are randomly assigned per session. The first provider 
 
 ### Dashboard provider change
 
-On the dashboard, each running session has a provider input field. Submitting a new provider kills the session and immediately re-dispatches it with the new provider via `{:set_issue_provider, issue_id, provider}` GenServer call.
+On the dashboard, each running session has a restart-with-overrides form (agent kind, provider, model, effort). Submitting it kills the session and immediately re-dispatches it via `set_issue_run_spec` (`:agent_kind`, `:provider`, `:model`, `:effort`).

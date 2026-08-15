@@ -30,6 +30,7 @@ defmodule CymphonyElixir.Application do
   def children do
     [
       {Phoenix.PubSub, name: CymphonyElixir.PubSub},
+      CymphonyElixir.HarnessStream,
       {Registry, keys: :unique, name: CymphonyElixir.ProjectRegistry},
       CymphonyElixir.CompletionStore,
       {Task.Supervisor, name: CymphonyElixir.TaskSupervisor},

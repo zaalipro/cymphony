@@ -1,9 +1,10 @@
 defmodule CymphonyElixir.Orchestrator.Tokens do
   @moduledoc """
-  Token-usage and rate-limit extraction for Claude worker updates.
+  Token-usage and rate-limit extraction for agent worker updates.
 
-  Claude/Codex-style payloads carry token counts and rate-limit buckets under a
-  variety of shapes and key conventions (string vs atom keys, nested `params`,
+  Claude, Codex, and Antigravity payloads carry token counts and rate-limit
+  buckets under a variety of shapes and key conventions (bare `update[:usage]`
+  on `:turn_completed`, stream-event `payload["usage"]`, nested `params`,
   camelCase vs snake_case). These pure functions normalize all of that into a
   per-update delta and an absolute rate-limit map. Extracted from the
   Orchestrator both to shrink it and to make this fiddly parsing directly
@@ -100,19 +101,87 @@ defmodule CymphonyElixir.Orchestrator.Tokens do
     }
   end
 
+  # First integer_token_map among: (a) update[:usage]/update["usage"],
+  # (b) payload["usage"], (c) type=="turn.completed", (d) event=="result",
+  # (e) event=="step_update", (f) existing Claude nested paths.
   defp extract_token_usage(update) do
-    payloads = [
+    payload = update[:payload] || Map.get(update, "payload")
+
+    [
+      integer_token_map_or_nil(update[:usage]),
+      integer_token_map_or_nil(Map.get(update, "usage")),
+      integer_token_map_or_nil(payload_usage_field(payload)),
+      typed_turn_completed_usage(payload),
+      result_event_usage(payload),
+      step_update_usage(payload),
+      claude_usage_from_update(update, payload)
+    ]
+    |> Enum.find(&is_map/1) || %{}
+  end
+
+  defp integer_token_map_or_nil(value) when is_map(value) do
+    if integer_token_map?(value), do: value
+  end
+
+  defp integer_token_map_or_nil(_value), do: nil
+
+  defp payload_usage_field(payload) when is_map(payload) do
+    Map.get(payload, "usage") || Map.get(payload, :usage)
+  end
+
+  defp payload_usage_field(_payload), do: nil
+
+  defp typed_turn_completed_usage(payload) when is_map(payload) do
+    type = Map.get(payload, "type") || Map.get(payload, :type)
+
+    if type in ["turn.completed", "turn/completed", :turn_completed] do
+      integer_token_map_or_nil(payload_usage_field(payload))
+    end
+  end
+
+  defp typed_turn_completed_usage(_payload), do: nil
+
+  defp result_event_usage(payload) when is_map(payload) do
+    event = Map.get(payload, "event") || Map.get(payload, :event)
+
+    if event in ["result", :result] do
+      result = Map.get(payload, "result") || Map.get(payload, :result)
+
+      nested =
+        if is_map(result) do
+          integer_token_map_or_nil(Map.get(result, "usage") || Map.get(result, :usage))
+        end
+
+      nested || integer_token_map_or_nil(payload_usage_field(payload))
+    end
+  end
+
+  defp result_event_usage(_payload), do: nil
+
+  defp step_update_usage(payload) when is_map(payload) do
+    event = Map.get(payload, "event") || Map.get(payload, :event)
+
+    if event in ["step_update", :step_update] do
+      step = Map.get(payload, "step_update") || Map.get(payload, :step_update)
+
+      if is_map(step) do
+        integer_token_map_or_nil(Map.get(step, "usage") || Map.get(step, :usage))
+      end
+    end
+  end
+
+  defp step_update_usage(_payload), do: nil
+
+  defp claude_usage_from_update(update, payload) do
+    candidates = [
       update[:usage],
       Map.get(update, "usage"),
-      Map.get(update, :usage),
-      update[:payload],
-      Map.get(update, "payload"),
+      payload,
       update
     ]
 
-    Enum.find_value(payloads, &absolute_token_usage_from_payload/1) ||
-      Enum.find_value(payloads, &turn_completed_usage_from_payload/1) ||
-      %{}
+    Enum.find_value(candidates, &absolute_token_usage_from_payload/1) ||
+      Enum.find_value(candidates, &turn_completed_usage_from_payload/1)
   end
 
   defp absolute_token_usage_from_payload(payload) when is_map(payload) do
@@ -170,31 +239,13 @@ defmodule CymphonyElixir.Orchestrator.Tokens do
   defp rate_limits_from_payload(_payload), do: nil
 
   defp rate_limit_payloads(payload) when is_map(payload) do
-    Map.values(payload)
-    |> Enum.reduce_while(nil, fn
-      value, nil ->
-        case rate_limits_from_payload(value) do
-          nil -> {:cont, nil}
-          rate_limits -> {:halt, rate_limits}
-        end
-
-      _value, result ->
-        {:halt, result}
-    end)
+    payload
+    |> Map.values()
+    |> Enum.find_value(&rate_limits_from_payload/1)
   end
 
   defp rate_limit_payloads(payload) when is_list(payload) do
-    payload
-    |> Enum.reduce_while(nil, fn
-      value, nil ->
-        case rate_limits_from_payload(value) do
-          nil -> {:cont, nil}
-          rate_limits -> {:halt, rate_limits}
-        end
-
-      _value, result ->
-        {:halt, result}
-    end)
+    Enum.find_value(payload, &rate_limits_from_payload/1)
   end
 
   defp rate_limits_map?(payload) when is_map(payload) do
@@ -223,8 +274,6 @@ defmodule CymphonyElixir.Orchestrator.Tokens do
     end)
   end
 
-  defp explicit_map_at_paths(_payload, _paths), do: nil
-
   defp map_at_path(payload, path) when is_map(payload) and is_list(path) do
     Enum.reduce_while(path, payload, fn key, acc ->
       if is_map(acc) and Map.has_key?(acc, key) do
@@ -234,8 +283,6 @@ defmodule CymphonyElixir.Orchestrator.Tokens do
       end
     end)
   end
-
-  defp map_at_path(_payload, _path), do: nil
 
   defp integer_token_map?(payload) do
     token_fields = [
@@ -297,16 +344,27 @@ defmodule CymphonyElixir.Orchestrator.Tokens do
         :completionTokens
       ])
 
-  defp get_token_usage(usage, :total),
-    do:
-      payload_get(usage, [
-        "total_tokens",
-        "total",
-        :total_tokens,
-        :total,
-        "totalTokens",
-        :totalTokens
-      ])
+  defp get_token_usage(usage, :total) do
+    case payload_get(usage, [
+           "total_tokens",
+           "total",
+           :total_tokens,
+           :total,
+           "totalTokens",
+           :totalTokens
+         ]) do
+      total when is_integer(total) ->
+        total
+
+      _ ->
+        input = get_token_usage(usage, :input)
+        output = get_token_usage(usage, :output)
+
+        if is_integer(input) or is_integer(output) do
+          (input || 0) + (output || 0)
+        end
+    end
+  end
 
   defp payload_get(payload, fields) when is_list(fields) do
     Enum.find_value(fields, fn field -> map_integer_value(payload, field) end)

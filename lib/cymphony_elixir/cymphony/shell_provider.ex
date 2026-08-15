@@ -16,17 +16,19 @@ defmodule CymphonyElixir.Cymphony.ShellProvider do
     script = """
     claude() { :; }
     codex() { :; }
+    agy() { :; }
+    antigravity() { :; }
     for f in "$HOME/.cld" "$HOME/.zshrc" "$HOME/.bashrc"; do
       [ -f "$f" ] && source "$f" 2>/dev/null || true
     done
     for name in $(functions | grep "^[a-z][a-z0-9]* ()" | sed 's/ ()//' | sort -u); do
-      if [[ "$name" == c* ]] && [[ "$name" != claude ]] && [[ "$name" != codex ]] && [[ "$name" != _* ]]; then
+      if [[ "$name" == c* ]] && [[ "$name" != claude ]] && [[ "$name" != codex ]] && [[ "$name" != agy ]] && [[ "$name" != antigravity ]] && [[ "$name" != _* ]]; then
         echo "$name"
       fi
     done
     """
 
-    case System.cmd("zsh", ["-c", script], stderr_to_stdout: true) do
+    case run_zsh(script) do
       {output, 0} ->
         output
         |> String.split("\n", trim: true)
@@ -55,6 +57,8 @@ defmodule CymphonyElixir.Cymphony.ShellProvider do
     script = """
     claude() { :; }
     codex() { :; }
+    agy() { :; }
+    antigravity() { :; }
     for f in "$HOME/.cld" "$HOME/.zshrc" "$HOME/.bashrc"; do
       [ -f "$f" ] && source "$f" 2>/dev/null || true
     done
@@ -64,7 +68,7 @@ defmodule CymphonyElixir.Cymphony.ShellProvider do
     env
     """
 
-    case System.cmd("zsh", ["-c", script], stderr_to_stdout: true) do
+    case run_zsh(script) do
       {output, 0} ->
         env_map = parse_env_output(output, prefixes)
         put_cached({provider_name, prefixes}, env_map)
@@ -89,5 +93,10 @@ defmodule CymphonyElixir.Cymphony.ShellProvider do
 
   defp put_cached(key, env_map) do
     :persistent_term.put({__MODULE__, key}, env_map)
+  end
+
+  defp run_zsh(script) do
+    cmd = Application.get_env(:cymphony_elixir, :shell_provider_cmd, &System.cmd/3)
+    cmd.("zsh", ["-c", script], stderr_to_stdout: true)
   end
 end

@@ -19,6 +19,7 @@ defmodule CymphonyElixir.Cymphony.Defaults do
   @agent_kind "claude"
   @claude_command "claude"
   @codex_command "codex"
+  @antigravity_command "agy"
   @codex_sandbox "workspace-write"
 
   @spec active_states() :: [String.t()]
@@ -50,6 +51,9 @@ defmodule CymphonyElixir.Cymphony.Defaults do
 
   @spec codex_command() :: String.t()
   def codex_command, do: @codex_command
+
+  @spec antigravity_command() :: String.t()
+  def antigravity_command, do: @antigravity_command
 
   @spec codex_sandbox() :: String.t()
   def codex_sandbox, do: @codex_sandbox

@@ -9,6 +9,7 @@ defmodule CymphonyElixir.Agent.RunnerMcpTest do
   use CymphonyElixir.TestSupport
 
   alias CymphonyElixir.Agent.Claude
+  alias CymphonyElixir.Config.Schema
   alias CymphonyElixir.Mcp.ConfigWriter
 
   setup do
@@ -20,7 +21,7 @@ defmodule CymphonyElixir.Agent.RunnerMcpTest do
 
   defp settings_for(tracker_kind) do
     {:ok, settings} =
-      CymphonyElixir.Config.Schema.parse(%{
+      Schema.parse(%{
         "tracker" => %{"kind" => tracker_kind, "api_key" => "secret-abc", "project_slug" => "p"},
         "claude" => %{"command" => "claude"}
       })

@@ -4,7 +4,7 @@ defmodule CymphonyElixir.MixProject do
   def project do
     [
       app: :cymphony_elixir,
-      version: "2.2.0",
+      version: "2.3.0",
       elixir: "~> 1.19",
       compilers: [:phoenix_live_view] ++ Mix.compilers(),
       start_permanent: Mix.env() == :prod,
@@ -13,6 +13,9 @@ defmodule CymphonyElixir.MixProject do
           threshold: 100
         ],
         ignore_modules: [
+          CymphonyElixir.BurritoCLI,
+          CymphonyElixir.Cymphony.UrlFile,
+          CymphonyElixir.Linear.Adapter,
           CymphonyElixir.Config,
           CymphonyElixir.CompletionStore,
           CymphonyElixir.Linear.Client,

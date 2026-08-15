@@ -160,7 +160,7 @@ defmodule CymphonyElixir.CompletionStore do
 
   @spec default_path() :: Path.t()
   def default_path do
-    Path.join([System.user_home!() || System.tmp_dir!(), ".cymphony", "sessions.db"])
+    Path.join([System.user_home() || System.tmp_dir!(), ".cymphony", "sessions.db"])
   end
 
   defp open_and_migrate(path) do

@@ -5,8 +5,8 @@ defmodule CymphonyElixirWeb.ObservabilityApiController do
 
   use Phoenix.Controller, formats: [:json]
 
+  alias CymphonyElixir.{Agent, CompletionStore, HarnessStream}
   alias CymphonyElixir.Cymphony.Config, as: CymphonyConfig
-  alias CymphonyElixir.CompletionStore
   alias CymphonyElixirWeb.{Control, Endpoint, Presenter}
   alias Plug.Conn
 
@@ -32,6 +32,20 @@ defmodule CymphonyElixirWeb.ObservabilityApiController do
         json(conn, payload)
 
       {:error, :issue_not_found} ->
+        error_response(conn, 404, "issue_not_found", "Issue not found")
+    end
+  end
+
+  @spec harness(Conn.t(), map()) :: Conn.t()
+  def harness(conn, %{"issue_identifier" => issue_identifier}) do
+    project = conn.query_params["project"]
+
+    case Presenter.issue_payload(issue_identifier, orchestrator(), snapshot_timeout_ms(), project) do
+      {:ok, %{status: "running", issue_id: issue_id}} when is_binary(issue_id) and issue_id != "" ->
+        payload = Map.merge(HarnessStream.snapshot(issue_id), %{issue_identifier: issue_identifier})
+        json(conn, payload)
+
+      _ ->
         error_response(conn, 404, "issue_not_found", "Issue not found")
     end
   end
@@ -180,7 +194,7 @@ defmodule CymphonyElixirWeb.ObservabilityApiController do
           conn,
           422,
           "invalid_agent_settings",
-          "body must include at least one of kind/model/effort; kind must be claude or codex"
+          "body must include at least one of kind/model/effort; kind must be one of: " <> Enum.join(Agent.known_kinds(), ", ")
         )
     end
   end

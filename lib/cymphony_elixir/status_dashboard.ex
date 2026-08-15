@@ -7,6 +7,7 @@ defmodule CymphonyElixir.StatusDashboard do
   require Logger
 
   alias CymphonyElixir.{Config, HttpServer}
+  alias CymphonyElixir.Cymphony.UrlFile
   alias CymphonyElixir.Orchestrator
   alias CymphonyElixirWeb.ObservabilityPubSub
 
@@ -587,11 +588,11 @@ defmodule CymphonyElixir.StatusDashboard do
   # (a separate CLI process) can find it. Idempotent; only writes when the
   # value would change.
   defp maybe_persist_dashboard_url(url) do
-    path = CymphonyElixir.Cymphony.UrlFile.path()
+    path = UrlFile.path()
 
     case File.read(path) do
       {:ok, ^url} -> :ok
-      _ -> CymphonyElixir.Cymphony.UrlFile.write(url)
+      _ -> UrlFile.write(url)
     end
   end
 
@@ -698,39 +699,39 @@ defmodule CymphonyElixir.StatusDashboard do
     do: dashboard_url(host, configured_port, bound_port)
 
   defp snapshot_payload do
-    project_snapshots = aggregate_project_snapshots()
-
-    case project_snapshots do
-      [] ->
-        # Fallback to legacy single-orchestrator mode
-        if Process.whereis(Orchestrator) do
-          case Orchestrator.snapshot() do
-            %{
-              running: running,
-              retrying: retrying,
-              token_totals: token_totals
-            } = snapshot
-            when is_list(running) and is_list(retrying) ->
-              {:ok,
-               %{
-                 running: running,
-                 retrying: retrying,
-                 token_totals: token_totals,
-                 rate_limits: Map.get(snapshot, :rate_limits),
-                 polling: Map.get(snapshot, :polling)
-               }}
-
-            _ ->
-              :error
-          end
-        else
-          :error
-        end
-
-      snapshots ->
-        {:ok, merge_project_snapshots(snapshots)}
+    case aggregate_project_snapshots() do
+      [] -> legacy_snapshot_payload()
+      snapshots -> {:ok, merge_project_snapshots(snapshots)}
     end
   end
+
+  defp legacy_snapshot_payload do
+    if Process.whereis(Orchestrator) do
+      orchestrator_snapshot_payload(Orchestrator.snapshot())
+    else
+      :error
+    end
+  end
+
+  defp orchestrator_snapshot_payload(
+         %{
+           running: running,
+           retrying: retrying,
+           token_totals: token_totals
+         } = snapshot
+       )
+       when is_list(running) and is_list(retrying) do
+    {:ok,
+     %{
+       running: running,
+       retrying: retrying,
+       token_totals: token_totals,
+       rate_limits: Map.get(snapshot, :rate_limits),
+       polling: Map.get(snapshot, :polling)
+     }}
+  end
+
+  defp orchestrator_snapshot_payload(_snapshot), do: :error
 
   defp aggregate_project_snapshots do
     alias CymphonyElixir.ProjectSupervisor
@@ -805,42 +806,40 @@ defmodule CymphonyElixir.StatusDashboard do
   end
 
   defp aggregate_max_agents do
-    project_names = CymphonyElixir.ProjectSupervisor.list_project_names()
-
-    case project_names do
+    case CymphonyElixir.ProjectSupervisor.list_project_names() do
       [] ->
         # Legacy single-project mode: use global config
         Config.settings!().agent.max_concurrent_agents
 
       names ->
         # Multi-project: sum max_concurrent_agents from each project's config
-        names
-        |> Enum.reduce(0, fn project_name, acc ->
-          case CymphonyElixir.ProjectSupervisor.lookup(project_name, :workflow_store) do
-            nil ->
-              acc
-
-            store_pid ->
-              case CymphonyElixir.WorkflowStore.current(store_pid) do
-                {:ok, %{config: raw_config}} when is_map(raw_config) ->
-                  case Config.Schema.parse(raw_config) do
-                    {:ok, settings} ->
-                      acc + settings.agent.max_concurrent_agents
-
-                    {:error, _} ->
-                      acc
-                  end
-
-                _ ->
-                  acc
-              end
-          end
-        end)
+        Enum.reduce(names, 0, &add_project_max_agents/2)
     end
   rescue
     _ -> 10
   catch
     :exit, _ -> 10
+  end
+
+  defp add_project_max_agents(project_name, acc) do
+    case CymphonyElixir.ProjectSupervisor.lookup(project_name, :workflow_store) do
+      nil -> acc
+      store_pid -> acc + project_max_agents(store_pid)
+    end
+  end
+
+  defp project_max_agents(store_pid) do
+    case CymphonyElixir.WorkflowStore.current(store_pid) do
+      {:ok, %{config: raw_config}} when is_map(raw_config) -> parsed_max_agents(raw_config)
+      _ -> 0
+    end
+  end
+
+  defp parsed_max_agents(raw_config) do
+    case Config.Schema.parse(raw_config) do
+      {:ok, settings} -> settings.agent.max_concurrent_agents
+      {:error, _} -> 0
+    end
   end
 
   defp format_running_rows(running, running_event_width) do
@@ -850,25 +849,20 @@ defmodule CymphonyElixir.StatusDashboard do
         "│"
       ]
     else
-      groups =
-        running
-        |> Enum.group_by(&Map.get(&1, :project_name))
-        |> Enum.sort_by(fn {name, _} -> name || "" end)
-
+      groups = grouped_status_rows(running)
       single_project? = length(groups) <= 1
 
       Enum.flat_map(groups, fn {project_name, rows} ->
-        rows = Enum.sort_by(rows, & &1.identifier)
-        header = [running_table_header_row(running_event_width), running_table_separator_row(running_event_width)]
-        body = Enum.map(rows, &format_running_summary(&1, running_event_width))
-
-        if single_project? do
-          header ++ body
-        else
-          [project_subheader(project_name) | header] ++ body ++ ["│"]
-        end
+        running_group_rows(project_name, rows, running_event_width, single_project?)
       end)
     end
+  end
+
+  defp running_group_rows(project_name, rows, running_event_width, single_project?) do
+    rows = Enum.sort_by(rows, & &1.identifier)
+    header = [running_table_header_row(running_event_width), running_table_separator_row(running_event_width)]
+    body = Enum.map(rows, &format_running_summary(&1, running_event_width))
+    maybe_project_group(project_name, header ++ body, single_project?)
   end
 
   defp project_subheader(name) do
@@ -939,26 +933,34 @@ defmodule CymphonyElixir.StatusDashboard do
     if retrying == [] do
       ["│  " <> colorize("No queued retries", @ansi_gray)]
     else
-      groups =
-        retrying
-        |> Enum.group_by(&Map.get(&1, :project_name))
-        |> Enum.sort_by(fn {name, _} -> name || "" end)
-
+      groups = grouped_status_rows(retrying)
       single_project? = length(groups) <= 1
 
       Enum.flat_map(groups, fn {project_name, rows} ->
-        body =
-          rows
-          |> Enum.sort_by(& &1.due_in_ms)
-          |> Enum.map(&format_retry_summary/1)
-
-        if single_project? do
-          body
-        else
-          [project_subheader(project_name) | body] ++ ["│"]
-        end
+        retry_group_rows(project_name, rows, single_project?)
       end)
     end
+  end
+
+  defp grouped_status_rows(entries) do
+    entries
+    |> Enum.group_by(&Map.get(&1, :project_name))
+    |> Enum.sort_by(fn {name, _} -> name || "" end)
+  end
+
+  defp retry_group_rows(project_name, rows, single_project?) do
+    body =
+      rows
+      |> Enum.sort_by(& &1.due_in_ms)
+      |> Enum.map(&format_retry_summary/1)
+
+    maybe_project_group(project_name, body, single_project?)
+  end
+
+  defp maybe_project_group(_project_name, rows, true), do: rows
+
+  defp maybe_project_group(project_name, rows, false) do
+    [project_subheader(project_name) | rows] ++ ["│"]
   end
 
   defp format_retry_summary(retry_entry) do
@@ -1376,6 +1378,10 @@ defmodule CymphonyElixir.StatusDashboard do
   @spec humanize_agent_message(term()) :: String.t()
   def humanize_agent_message(nil), do: "no claude message yet"
 
+  def humanize_agent_message(%{event: event}) when event in [:harness_stdout, :harness_heartbeat] do
+    "harness"
+  end
+
   def humanize_agent_message(%{event: event, message: message}) do
     payload = unwrap_agent_message_payload(message)
 
@@ -1455,11 +1461,13 @@ defmodule CymphonyElixir.StatusDashboard do
   defp humanize_agent_event(:turn_failed, _message, payload), do: humanize_agent_method("turn/failed", payload)
   defp humanize_agent_event(:turn_cancelled, _message, _payload), do: "turn cancelled"
   defp humanize_agent_event(:malformed, _message, _payload), do: "malformed JSON event from claude"
+  defp humanize_agent_event(event, _message, _payload) when event in [:harness_stdout, :harness_heartbeat], do: "harness"
   defp humanize_agent_event(_event, _message, _payload), do: nil
 
   defp unwrap_agent_message_payload(%{} = message) do
     cond do
       is_binary(map_value(message, ["method", :method])) -> message
+      is_binary(map_value(message, ["event", :event])) -> message
       is_binary(map_value(message, ["session_id", :session_id])) -> message
       is_binary(map_value(message, ["reason", :reason])) -> message
       true -> map_value(message, ["payload", :payload]) || message
@@ -1469,11 +1477,14 @@ defmodule CymphonyElixir.StatusDashboard do
   defp unwrap_agent_message_payload(message), do: message
 
   defp humanize_agent_payload(%{} = payload) do
-    case {map_value(payload, ["method", :method]), map_value(payload, ["type", :type])} do
-      {method, _} when is_binary(method) ->
+    case {map_value(payload, ["event", :event]), map_value(payload, ["method", :method]), map_value(payload, ["type", :type])} do
+      {event, _, _} when is_binary(event) ->
+        humanize_antigravity_event(event, payload)
+
+      {_, method, _} when is_binary(method) ->
         humanize_agent_method(method, payload)
 
-      {_, type} when is_binary(type) ->
+      {_, _, type} when is_binary(type) ->
         humanize_codex_event(type, payload)
 
       _ ->
@@ -1562,6 +1573,90 @@ defmodule CymphonyElixir.StatusDashboard do
   end
 
   defp humanize_codex_event(type, _payload), do: type
+
+  defp humanize_antigravity_event("init", payload) do
+    conversation_id =
+      map_value(payload, ["conversation_id", :conversation_id]) ||
+        map_path(payload, ["init", "conversation_id"]) ||
+        map_path(payload, [:init, :conversation_id])
+
+    case short_id(conversation_id) do
+      id when is_binary(id) and id != "" -> "antigravity init (" <> id <> ")"
+      _ -> "antigravity init"
+    end
+  end
+
+  defp humanize_antigravity_event("step_update", payload) do
+    step = antigravity_step_update(payload)
+
+    antigravity_step_summary(
+      map_value(step, ["tool_name", :tool_name]),
+      map_value(step, ["step_type", :step_type]),
+      map_value(step, ["state", :state]),
+      map_value(step, ["text_delta", :text_delta])
+    )
+  end
+
+  defp humanize_antigravity_event("result", payload) do
+    completed =
+      case map_value(payload, ["result", :result]) do
+        %{} = result -> result
+        _ -> payload
+      end
+
+    status = map_value(completed, ["status", :status]) || map_value(payload, ["status", :status])
+    usage = map_value(completed, ["usage", :usage]) || map_value(payload, ["usage", :usage])
+
+    base =
+      if is_binary(status) and status != "" do
+        "result " <> status
+      else
+        "result"
+      end
+
+    case format_usage_counts(usage) do
+      nil -> base
+      usage_text -> base <> " (#{usage_text})"
+    end
+  end
+
+  defp humanize_antigravity_event(event, _payload) when event in ["harness_stdout", "harness_heartbeat"] do
+    "harness"
+  end
+
+  defp humanize_antigravity_event(event, _payload) when is_binary(event), do: event
+
+  defp antigravity_step_summary(tool_name, step_type, state, text_delta) do
+    append_antigravity_text_delta(antigravity_step_base(tool_name, step_type, state), text_delta)
+  end
+
+  defp antigravity_step_base(tool_name, step_type, state) do
+    cond do
+      present_trimmed?(tool_name) -> "tool #{tool_name}"
+      is_binary(step_type) and is_binary(state) -> "#{step_type} #{state}"
+      is_binary(step_type) -> step_type
+      is_binary(state) -> state
+      true -> "step_update"
+    end
+  end
+
+  defp append_antigravity_text_delta(base, text_delta) do
+    if present_trimmed?(text_delta) do
+      "#{base} #{truncate(text_delta, 80)}"
+    else
+      base
+    end
+  end
+
+  defp present_trimmed?(value) when is_binary(value), do: String.trim(value) != ""
+  defp present_trimmed?(_value), do: false
+
+  defp antigravity_step_update(payload) do
+    case map_value(payload, ["step_update", :step_update]) do
+      %{} = step -> step
+      _ -> payload
+    end
+  end
 
   defp sanitize_ansi_and_control_bytes(value) when is_binary(value) do
     value

@@ -8,9 +8,11 @@ defmodule CymphonyElixir.Orchestrator do
   import Bitwise, only: [<<<: 2]
 
   alias CymphonyElixir.{
+    Agent,
     AgentRunner,
     CompletionStore,
     Config,
+    HarnessStream,
     ProjectSupervisor,
     RunSpecResolver,
     StatusDashboard,
@@ -19,9 +21,9 @@ defmodule CymphonyElixir.Orchestrator do
     Workspace
   }
 
-  alias CymphonyElixirWeb.ObservabilityPubSub
   alias CymphonyElixir.Linear.Issue
   alias CymphonyElixir.Orchestrator.{Dispatch, Stall, Tokens}
+  alias CymphonyElixirWeb.ObservabilityPubSub
 
   @continuation_retry_delay_ms 1_000
   @failure_retry_base_ms 10_000
@@ -50,6 +52,7 @@ defmodule CymphonyElixir.Orchestrator do
       :poll_check_in_progress,
       :tick_timer_ref,
       :tick_token,
+      :runtime_agent,
       paused: false,
       running: %{},
       recent_completed: [],
@@ -210,6 +213,22 @@ defmodule CymphonyElixir.Orchestrator do
 
         notify_dashboard()
         {:noreply, %{state | running: Map.put(running, issue_id, updated_running_entry)}}
+    end
+  end
+
+  def handle_info(
+        {:agent_worker_update, issue_id, %{event: :harness_heartbeat} = update},
+        %{running: running} = state
+      )
+      when is_binary(issue_id) do
+    case Map.get(running, issue_id) do
+      nil ->
+        {:noreply, state}
+
+      running_entry ->
+        timestamp = Map.get(update, :timestamp) || DateTime.utc_now()
+        updated_entry = Map.put(running_entry, :last_agent_timestamp, timestamp)
+        {:noreply, %{state | running: Map.put(running, issue_id, updated_entry)}}
     end
   end
 
@@ -461,6 +480,8 @@ defmodule CymphonyElixir.Orchestrator do
   end
 
   defp terminate_running_issue(%State{} = state, issue_id, cleanup_workspace) do
+    drop_harness_stream(issue_id)
+
     case Map.get(state.running, issue_id) do
       nil ->
         release_issue_claim(state, issue_id)
@@ -760,89 +781,117 @@ defmodule CymphonyElixir.Orchestrator do
   end
 
   defp spawn_issue_on_worker_host(%State{} = state, issue, attempt, recipient, worker_host, opts) do
-    resolved = RunSpecResolver.resolve(issue, state_config(state))
+    spec = dispatch_run_spec(state, issue, opts)
 
-    selected_provider =
-      Keyword.get(opts, :provider_override) || resolved.provider ||
-        select_provider_for_kind(state, resolved.agent_kind)
-
-    model = Keyword.get(opts, :model_override) || resolved.model
-    effort = Keyword.get(opts, :effort_override) || resolved.effort
-
-    case Task.Supervisor.start_child(CymphonyElixir.TaskSupervisor, fn ->
-           AgentRunner.run(issue, recipient,
-             attempt: attempt,
-             worker_host: worker_host,
-             config: state.config,
-             prompt_template: state.prompt_template,
-             provider_override: selected_provider,
-             agent_kind: resolved.agent_kind,
-             model: model,
-             effort: effort
-           )
-         end) do
+    case start_issue_agent_task(state, issue, attempt, recipient, worker_host, spec) do
       {:ok, pid} ->
-        ref = Process.monitor(pid)
-
-        Logger.info("Dispatching issue to agent: #{issue_context(issue)} pid=#{inspect(pid)} attempt=#{inspect(attempt)} worker_host=#{worker_host || "local"}")
-
-        running =
-          Map.put(
-            state.running,
-            issue.id,
-            append_log_event(
-              %{
-                pid: pid,
-                ref: ref,
-                identifier: issue.identifier,
-                issue: issue,
-                worker_host: worker_host,
-                provider: selected_provider,
-                agent_kind: resolved.agent_kind,
-                model: model,
-                effort: effort,
-                workspace_path: nil,
-                session_id: nil,
-                last_agent_message: nil,
-                last_agent_timestamp: nil,
-                last_agent_event: nil,
-                agent_os_pid: nil,
-                input_tokens: 0,
-                output_tokens: 0,
-                total_tokens: 0,
-                last_reported_input_tokens: 0,
-                last_reported_output_tokens: 0,
-                last_reported_total_tokens: 0,
-                turn_count: 0,
-                retry_attempt: normalize_retry_attempt(attempt),
-                failure_count: Keyword.get(opts, :failures, 0),
-                started_at: DateTime.utc_now(),
-                log_events: []
-              },
-              :agent_dispatched,
-              "worker_host=#{worker_host || "local"} provider=#{selected_provider || "default"} agent=#{resolved.agent_kind} model=#{model || "default"} effort=#{effort || "default"} source=#{resolved.source} attempt=#{inspect(attempt)}"
-            )
-          )
-
-        %{
-          state
-          | running: running,
-            claimed: MapSet.put(state.claimed, issue.id),
-            retry_attempts: Map.delete(state.retry_attempts, issue.id)
-        }
+        track_spawned_issue(state, issue, attempt, worker_host, spec, pid, opts)
 
       {:error, reason} ->
-        Logger.error("Unable to spawn agent for #{issue_context(issue)}: #{inspect(reason)}")
-        next_attempt = if is_integer(attempt), do: attempt + 1, else: nil
-        failures = Keyword.get(opts, :failures, 0) + 1
-
-        maybe_retry_or_abandon(state, issue.id, next_attempt, failures, %{
-          identifier: issue.identifier,
-          error: "failed to spawn agent: #{inspect(reason)}",
-          worker_host: worker_host,
-          failures: failures
-        })
+        handle_spawn_failure(state, issue, attempt, worker_host, reason, opts)
     end
+  end
+
+  defp dispatch_run_spec(%State{} = state, issue, opts) do
+    resolved = RunSpecResolver.resolve(issue, state_config(state))
+    agent_kind = Keyword.get(opts, :agent_kind_override) || resolved.agent_kind
+
+    %{
+      resolved: resolved,
+      agent_kind: agent_kind,
+      provider:
+        Keyword.get(opts, :provider_override) || resolved.provider ||
+          select_provider_for_kind(state, agent_kind),
+      model: Keyword.get(opts, :model_override) || resolved.model,
+      effort: Keyword.get(opts, :effort_override) || resolved.effort
+    }
+  end
+
+  defp start_issue_agent_task(state, issue, attempt, recipient, worker_host, spec) do
+    Task.Supervisor.start_child(CymphonyElixir.TaskSupervisor, fn ->
+      AgentRunner.run(issue, recipient,
+        attempt: attempt,
+        worker_host: worker_host,
+        config: state.config,
+        prompt_template: state.prompt_template,
+        provider_override: spec.provider,
+        agent_kind: spec.agent_kind,
+        model: spec.model,
+        effort: spec.effort
+      )
+    end)
+  end
+
+  defp track_spawned_issue(state, issue, attempt, worker_host, spec, pid, opts) do
+    ref = Process.monitor(pid)
+
+    Logger.info("Dispatching issue to agent: #{issue_context(issue)} pid=#{inspect(pid)} attempt=#{inspect(attempt)} worker_host=#{worker_host || "local"}")
+
+    running =
+      Map.put(
+        state.running,
+        issue.id,
+        append_log_event(
+          initial_running_entry(issue, attempt, worker_host, spec, pid, ref, opts),
+          :agent_dispatched,
+          spawned_issue_log_detail(worker_host, spec, attempt)
+        )
+      )
+
+    %{
+      state
+      | running: running,
+        claimed: MapSet.put(state.claimed, issue.id),
+        retry_attempts: Map.delete(state.retry_attempts, issue.id)
+    }
+  end
+
+  defp initial_running_entry(issue, attempt, worker_host, spec, pid, ref, opts) do
+    %{
+      pid: pid,
+      ref: ref,
+      identifier: issue.identifier,
+      issue: issue,
+      worker_host: worker_host,
+      provider: spec.provider,
+      agent_kind: spec.agent_kind,
+      model: spec.model,
+      effort: spec.effort,
+      workspace_path: nil,
+      session_id: nil,
+      last_agent_message: nil,
+      last_agent_timestamp: nil,
+      last_agent_event: nil,
+      agent_os_pid: nil,
+      input_tokens: 0,
+      output_tokens: 0,
+      total_tokens: 0,
+      last_reported_input_tokens: 0,
+      last_reported_output_tokens: 0,
+      last_reported_total_tokens: 0,
+      turn_count: 0,
+      retry_attempt: normalize_retry_attempt(attempt),
+      failure_count: Keyword.get(opts, :failures, 0),
+      started_at: DateTime.utc_now(),
+      log_events: []
+    }
+  end
+
+  defp spawned_issue_log_detail(worker_host, spec, attempt) do
+    "worker_host=#{worker_host || "local"} provider=#{spec.provider || "default"} agent=#{spec.agent_kind} model=#{spec.model || "default"} effort=#{spec.effort || "default"} source=#{spec.resolved.source} attempt=#{inspect(attempt)}"
+  end
+
+  defp handle_spawn_failure(state, issue, attempt, worker_host, reason, opts) do
+    Logger.error("Unable to spawn agent for #{issue_context(issue)}: #{inspect(reason)}")
+    next_attempt = if is_integer(attempt), do: attempt + 1, else: nil
+    failures = Keyword.get(opts, :failures, 0) + 1
+
+    maybe_retry_or_abandon(state, issue.id, next_attempt, failures, %{
+      identifier: issue.identifier,
+      error: "failed to spawn agent: #{inspect(reason)}",
+      worker_host: worker_host,
+      failures: failures
+    })
   end
 
   defp revalidate_issue_for_dispatch(%Issue{id: issue_id}, issue_fetcher, terminal_states)
@@ -1132,8 +1181,13 @@ defmodule CymphonyElixir.Orchestrator do
   defp state_config(%State{config: nil}), do: load_config()
   defp state_config(%State{config: config}), do: config
 
-  defp agent_command(%{agent: %{kind: "codex"}, codex: %{command: command}}), do: command
-  defp agent_command(%{claude: %{command: command}}), do: command
+  defp agent_command(%{agent: %{kind: kind}} = config) do
+    case Agent.section(config, kind) do
+      %{command: command} -> command
+      _ -> nil
+    end
+  end
+
   defp agent_command(_config), do: nil
 
   defp maybe_override(opts, _key, nil), do: opts
@@ -1142,9 +1196,12 @@ defmodule CymphonyElixir.Orchestrator do
 
   # "agent" must stay a valid kind; absent/invalid keeps the current value.
   defp normalized_kind_setting(settings, current) do
-    case Map.get(settings, "agent") do
-      value when value in ["claude", "codex"] -> value
-      _ -> current
+    value = Map.get(settings, "agent")
+
+    if Agent.known_kind?(value) do
+      value
+    else
+      current
     end
   end
 
@@ -1321,7 +1378,7 @@ defmodule CymphonyElixir.Orchestrator do
   end
 
   defp extract_providers(%{agent: %{kind: kind}} = config) do
-    case agent_provider_section(config, kind) do
+    case Agent.section(config, kind) do
       %{providers: [_ | _] = providers} -> providers
       %{provider: provider} when is_binary(provider) and provider != "" -> [provider]
       _ -> []
@@ -1329,9 +1386,6 @@ defmodule CymphonyElixir.Orchestrator do
   end
 
   defp extract_providers(_config), do: []
-
-  defp agent_provider_section(config, "codex"), do: config.codex
-  defp agent_provider_section(config, _kind), do: config.claude
 
   # When the issue's resolved kind matches the project's configured kind, use
   # the rotating provider list; when a label switches kinds, fall back to that
@@ -1341,7 +1395,7 @@ defmodule CymphonyElixir.Orchestrator do
       select_provider(state)
     else
       case config do
-        %{} -> agent_provider_section(config, kind).provider
+        %{} -> Agent.section(config, kind).provider
         _ -> select_provider(state)
       end
     end
@@ -1367,11 +1421,9 @@ defmodule CymphonyElixir.Orchestrator do
 
   @spec request_refresh(GenServer.server()) :: map() | :unavailable
   def request_refresh(server) do
-    try do
-      GenServer.call(server, :request_refresh)
-    catch
-      :exit, _ -> :unavailable
-    end
+    GenServer.call(server, :request_refresh)
+  catch
+    :exit, _ -> :unavailable
   end
 
   @spec pause(GenServer.server()) :: :ok | :unavailable
@@ -1423,10 +1475,8 @@ defmodule CymphonyElixir.Orchestrator do
 
   @doc """
   Kill a running session and immediately re-dispatch it with pinned run-spec
-  overrides (`:provider`, `:model`, `:effort` — all optional, empty/absent
-  keys keep label/config-resolved values). Agent kind is intentionally not
-  overridable per running session: a kind switch invalidates the session id,
-  so drive it via labels/config and let the restart pick it up.
+  overrides (`:provider`, `:model`, `:effort`, `:agent_kind` — all optional,
+  empty/absent keys keep label/config-resolved values).
   """
   @spec set_issue_run_spec(GenServer.server(), String.t(), map()) ::
           :ok | {:error, :not_running} | :unavailable
@@ -1442,12 +1492,10 @@ defmodule CymphonyElixir.Orchestrator do
 
   @spec snapshot(GenServer.server(), timeout()) :: map() | :timeout | :unavailable
   def snapshot(server, timeout) do
-    try do
-      GenServer.call(server, :snapshot, timeout)
-    catch
-      :exit, {:timeout, _} -> :timeout
-      :exit, _ -> :unavailable
-    end
+    GenServer.call(server, :snapshot, timeout)
+  catch
+    :exit, {:timeout, _} -> :timeout
+    :exit, _ -> :unavailable
   end
 
   @impl true
@@ -1471,10 +1519,10 @@ defmodule CymphonyElixir.Orchestrator do
           effort: Map.get(metadata, :effort),
           workspace_path: Map.get(metadata, :workspace_path),
           session_id: metadata.session_id,
-          agent_os_pid: metadata.agent_os_pid,
-          input_tokens: metadata.input_tokens,
-          output_tokens: metadata.output_tokens,
-          total_tokens: metadata.total_tokens,
+          agent_os_pid: Map.get(metadata, :agent_os_pid),
+          input_tokens: Map.get(metadata, :input_tokens, 0),
+          output_tokens: Map.get(metadata, :output_tokens, 0),
+          total_tokens: Map.get(metadata, :total_tokens, 0),
           turn_count: Map.get(metadata, :turn_count, 0),
           started_at: metadata.started_at,
           last_agent_timestamp: metadata.last_agent_timestamp,
@@ -1613,13 +1661,9 @@ defmodule CymphonyElixir.Orchestrator do
           state.config
 
         config ->
-          case config.agent.kind do
-            "codex" ->
-              %{config | codex: %{config.codex | provider: hd(providers), providers: providers}}
-
-            _ ->
-              %{config | claude: %{config.claude | provider: hd(providers), providers: providers}}
-          end
+          kind = config.agent.kind
+          section = Agent.section(config, kind)
+          Agent.put_section(config, kind, %{section | provider: hd(providers), providers: providers})
       end
 
     notify_dashboard()
@@ -1649,9 +1693,15 @@ defmodule CymphonyElixir.Orchestrator do
           %{config | agent: agent}
       end
 
+    runtime_agent =
+      case new_config do
+        %{agent: agent} -> %{kind: agent.kind, model: agent.model, effort: agent.effort}
+        _ -> nil
+      end
+
     Logger.info("Agent settings updated: #{inspect(Map.take(settings, ["agent", "model", "effort"]))}")
     notify_dashboard()
-    {:reply, :ok, %{state | config: new_config, providers: extract_providers(new_config)}}
+    {:reply, :ok, %{state | config: new_config, providers: extract_providers(new_config), runtime_agent: runtime_agent}}
   end
 
   def handle_call({:set_issue_run_spec, issue_id, overrides}, _from, state) do
@@ -1665,13 +1715,14 @@ defmodule CymphonyElixir.Orchestrator do
 
         state = terminate_running_issue(state, issue_id, false)
 
-        Logger.info("Run-spec override for #{issue_context(issue)}: #{inspect(Map.take(overrides, [:provider, :model, :effort]))}")
+        Logger.info("Run-spec override for #{issue_context(issue)}: #{inspect(Map.take(overrides, [:provider, :model, :effort, :agent_kind]))}")
 
         dispatch_opts =
           []
           |> maybe_override(:provider_override, overrides[:provider])
           |> maybe_override(:model_override, overrides[:model])
           |> maybe_override(:effort_override, overrides[:effort])
+          |> maybe_override(:agent_kind_override, overrides[:agent_kind])
 
         new_state = do_dispatch_issue(state, issue, nil, worker_host, dispatch_opts)
         notify_dashboard()
@@ -1788,8 +1839,20 @@ defmodule CymphonyElixir.Orchestrator do
   end
 
   defp pop_running_entry(state, issue_id) do
+    drop_harness_stream(issue_id)
     {Map.get(state.running, issue_id), %{state | running: Map.delete(state.running, issue_id)}}
   end
+
+  # EP-STREAM-DROP
+  defp drop_harness_stream(issue_id) when is_binary(issue_id) do
+    HarnessStream.drop(issue_id)
+  rescue
+    UndefinedFunctionError -> :ok
+  catch
+    :exit, _ -> :ok
+  end
+
+  defp drop_harness_stream(_issue_id), do: :ok
 
   defp record_session_completion_totals(state, running_entry) when is_map(running_entry) do
     runtime_seconds = running_seconds(running_entry.started_at, DateTime.utc_now())
@@ -1825,25 +1888,33 @@ defmodule CymphonyElixir.Orchestrator do
         {Config.settings!(), Config.workflow_prompt()}
 
       store_pid ->
-        case WorkflowStore.current(store_pid) do
-          {:ok, %{config: raw_config, prompt_template: prompt_template}} when is_map(raw_config) ->
-            case Config.Schema.parse(raw_config) do
-              {:ok, settings} ->
-                {settings, prompt_template}
+        parse_project_workflow_store(project_name, WorkflowStore.current(store_pid))
+    end
+  end
 
-              {:error, reason} ->
-                Logger.warning("Failed to parse config for project '#{project_name}': #{inspect(reason)}; falling back to global config")
-                {Config.settings!(), Config.workflow_prompt()}
-            end
+  defp parse_project_workflow_store(
+         project_name,
+         {:ok, %{config: raw_config, prompt_template: prompt_template}}
+       )
+       when is_map(raw_config) do
+    parse_project_workflow_config(project_name, raw_config, prompt_template)
+  end
 
-          {:error, reason} ->
-            Logger.warning("Workflow store returned error for project '#{project_name}': #{inspect(reason)}; falling back to global config")
-            {Config.settings!(), Config.workflow_prompt()}
+  defp parse_project_workflow_store(project_name, {:error, reason}) do
+    Logger.warning("Workflow store returned error for project '#{project_name}': #{inspect(reason)}; falling back to global config")
 
-          other ->
-            Logger.warning("Unexpected workflow store response for project '#{project_name}': #{inspect(other)}; falling back to global config")
-            {Config.settings!(), Config.workflow_prompt()}
-        end
+    {Config.settings!(), Config.workflow_prompt()}
+  end
+
+  defp parse_project_workflow_config(project_name, raw_config, prompt_template) do
+    case Config.Schema.parse(raw_config) do
+      {:ok, settings} ->
+        {settings, prompt_template}
+
+      {:error, reason} ->
+        Logger.warning("Failed to parse config for project '#{project_name}': #{inspect(reason)}; falling back to global config")
+
+        {Config.settings!(), Config.workflow_prompt()}
     end
   end
 
@@ -1874,6 +1945,11 @@ defmodule CymphonyElixir.Orchestrator do
   defp refresh_runtime_config(%State{config: nil} = state) do
     case load_project_config(state) do
       {:ok, config} ->
+        config =
+          config
+          |> apply_runtime_agent_overrides(state.runtime_agent)
+          |> then(&apply_runtime_provider_overrides(nil, &1, state.providers))
+
         %{
           state
           | config: config,
@@ -1890,8 +1966,13 @@ defmodule CymphonyElixir.Orchestrator do
   defp refresh_runtime_config(%State{} = state) do
     config =
       case load_project_config(state) do
-        {:ok, new_config} -> new_config
-        {:error, _} -> state.config
+        {:ok, new_config} ->
+          new_config
+          |> apply_runtime_agent_overrides(state.runtime_agent)
+          |> then(&apply_runtime_provider_overrides(state.config, &1, state.providers))
+
+        {:error, _} ->
+          state.config
       end
 
     %{
@@ -1905,6 +1986,43 @@ defmodule CymphonyElixir.Orchestrator do
 
   defp preserve_providers([_ | _] = providers, _config), do: providers
   defp preserve_providers(_, config), do: extract_providers(config)
+
+  defp apply_runtime_agent_overrides(config, %{kind: kind, model: model, effort: effort}) when is_map(config) do
+    %{config | agent: %{config.agent | kind: kind, model: model, effort: effort}}
+  end
+
+  defp apply_runtime_agent_overrides(config, _runtime_agent), do: config
+
+  # Runtime set_providers updates live in State.providers and the active kind
+  # section. A WORKFLOW.md reload must not wipe those overrides, including
+  # provider lists previously written onto now-inactive kind sections.
+  defp apply_runtime_provider_overrides(old_config, new_config, runtime_providers) when is_map(new_config) do
+    active_kind = new_config.agent.kind
+
+    Enum.reduce(Agent.known_kinds(), new_config, fn kind, acc ->
+      old_sec = if is_map(old_config), do: Agent.section(old_config, kind), else: %{}
+      new_sec = Agent.section(acc, kind)
+
+      cond do
+        kind == active_kind and match?([_ | _], runtime_providers) ->
+          put_section_providers(acc, kind, new_sec, hd(runtime_providers), runtime_providers)
+
+        runtime_provider_fields?(old_sec) ->
+          put_section_providers(acc, kind, new_sec, Map.get(old_sec, :provider), Map.get(old_sec, :providers, []))
+
+        true ->
+          acc
+      end
+    end)
+  end
+
+  defp runtime_provider_fields?(%{providers: [_ | _]}), do: true
+  defp runtime_provider_fields?(%{provider: provider}) when is_binary(provider) and provider != "", do: true
+  defp runtime_provider_fields?(_section), do: false
+
+  defp put_section_providers(config, kind, section, provider, providers) do
+    Agent.put_section(config, kind, %{section | provider: provider, providers: providers})
+  end
 
   defp retry_candidate_issue?(%Issue{} = issue, active_states, terminal_states) do
     candidate_issue?(issue, active_states, terminal_states) and
@@ -1941,6 +2059,10 @@ defmodule CymphonyElixir.Orchestrator do
   end
 
   defp apply_rate_limits(state, _update), do: state
+
+  defp append_log_event(running_entry, event, _message)
+       when event in [:harness_heartbeat, :harness_stdout],
+       do: running_entry
 
   defp append_log_event(running_entry, event, message) when is_map(running_entry) do
     log_events = [

@@ -103,6 +103,66 @@ defmodule CymphonyElixir.Agent.CodexAdapterTest do
       lines = [~s({"type":"thread.started","thread_id":"t-3"})]
       assert {:error, {:no_result_in_stream, _}} = Codex.parse_output(lines, spec(), fn _ -> :ok end)
     end
+
+    test "stderr warning between JSONL events is ignored and the turn still succeeds" do
+      lines = [
+        ~s({"type":"thread.started","thread_id":"t-noise"}),
+        "warning: failed to parse config overlay",
+        "",
+        "[]",
+        ~s({"type":"item.completed","item":{"id":"item_0","type":"agent_message","text":"ok"}}),
+        ~s({"type":"turn.completed","usage":{"input_tokens":2,"output_tokens":1}})
+      ]
+
+      assert {:ok, result} = Codex.parse_output(lines, spec(), fn _ -> :ok end)
+      assert result.session_id == "t-noise"
+      assert result.result == "ok"
+      assert result.usage == %{"input_tokens" => 2, "output_tokens" => 1, "total_tokens" => 3}
+    end
+
+    test "turn.completed with no agent_message is success with nil result and usage" do
+      lines = [
+        ~s({"type":"turn.completed","usage":{"input_tokens":3,"output_tokens":2}})
+      ]
+
+      assert {:ok, result} = Codex.parse_output(lines, spec(), fn _ -> :ok end)
+      assert result.session_id == nil
+      assert result.result == nil
+      assert result.usage == %{"input_tokens" => 3, "output_tokens" => 2, "total_tokens" => 5}
+      assert is_binary(result.raw)
+    end
+
+    test "recovers thread_id from a later event when thread.started is missing" do
+      lines = [
+        ~s({"type":"item.completed","thread_id":"t-recovered","item":{"id":"item_0","type":"agent_message","text":"hi"}}),
+        ~s({"type":"turn.completed","thread_id":"t-recovered","usage":{"input_tokens":1,"output_tokens":1}})
+      ]
+
+      assert {:ok, result} = Codex.parse_output(lines, spec(), fn _ -> :ok end)
+      assert result.session_id == "t-recovered"
+      assert result.result == "hi"
+      assert result.usage == %{"input_tokens" => 1, "output_tokens" => 1, "total_tokens" => 2}
+    end
+
+    test "thread.started session_id is not overwritten by a later thread_id" do
+      lines = [
+        ~s({"type":"thread.started","thread_id":"t-first"}),
+        ~s({"type":"turn.completed","thread_id":"t-later","usage":{"input_tokens":1,"output_tokens":0}})
+      ]
+
+      assert {:ok, %{session_id: "t-first", result: nil}} =
+               Codex.parse_output(lines, spec(), fn _ -> :ok end)
+    end
+
+    test "empty or non-binary thread_id values are ignored" do
+      lines = [
+        ~s({"type":"thread.started","thread_id":""}),
+        ~s({"type":"turn.started","thread_id":0}),
+        ~s({"type":"turn.completed","usage":{"input_tokens":1,"output_tokens":0}})
+      ]
+
+      assert {:ok, %{session_id: nil, result: nil}} = Codex.parse_output(lines, spec(), fn _ -> :ok end)
+    end
   end
 
   describe "edge branches" do

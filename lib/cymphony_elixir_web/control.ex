@@ -11,8 +11,8 @@ defmodule CymphonyElixirWeb.Control do
   supervisors are registered).
   """
 
+  alias CymphonyElixir.{Agent, Orchestrator, ProjectSupervisor}
   alias CymphonyElixir.Cymphony.Config, as: CymphonyConfig
-  alias CymphonyElixir.{Orchestrator, ProjectSupervisor}
   alias CymphonyElixirWeb.Endpoint
 
   @type scope :: :all | {:project, String.t()}
@@ -74,7 +74,7 @@ defmodule CymphonyElixirWeb.Control do
 
     cond do
       map_size(settings) == 0 -> :error
-      Map.get(settings, "agent") not in [nil, "claude", "codex"] -> :error
+      Map.get(settings, "agent") not in [nil | Agent.known_kinds()] -> :error
       true -> {:ok, settings}
     end
   end

@@ -17,6 +17,8 @@ defmodule CymphonyElixir.Agent.Runner do
 
   @port_line_bytes 1_048_576
   @max_stream_log_bytes 1_000
+  @harness_stdout_max 2048
+  @port_eof_drain_ms 250
   @shell_env_name_pattern "^[A-Za-z_][A-Za-z0-9_]*$"
 
   @type session :: %{
@@ -150,7 +152,8 @@ defmodule CymphonyElixir.Agent.Runner do
   defp build_run_spec(workspace, worker_host, config, opts) do
     settings = config || Config.settings!()
     kind = Keyword.get(opts, :agent_kind) || settings.agent.kind
-    section = agent_section(settings, kind)
+    # EP-SECTION
+    section = Agent.section(settings, kind)
 
     {:ok,
      %{
@@ -163,12 +166,14 @@ defmodule CymphonyElixir.Agent.Runner do
        prompt: "",
        workspace: workspace,
        mcp_descriptor: mcp_descriptor(settings, worker_host),
-       settings: Map.from_struct(section)
+       settings: section_to_settings(section)
      }}
   end
 
-  defp agent_section(settings, "codex"), do: settings.codex
-  defp agent_section(settings, _kind), do: settings.claude
+  # Agent.section/2 may return a schema struct or a stub map (antigravity
+  # fallback before the embed is present on every settings shape).
+  defp section_to_settings(%{__struct__: _} = section), do: Map.from_struct(section)
+  defp section_to_settings(section) when is_map(section), do: section
 
   # MCP injection is local-only (a remote workspace cannot read a local
   # descriptor file, and remote argv rendering is untested) — same behavior
@@ -185,6 +190,7 @@ defmodule CymphonyElixir.Agent.Runner do
             [
               :binary,
               :exit_status,
+              :eof,
               :stderr_to_stdout,
               args: [~c"-c", String.to_charlist(local_launch_script(command))],
               cd: String.to_charlist(workspace),
@@ -340,9 +346,11 @@ defmodule CymphonyElixir.Agent.Runner do
   end
 
   defp await_process_completion(port, on_message, metadata, run_spec, agent_module, config) do
-    case collect_output(port, config) do
+    wrapped = wrap_on_message(on_message, metadata)
+
+    case collect_output(port, config, wrapped) do
       {:ok, lines} ->
-        agent_module.parse_output(lines, run_spec, wrap_on_message(on_message, metadata))
+        agent_module.parse_output(lines, run_spec, wrapped)
 
       {:error, reason} ->
         {:error, reason}
@@ -355,40 +363,93 @@ defmodule CymphonyElixir.Agent.Runner do
     fn details -> on_message.(Map.merge(metadata, details)) end
   end
 
-  defp collect_output(port, config) do
-    collect_output(port, "", [], config)
+  defp collect_output(port, config, on_message) do
+    collect_output(port, "", [], config, on_message, false)
   end
 
   # Tail-recursive: accumulates completed lines in reverse and reverses once at
   # the end, so a long streaming turn (thousands of events) does not grow the
   # call stack proportionally to the number of output lines.
-  defp collect_output(port, buffer, acc, config) do
+  # EP-STREAM: emit :harness_stdout incrementally for completed lines (and a
+  # leftover buffer on exit 0). :noeol chunks stay buffered and are not emitted.
+  # parse_output still runs only after a successful exit.
+  # exit_status can race ahead of the last {:noeol, _} chunk; wait for :eof
+  # (or a short drain) so leftover output is not dropped.
+  defp collect_output(port, buffer, acc, config, on_message, eof?) do
     timeout_ms = if config, do: config.agent.turn_timeout_ms, else: Config.settings!().agent.turn_timeout_ms
 
     receive do
       {^port, {:data, {:eol, chunk}}} ->
         line = buffer <> to_string(chunk)
         log_stream_line(line)
-        collect_output(port, "", [line | acc], config)
+        emit_harness_stdout(on_message, line)
+        collect_output(port, "", [line | acc], config, on_message, eof?)
 
       {^port, {:data, {:noeol, chunk}}} ->
-        collect_output(port, buffer <> to_string(chunk), acc, config)
+        collect_output(port, buffer <> to_string(chunk), acc, config, on_message, eof?)
 
-      {^port, {:exit_status, 0}} ->
-        remaining = buffer |> to_string() |> String.trim()
-        if remaining != "", do: log_stream_line(remaining)
-        lines = if remaining != "", do: [remaining | acc], else: acc
-        {:ok, Enum.reverse(lines)}
+      {^port, :eof} ->
+        collect_output(port, buffer, acc, config, on_message, true)
 
       {^port, {:exit_status, status}} ->
-        remaining = buffer |> to_string() |> String.trim()
-        if remaining != "", do: log_stream_line(remaining)
-        {:error, {:agent_exit, status, remaining}}
+        {buffer, acc} =
+          if eof? do
+            {buffer, acc}
+          else
+            drain_port_until_eof(port, buffer, acc, on_message)
+          end
+
+        finalize_collected_output(status, buffer, acc, on_message)
     after
       timeout_ms ->
         stop_port(port)
         {:error, :turn_timeout}
     end
+  end
+
+  defp drain_port_until_eof(port, buffer, acc, on_message) do
+    receive do
+      {^port, {:data, {:eol, chunk}}} ->
+        line = buffer <> to_string(chunk)
+        log_stream_line(line)
+        emit_harness_stdout(on_message, line)
+        drain_port_until_eof(port, "", [line | acc], on_message)
+
+      {^port, {:data, {:noeol, chunk}}} ->
+        drain_port_until_eof(port, buffer <> to_string(chunk), acc, on_message)
+
+      {^port, :eof} ->
+        {buffer, acc}
+    after
+      @port_eof_drain_ms ->
+        {buffer, acc}
+    end
+  end
+
+  defp finalize_collected_output(0, buffer, acc, on_message) do
+    remaining = buffer |> to_string() |> String.trim()
+
+    if remaining != "" do
+      log_stream_line(remaining)
+      emit_harness_stdout(on_message, remaining)
+    end
+
+    lines = if remaining != "", do: [remaining | acc], else: acc
+    {:ok, Enum.reverse(lines)}
+  end
+
+  defp finalize_collected_output(status, buffer, _acc, _on_message) do
+    remaining = buffer |> to_string() |> String.trim()
+    if remaining != "", do: log_stream_line(remaining)
+    {:error, {:agent_exit, status, remaining}}
+  end
+
+  defp emit_harness_stdout(on_message, line) do
+    on_message.(%{
+      event: :harness_stdout,
+      raw: String.slice(to_string(line), 0, @harness_stdout_max),
+      timestamp: DateTime.utc_now()
+    })
   end
 
   defp validate_workspace_cwd(workspace, nil, config) when is_binary(workspace) do

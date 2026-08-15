@@ -69,8 +69,6 @@ defmodule CymphonyElixirWeb.Plugs.ApiAuth do
       %{} = session -> Map.get(session, "api_token")
       _ -> nil
     end
-  rescue
-    _ -> nil
   end
 
   defp query_token(conn) do

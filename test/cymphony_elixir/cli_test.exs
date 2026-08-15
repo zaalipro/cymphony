@@ -135,6 +135,7 @@ defmodule CymphonyElixir.CLITest do
     test "shows help for --help" do
       assert {:error, text} = CLI.evaluate(["--help"])
       assert text =~ "Usage:"
+      assert text =~ "Coding agent: claude, codex, or antigravity"
     end
 
     test "shows help for -h" do
@@ -270,7 +271,7 @@ defmodule CymphonyElixir.CLITest do
     end
 
     test "agent/model/effort shorthands run in cymphony mode without crashing", %{deps: deps} do
-      for args <- [["agent", "codex"], ["model", "opus"], ["effort", "high"]] do
+      for args <- [["agent", "codex"], ["agent", "antigravity"], ["model", "opus"], ["effort", "high"]] do
         result = CLI.evaluate(args, deps)
         assert result in [:ok, :done] or match?({:error, _}, result)
       end
@@ -299,5 +300,103 @@ defmodule CymphonyElixir.CLITest do
       result = CLI.evaluate(["--provider", "cz"], provider_deps)
       assert result in [:ok, :done] or match?({:error, _}, result)
     end
+  end
+end
+
+defmodule CymphonyElixir.CLIAgentOverrideTest do
+  # async: false — mutates the global :config_dir_override.
+  use ExUnit.Case, async: false
+
+  import ExUnit.CaptureIO
+
+  alias CymphonyElixir.CLI
+
+  setup do
+    tmp = Path.join(System.tmp_dir!(), "cymphony-cli-agent-#{System.unique_integer([:positive])}")
+    File.mkdir_p!(tmp)
+
+    File.write!(
+      Path.join(tmp, "config.json"),
+      Jason.encode!(%{
+        "projects" => [
+          %{
+            "name" => "Farm",
+            "github_repo_url" => "git@github.com:example/repo.git",
+            "linear_project_slug" => "team-abc",
+            "linear_api_key" => "lin_test",
+            "workspace_root" => Path.join(tmp, "ws"),
+            "polling_interval_ms" => 5000,
+            "agent" => "claude"
+          }
+        ]
+      })
+    )
+
+    Application.put_env(:cymphony_elixir, :config_dir_override, tmp)
+
+    on_exit(fn ->
+      Application.delete_env(:cymphony_elixir, :config_dir_override)
+      File.rm_rf!(tmp)
+    end)
+
+    :ok
+  end
+
+  defp evaluate_deps(parent) do
+    %{
+      file_regular?: fn _path -> true end,
+      set_workflow_file_path: fn path ->
+        send(parent, {:workflow_set, path})
+        :ok
+      end,
+      set_logs_root: fn _path -> :ok end,
+      set_server_port_override: fn _port -> :ok end,
+      ensure_all_started: fn -> {:ok, [:cymphony_elixir]} end
+    }
+  end
+
+  test "agent antigravity expands and is written onto the project workflow" do
+    parent = self()
+
+    capture_io(:stderr, fn ->
+      assert :ok = CLI.evaluate(["agent", "antigravity"], evaluate_deps(parent))
+    end)
+
+    assert_received {:workflow_set, path}
+    assert workflow_agent_kind(path) == "antigravity"
+    File.rm(path)
+  end
+
+  test "agent codex still applies onto the project workflow" do
+    parent = self()
+
+    capture_io(:stderr, fn ->
+      assert :ok = CLI.evaluate(["agent", "codex"], evaluate_deps(parent))
+    end)
+
+    assert_received {:workflow_set, path}
+    assert workflow_agent_kind(path) == "codex"
+    File.rm(path)
+  end
+
+  test "unknown agent warns and keeps the configured kind" do
+    parent = self()
+
+    stderr =
+      capture_io(:stderr, fn ->
+        assert :ok = CLI.evaluate(["agent", "gemini"], evaluate_deps(parent))
+      end)
+
+    assert stderr =~ "Unknown agent 'gemini' — using configured agent"
+    assert_received {:workflow_set, path}
+    assert workflow_agent_kind(path) == "claude"
+    File.rm(path)
+  end
+
+  defp workflow_agent_kind(path) do
+    content = File.read!(path)
+    [_preamble, front_matter, _body] = String.split(content, "---", parts: 3)
+    {:ok, parsed} = Jason.decode(String.trim(front_matter))
+    parsed["agent"]["kind"]
   end
 end

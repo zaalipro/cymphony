@@ -1,3 +1,13 @@
+unless Code.ensure_loaded?(CymphonyElixir.HarnessStream) do
+  defmodule CymphonyElixir.HarnessStream do
+    @moduledoc false
+
+    def snapshot(issue_id) when is_binary(issue_id) do
+      %{issue_id: issue_id, last_seq: 0, lines: [], dropped: 0}
+    end
+  end
+end
+
 defmodule CymphonyElixir.ExtensionsTest do
   use CymphonyElixir.TestSupport
 
@@ -70,7 +80,13 @@ defmodule CymphonyElixir.ExtensionsTest do
       GenServer.start_link(__MODULE__, opts, name: name)
     end
 
-    def init(opts), do: {:ok, opts}
+    def init(opts) do
+      if project_name = Keyword.get(opts, :project_name) do
+        {:ok, _} = Registry.register(CymphonyElixir.ProjectRegistry, {project_name, :orchestrator}, nil)
+      end
+
+      {:ok, opts}
+    end
 
     def handle_call(:snapshot, _from, state) do
       {:reply, Keyword.fetch!(state, :snapshot), state}
@@ -393,7 +409,12 @@ defmodule CymphonyElixir.ExtensionsTest do
 
     assert state_payload == %{
              "generated_at" => state_payload["generated_at"],
-             "counts" => %{"running" => 1, "retrying" => 1},
+             "counts" => %{
+               "running" => 1,
+               "retrying" => 1,
+               "by_state" => %{"In Progress" => 1},
+               "by_kind" => %{"unknown" => 1}
+             },
              "running" => [
                %{
                  "issue_id" => "issue-http",
@@ -417,7 +438,8 @@ defmodule CymphonyElixir.ExtensionsTest do
                  "stalled" => false,
                  "log_events" => [],
                  "project_name" => "default",
-                 "tokens" => %{"input_tokens" => 4, "output_tokens" => 8, "total_tokens" => 12}
+                 "tokens" => %{"input_tokens" => 4, "output_tokens" => 8, "total_tokens" => 12},
+                 "tokens_per_second" => state_payload["running"] |> List.first() |> Map.fetch!("tokens_per_second")
                }
              ],
              "retrying" => [
@@ -445,7 +467,8 @@ defmodule CymphonyElixir.ExtensionsTest do
                "input_tokens" => 4,
                "output_tokens" => 8,
                "total_tokens" => 12,
-               "seconds_running" => 42.5
+               "seconds_running" => 42.5,
+               "tokens_per_second" => 12 / 42.5
              },
              "polling" => %{
                "next_poll_in_ms" => 5_000,
@@ -594,8 +617,8 @@ defmodule CymphonyElixir.ExtensionsTest do
     dashboard_css = response(get(build_conn(), "/dashboard.css"), 200)
     assert dashboard_css =~ ":root {"
     assert dashboard_css =~ ".status-badge-live"
-    assert dashboard_css =~ "[data-phx-main].phx-connected .status-badge-live"
-    assert dashboard_css =~ "[data-phx-main].phx-connected .status-badge-offline"
+    assert dashboard_css =~ "[data-phx-main].phx-connected .status-badge-transport"
+    assert dashboard_css =~ "[data-phx-main].phx-connected .status-badge-payload"
 
     phoenix_html_js = response(get(build_conn(), "/vendor/phoenix_html/phoenix_html.js"), 200)
     assert phoenix_html_js =~ "phoenix.link.click"
@@ -634,7 +657,7 @@ defmodule CymphonyElixir.ExtensionsTest do
     assert html =~ "rendered"
     assert html =~ "Runtime"
     assert html =~ "Live"
-    assert html =~ "Offline"
+    refute html =~ "Unavailable"
     # Per-project section shows the project header and inline controls.
     assert html =~ "set_project_concurrency"
     assert html =~ "set_project_providers"
@@ -643,7 +666,8 @@ defmodule CymphonyElixir.ExtensionsTest do
     refute html =~ "Refresh now"
     refute html =~ "Transport"
     assert html =~ "status-badge-live"
-    assert html =~ "status-badge-offline"
+    assert html =~ "status-badge-transport"
+    assert html =~ "status-badge-payload"
 
     # Expand the session row → "Copy ID" and "Workspace" labels become visible.
     expanded =
@@ -701,9 +725,11 @@ defmodule CymphonyElixir.ExtensionsTest do
       snapshot_timeout_ms: 5
     )
 
-    {:ok, _view, html} = live(build_conn(), "/")
+    {:ok, view, html} = live(build_conn(), "/")
     assert html =~ "Snapshot unavailable"
     assert html =~ "snapshot_unavailable"
+    assert has_element?(view, ".status-badge-payload.status-badge-offline", "Unavailable")
+    refute has_element?(view, ".status-badge-payload.status-badge-live")
   end
 
   describe "recent completions" do
@@ -864,11 +890,25 @@ defmodule CymphonyElixir.ExtensionsTest do
 
       start_test_endpoint(orchestrator: orchestrator_name, snapshot_timeout_ms: 50)
 
-      {:ok, _view, html} = live(build_conn(), "/")
+      {:ok, view, html} = live(build_conn(), "/")
 
       # Drawer shell + toggle in the top bar.
       assert html =~ ~s(class="settings-drawer")
       assert html =~ "data-drawer-toggle"
+
+      # Simple is the approachable default; Advanced preserves expert controls.
+      assert html =~ ~s(class="mode-switch")
+      assert html =~ ~s(data-mode-set="simple")
+      assert html =~ ~s(data-mode-set="advanced")
+      assert html =~ ~s(aria-label="Dashboard mode")
+      assert html =~ "Automatic work is on"
+      assert html =~ "simple-only"
+      assert html =~ "advanced-only"
+      assert html =~ ~s(phx-click="pause_dispatch")
+      assert html =~ ~s(phx-click="kill_issue")
+      assert html =~ ~s(phx-click="retry_issue")
+      assert has_element?(view, ~s|form[phx-submit="set_project_concurrency"] button[type="submit"]|, "Save")
+      assert has_element?(view, ~s|form[phx-submit="set_project_providers"] button[type="submit"]|, "Save")
 
       # Orchestrator controls moved into the drawer.
       assert html =~ ~s(id="drawer-global-concurrency")
@@ -890,6 +930,55 @@ defmodule CymphonyElixir.ExtensionsTest do
       refute html =~ "command-bar-row--ops"
     end
 
+    test "simple mode reports partial autonomy across mixed project pause states" do
+      suffix = System.unique_integer([:positive])
+      active_name = "active-#{suffix}"
+      paused_name = "paused-#{suffix}"
+      active_orchestrator = Module.concat(__MODULE__, :MixedActiveOrchestrator)
+      paused_orchestrator = Module.concat(__MODULE__, :MixedPausedOrchestrator)
+
+      {:ok, _active_pid} =
+        StaticOrchestrator.start_link(
+          name: active_orchestrator,
+          project_name: active_name,
+          snapshot: empty_snapshot(false)
+        )
+
+      {:ok, _paused_pid} =
+        StaticOrchestrator.start_link(
+          name: paused_orchestrator,
+          project_name: paused_name,
+          snapshot: empty_snapshot(true)
+        )
+
+      start_test_endpoint(orchestrator: active_orchestrator, snapshot_timeout_ms: 50)
+
+      {:ok, _view, html} = live(build_conn(), "/")
+
+      assert html =~ "Automatic work is on for 1 of 2 projects"
+      assert html =~ "Some projects are paused. Active projects will keep picking up ready issues."
+      assert html =~ "1 / 2 active"
+      refute html =~ "Automatic work is paused"
+    end
+
+    test "simple mode gives a truthful empty state for a paused project" do
+      orchestrator_name = Module.concat(__MODULE__, :PausedEmptyOrchestrator)
+
+      {:ok, _pid} =
+        StaticOrchestrator.start_link(
+          name: orchestrator_name,
+          snapshot: empty_snapshot(true)
+        )
+
+      start_test_endpoint(orchestrator: orchestrator_name, snapshot_timeout_ms: 50)
+
+      {:ok, _view, html} = live(build_conn(), "/")
+
+      assert html =~ "Automatic work is paused"
+      assert html =~ "This project is paused. Resume it when you want Cymphony to start ready issues again."
+      refute html =~ "will start the next ready issue automatically"
+    end
+
     test "root layout carries the prefs bootstrap and wiring scripts" do
       orchestrator_name = Module.concat(__MODULE__, :PrefsLayoutOrchestrator)
 
@@ -900,10 +989,27 @@ defmodule CymphonyElixir.ExtensionsTest do
 
       html = html_response(get(build_conn(), "/"), 200)
 
+      assert html =~ "Checking automatic work…"
+      refute html =~ "Automatic work is on"
+      assert html =~ "status-badge-transport"
+      assert html =~ "Connecting"
       assert html =~ "cymphony-prefs"
+      assert html =~ "data-ui-mode"
+      assert html =~ "prefs.uiMode"
+      assert html =~ "applyMode"
+      assert html =~ "expandedSections"
+      assert html =~ "legacyExpandedCompletions"
+      assert html =~ "sectionIsCollapsed"
       assert html =~ "data-hidden-sections"
       assert html =~ "data-collapse-toggle"
       assert html =~ "syncPrefControls"
+
+      dashboard_css = response(get(build_conn(), "/dashboard.css"), 200)
+      assert dashboard_css =~ ~s(html[data-ui-mode="simple"] .advanced-only)
+      assert dashboard_css =~ ~s(.mode-switch-button[data-mode-set="simple"])
+
+      assert dashboard_css =~
+               ~s|html[data-ui-mode="simple"]:not([data-expanded-sections~="completions"]) .section--completions .session-row-list|
     end
 
     test "pause_dispatch sends :pause to the orchestrator" do
@@ -1001,6 +1107,97 @@ defmodule CymphonyElixir.ExtensionsTest do
       assert project["agent"] == "codex"
       assert project["model"] == "gpt-5.2-codex"
       assert project["effort"] == "high"
+    end
+
+    test "agent picker previews model and effort choices for the selected agent" do
+      previous_fetcher = Application.fetch_env(:cymphony_elixir, :codex_catalog_fetcher)
+
+      catalog =
+        Jason.encode!(%{
+          "models" => [
+            %{
+              "slug" => "gpt-5.6-terra",
+              "description" => "Test Codex model",
+              "visibility" => "list",
+              "priority" => 1,
+              "supported_reasoning_levels" => [
+                %{"effort" => "minimal"},
+                %{"effort" => "high"}
+              ]
+            }
+          ]
+        })
+
+      Application.put_env(:cymphony_elixir, :codex_catalog_fetcher, fn -> {:ok, catalog} end)
+      CymphonyElixir.AgentCatalog.clear_cache()
+
+      on_exit(fn ->
+        case previous_fetcher do
+          {:ok, fetcher} -> Application.put_env(:cymphony_elixir, :codex_catalog_fetcher, fetcher)
+          :error -> Application.delete_env(:cymphony_elixir, :codex_catalog_fetcher)
+        end
+
+        CymphonyElixir.AgentCatalog.clear_cache()
+      end)
+
+      orchestrator_name = Module.concat(__MODULE__, :AgentPreviewOrchestrator)
+
+      {:ok, _pid} =
+        StaticOrchestrator.start_link(
+          name: orchestrator_name,
+          snapshot:
+            static_snapshot()
+            |> Map.put(:agent_kind, "claude")
+            |> Map.put(:agent_model, "sonnet")
+            |> Map.put(:agent_effort, "max")
+        )
+
+      start_test_endpoint(orchestrator: orchestrator_name, snapshot_timeout_ms: 50)
+
+      {:ok, view, html} = live(build_conn(), "/")
+
+      assert html =~ ~s(phx-change="preview_project_agent")
+
+      view
+      |> form(~s|form[phx-change="preview_project_agent"]|, %{
+        agent_kind: "codex",
+        model: "sonnet",
+        effort: "max"
+      })
+      |> render_change()
+
+      codex_form = view |> element(~s|form[phx-submit="set_project_agent"]|) |> render()
+      assert codex_form =~ ~s(value="gpt-5.6-terra")
+      assert codex_form =~ ~s(value="minimal")
+      assert has_element?(view, ~s|form[phx-submit="set_project_agent"] input[name="model"][value=""]|)
+      refute codex_form =~ ~s(value="sonnet")
+      refute codex_form =~ ~s(value="max")
+
+      view
+      |> form(~s|form[phx-change="preview_project_agent"]|, %{
+        agent_kind: "codex",
+        model: "gpt-5.6-terra",
+        effort: "minimal"
+      })
+      |> render_change()
+
+      assert has_element?(view, ~s|form[phx-submit="set_project_agent"] input[name="model"][value="gpt-5.6-terra"]|)
+      assert has_element?(view, ~s|form[phx-submit="set_project_agent"] option[value="minimal"][selected]|)
+
+      view
+      |> form(~s|form[phx-change="preview_project_agent"]|, %{
+        agent_kind: "claude",
+        model: "gpt-5.6-terra",
+        effort: "minimal"
+      })
+      |> render_change()
+
+      claude_form = view |> element(~s|form[phx-submit="set_project_agent"]|) |> render()
+      assert claude_form =~ ~s(value="sonnet")
+      assert claude_form =~ ~s(value="max")
+      assert has_element?(view, ~s|form[phx-submit="set_project_agent"] input[name="model"][value=""]|)
+      refute claude_form =~ ~s(value="gpt-5.6-terra")
+      refute claude_form =~ ~s(value="minimal")
     end
 
     test "set_project_providers event sends :set_providers list to orchestrator" do
@@ -1107,13 +1304,43 @@ defmodule CymphonyElixir.ExtensionsTest do
       assert project["agent"] == "codex"
       assert project["effort"] == "high"
 
+      conn = post(build_conn(), "/api/v1/agent", %{"kind" => "antigravity"})
+      assert %{status: 202} = conn
+      assert %{"agent" => "antigravity"} = Jason.decode!(conn.resp_body)
+
+      assert_receive {:orchestrator_call, {:set_agent_settings, %{"agent" => "antigravity"}}}, 1_000
+
       assert json_response(post(build_conn(), "/api/v1/agent", %{"kind" => "gemini"}), 422) ==
                %{
                  "error" => %{
                    "code" => "invalid_agent_settings",
-                   "message" => "body must include at least one of kind/model/effort; kind must be claude or codex"
+                   "message" => "body must include at least one of kind/model/effort; kind must be one of: claude, codex, antigravity"
                  }
                }
+    end
+
+    test "GET /api/v1/:issue_identifier/harness returns last_seq/lines for a running issue" do
+      orchestrator_name = Module.concat(__MODULE__, :HarnessApiOrchestrator)
+
+      {:ok, _pid} =
+        StaticOrchestrator.start_link(
+          name: orchestrator_name,
+          snapshot: static_snapshot()
+        )
+
+      start_test_endpoint(orchestrator: orchestrator_name, snapshot_timeout_ms: 50)
+      ensure_harness_stream_started()
+
+      payload = json_response(get(build_conn(), "/api/v1/MT-HTTP/harness"), 200)
+      assert Map.has_key?(payload, "last_seq")
+      assert Map.has_key?(payload, "lines")
+      assert payload["issue_identifier"] == "MT-HTTP"
+
+      assert json_response(get(build_conn(), "/api/v1/MT-MISSING/harness"), 404) ==
+               %{"error" => %{"code" => "issue_not_found", "message" => "Issue not found"}}
+
+      assert json_response(get(build_conn(), "/api/v1/MT-RETRY/harness"), 404) ==
+               %{"error" => %{"code" => "issue_not_found", "message" => "Issue not found"}}
     end
 
     test "POST /api/v1/providers rejects empty value with 422" do
@@ -1348,7 +1575,13 @@ defmodule CymphonyElixir.ExtensionsTest do
 
     response = Req.get!("http://127.0.0.1:#{port}/api/v1/state")
     assert response.status == 200
-    assert response.body["counts"] == %{"running" => 1, "retrying" => 1}
+
+    assert response.body["counts"] == %{
+             "running" => 1,
+             "retrying" => 1,
+             "by_state" => %{"In Progress" => 1},
+             "by_kind" => %{"unknown" => 1}
+           }
 
     dashboard_css = Req.get!("http://127.0.0.1:#{port}/dashboard.css")
     assert dashboard_css.status == 200
@@ -1377,6 +1610,22 @@ defmodule CymphonyElixir.ExtensionsTest do
     assert method_not_allowed_response.body["error"]["code"] == "method_not_allowed"
 
     assert {:error, _reason} = HttpServer.start_link(host: "bad host", port: 0)
+  end
+
+  defp ensure_harness_stream_started do
+    mod = CymphonyElixir.HarnessStream
+
+    cond do
+      Process.whereis(mod) ->
+        :ok
+
+      Code.ensure_loaded?(mod) and function_exported?(mod, :start_link, 1) ->
+        start_supervised!({mod, []})
+        :ok
+
+      true ->
+        :ok
+    end
   end
 
   defp start_test_endpoint(overrides) do
@@ -1427,6 +1676,13 @@ defmodule CymphonyElixir.ExtensionsTest do
         checking?: false
       }
     }
+  end
+
+  defp empty_snapshot(paused) do
+    static_snapshot()
+    |> Map.put(:running, [])
+    |> Map.put(:retrying, [])
+    |> put_in([:polling, :paused], paused)
   end
 
   defp wait_for_bound_port do

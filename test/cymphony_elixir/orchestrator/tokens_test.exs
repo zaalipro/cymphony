@@ -18,11 +18,23 @@ defmodule CymphonyElixir.Orchestrator.TokensTest do
       assert %{input_tokens: 1, seconds_running: 0} =
                Tokens.apply_token_delta(%{}, %{input_tokens: 1, output_tokens: 1, total_tokens: 2})
     end
+
+    test "clamps accumulated totals at zero when the delta is negative" do
+      totals = %{input_tokens: 1, output_tokens: 2, total_tokens: 3, seconds_running: 4}
+      delta = %{input_tokens: -5, output_tokens: -9, total_tokens: -8, seconds_running: -10}
+
+      assert Tokens.apply_token_delta(totals, delta) ==
+               %{input_tokens: 0, output_tokens: 0, total_tokens: 0, seconds_running: 0}
+    end
   end
 
   describe "extract_token_delta/2" do
     test "derives delta from absolute usage minus last-reported, tracking reported" do
-      update = %{:event => :u, :timestamp => @ts, "tokenUsage" => %{"total" => %{"input_tokens" => 100, "output_tokens" => 40, "total_tokens" => 140}}}
+      update = %{
+        :event => :u,
+        :timestamp => @ts,
+        "tokenUsage" => %{"total" => %{"input_tokens" => 100, "output_tokens" => 40, "total_tokens" => 140}}
+      }
 
       running = %{
         last_reported_input_tokens: 70,
@@ -39,7 +51,12 @@ defmodule CymphonyElixir.Orchestrator.TokensTest do
     end
 
     test "nil running entry is treated as a zero baseline" do
-      update = %{:event => :u, :timestamp => @ts, "tokenUsage" => %{"total" => %{"input_tokens" => 5, "output_tokens" => 2, "total_tokens" => 7}}}
+      update = %{
+        :event => :u,
+        :timestamp => @ts,
+        "tokenUsage" => %{"total" => %{"input_tokens" => 5, "output_tokens" => 2, "total_tokens" => 7}}
+      }
+
       delta = Tokens.extract_token_delta(nil, update)
       assert delta.input_tokens == 5
       assert delta.total_tokens == 7
@@ -67,11 +84,59 @@ defmodule CymphonyElixir.Orchestrator.TokensTest do
       assert Tokens.extract_token_delta(%{}, update).total_tokens == 20
     end
 
+    test "reads atom-key params.msg.payload.info.total_token_usage" do
+      usage = %{input_tokens: 6, output_tokens: 1, total_tokens: 7}
+
+      update = %{
+        event: :u,
+        timestamp: @ts,
+        payload: %{params: %{msg: %{payload: %{info: %{total_token_usage: usage}}}}}
+      }
+
+      assert Tokens.extract_token_delta(%{}, update).total_tokens == 7
+    end
+
+    test "reads params.msg.info.total_token_usage without the extra payload nest" do
+      usage = %{"input_tokens" => 4, "output_tokens" => 1, "total_tokens" => 5}
+
+      update = %{
+        :event => :u,
+        :timestamp => @ts,
+        "payload" => %{"params" => %{"msg" => %{"info" => %{"total_token_usage" => usage}}}}
+      }
+
+      assert Tokens.extract_token_delta(%{}, update).total_tokens == 5
+    end
+
+    test "reads params.tokenUsage.total and atom-key tokenUsage.total" do
+      string_path = %{
+        :event => :u,
+        :timestamp => @ts,
+        "payload" => %{"params" => %{"tokenUsage" => %{"total" => %{"prompt_tokens" => 2, "completion_tokens" => 3}}}}
+      }
+
+      assert Tokens.extract_token_delta(%{}, string_path).total_tokens == 5
+
+      atom_path = %{
+        event: :u,
+        timestamp: @ts,
+        payload: %{params: %{tokenUsage: %{total: %{promptTokens: 8, completionTokens: 1}}}}
+      }
+
+      delta = Tokens.extract_token_delta(%{}, atom_path)
+      assert delta.input_tokens == 8
+      assert delta.output_tokens == 1
+      assert delta.total_tokens == 9
+    end
+
     test "reads turn/completed usage and camelCase keys" do
       update = %{
         :event => :u,
         :timestamp => @ts,
-        "payload" => %{"method" => "turn/completed", "usage" => %{"inputTokens" => 9, "outputTokens" => 1, "totalTokens" => 10}}
+        "payload" => %{
+          "method" => "turn/completed",
+          "usage" => %{"inputTokens" => 9, "outputTokens" => 1, "totalTokens" => 10}
+        }
       }
 
       delta = Tokens.extract_token_delta(%{}, update)
@@ -80,9 +145,52 @@ defmodule CymphonyElixir.Orchestrator.TokensTest do
       assert delta.total_tokens == 10
     end
 
+    test "reads turn/completed usage nested under string-key params" do
+      update = %{
+        event: :u,
+        timestamp: @ts,
+        payload: %{
+          "method" => "turn/completed",
+          "params" => %{"usage" => %{"input_tokens" => 3, "output_tokens" => 2, "total_tokens" => 5}}
+        }
+      }
+
+      delta = Tokens.extract_token_delta(%{}, update)
+      assert delta.input_tokens == 3
+      assert delta.output_tokens == 2
+      assert delta.total_tokens == 5
+    end
+
+    test "reads :turn_completed usage nested under atom-key params" do
+      update = %{
+        event: :u,
+        timestamp: @ts,
+        payload: %{
+          method: :turn_completed,
+          params: %{usage: %{input_tokens: 4, output_tokens: 1, total_tokens: 5}}
+        }
+      }
+
+      assert Tokens.extract_token_delta(%{}, update).total_tokens == 5
+    end
+
     test "string-encoded integers are parsed" do
       update = %{:event => :u, :timestamp => @ts, "tokenUsage" => %{"total" => %{"total_tokens" => "42"}}}
       assert Tokens.extract_token_delta(%{}, update).total_tokens == 42
+    end
+
+    test "non-numeric and negative string usage is ignored" do
+      update = %{
+        event: :u,
+        timestamp: @ts,
+        usage: %{input_tokens: "nope", output_tokens: "-3", total_tokens: "  "}
+      }
+
+      delta = Tokens.extract_token_delta(%{}, update)
+      assert delta.input_tokens == 0
+      assert delta.output_tokens == 0
+      assert delta.total_tokens == 0
+      assert delta.input_reported == 0
     end
 
     test "absent usage yields all-zero delta" do
@@ -92,12 +200,274 @@ defmodule CymphonyElixir.Orchestrator.TokensTest do
       assert delta.output_tokens == 0
       assert delta.total_tokens == 0
     end
+
+    test "reads :turn_completed update[:usage] and fills missing total from input+output" do
+      update = %{
+        event: :turn_completed,
+        timestamp: @ts,
+        usage: %{input_tokens: 12, output_tokens: 8}
+      }
+
+      delta = Tokens.extract_token_delta(%{}, update)
+      assert delta.input_tokens == 12
+      assert delta.output_tokens == 8
+      assert delta.total_tokens == 20
+      assert delta.input_reported == 12
+      assert delta.output_reported == 8
+      assert delta.total_reported == 20
+    end
+
+    test "reads string-key update usage from Agent.Runner turn_completed" do
+      update = %{
+        :event => :turn_completed,
+        :timestamp => @ts,
+        "usage" => %{"input_tokens" => 4, "output_tokens" => 6, "total_tokens" => 10}
+      }
+
+      delta = Tokens.extract_token_delta(%{}, update)
+      assert delta.input_tokens == 4
+      assert delta.output_tokens == 6
+      assert delta.total_tokens == 10
+    end
+
+    test "ignores a non-token update[:usage] map and still reads Claude paths" do
+      update = %{
+        :event => :u,
+        :timestamp => @ts,
+        :usage => %{note: "not tokens"},
+        "tokenUsage" => %{"total" => %{"input_tokens" => 1, "output_tokens" => 1, "total_tokens" => 2}}
+      }
+
+      assert Tokens.extract_token_delta(%{}, update).total_tokens == 2
+    end
+
+    test "thinking_tokens is not added to output or synthesized total" do
+      update = %{
+        event: :turn_completed,
+        timestamp: @ts,
+        usage: %{input_tokens: 10, output_tokens: 5, thinking_tokens: 20}
+      }
+
+      delta = Tokens.extract_token_delta(%{}, update)
+      assert delta.input_tokens == 10
+      assert delta.output_tokens == 5
+      assert delta.total_tokens == 15
+    end
+
+    test "provided total is kept even when thinking_tokens is present" do
+      update = %{
+        event: :turn_completed,
+        timestamp: @ts,
+        usage: %{input_tokens: 10, output_tokens: 5, thinking_tokens: 20, total_tokens: 15}
+      }
+
+      delta = Tokens.extract_token_delta(%{}, update)
+      assert delta.output_tokens == 5
+      assert delta.total_tokens == 15
+    end
+
+    test "reads payload usage on a stream_event" do
+      update = %{
+        event: :stream_event,
+        timestamp: @ts,
+        payload: %{"usage" => %{"input_tokens" => 3, "output_tokens" => 1}}
+      }
+
+      delta = Tokens.extract_token_delta(%{}, update)
+      assert delta.input_tokens == 3
+      assert delta.output_tokens == 1
+      assert delta.total_tokens == 4
+    end
+
+    test "reads Codex stream_event payload type turn.completed" do
+      update = %{
+        event: :stream_event,
+        timestamp: @ts,
+        payload: %{
+          "type" => "turn.completed",
+          "usage" => %{
+            "input_tokens" => 14_461,
+            "cached_input_tokens" => 9984,
+            "output_tokens" => 5,
+            "reasoning_output_tokens" => 0
+          }
+        }
+      }
+
+      delta = Tokens.extract_token_delta(%{}, update)
+      assert delta.input_tokens == 14_461
+      assert delta.output_tokens == 5
+      assert delta.total_tokens == 14_466
+    end
+
+    test "reads Codex payload type turn/completed" do
+      update = %{
+        event: :stream_event,
+        timestamp: @ts,
+        payload: %{
+          "type" => "turn/completed",
+          "usage" => %{"input_tokens" => 2, "output_tokens" => 3}
+        }
+      }
+
+      assert Tokens.extract_token_delta(%{}, update).total_tokens == 5
+    end
+
+    test "reads Antigravity result.usage from a stream_event" do
+      update = %{
+        event: :stream_event,
+        timestamp: @ts,
+        payload: %{
+          "event" => "result",
+          "result" => %{
+            "status" => "SUCCESS",
+            "usage" => %{
+              "input_tokens" => 40,
+              "output_tokens" => 9,
+              "thinking_tokens" => 11,
+              "cache_read_tokens" => 2,
+              "total_tokens" => 49
+            }
+          }
+        }
+      }
+
+      delta = Tokens.extract_token_delta(%{}, update)
+      assert delta.input_tokens == 40
+      assert delta.output_tokens == 9
+      assert delta.total_tokens == 49
+    end
+
+    test "reads Antigravity result usage on the envelope when result.usage is absent" do
+      update = %{
+        event: :stream_event,
+        timestamp: @ts,
+        payload: %{
+          "event" => "result",
+          "usage" => %{"input_tokens" => 7, "output_tokens" => 2}
+        }
+      }
+
+      delta = Tokens.extract_token_delta(%{}, update)
+      assert delta.input_tokens == 7
+      assert delta.output_tokens == 2
+      assert delta.total_tokens == 9
+    end
+
+    test "falls back to envelope usage when Antigravity result is not a map" do
+      update = %{
+        event: :stream_event,
+        timestamp: @ts,
+        payload: %{
+          "event" => "result",
+          "result" => "SUCCESS",
+          "usage" => %{"input_tokens" => 5, "output_tokens" => 1}
+        }
+      }
+
+      assert Tokens.extract_token_delta(%{}, update).total_tokens == 6
+    end
+
+    test "reads atom-key Codex turn.completed and Antigravity result/step_update payloads" do
+      completed = %{
+        event: :stream_event,
+        timestamp: @ts,
+        payload: %{type: :turn_completed, usage: %{input_tokens: 6, output_tokens: 1}}
+      }
+
+      assert Tokens.extract_token_delta(%{}, completed).total_tokens == 7
+
+      result = %{
+        event: :stream_event,
+        timestamp: @ts,
+        payload: %{event: :result, result: %{usage: %{input_tokens: 8, output_tokens: 1}}}
+      }
+
+      assert Tokens.extract_token_delta(%{}, result).total_tokens == 9
+
+      stepped = %{
+        event: :stream_event,
+        timestamp: @ts,
+        payload: %{event: :step_update, step_update: %{usage: %{input_tokens: 2, output_tokens: 2}}}
+      }
+
+      assert Tokens.extract_token_delta(%{}, stepped).total_tokens == 4
+    end
+
+    test "ignores step_update when step_update is not a map" do
+      update = %{
+        event: :stream_event,
+        timestamp: @ts,
+        payload: %{"event" => "step_update", "step_update" => "active"}
+      }
+
+      delta = Tokens.extract_token_delta(%{}, update)
+      assert delta.input_tokens == 0
+      assert delta.total_tokens == 0
+    end
+
+    test "Antigravity step_update.usage increments against last_reported counts" do
+      first = %{
+        event: :stream_event,
+        timestamp: @ts,
+        payload: %{
+          "event" => "step_update",
+          "step_update" => %{"usage" => %{"input_tokens" => 100, "output_tokens" => 20}}
+        }
+      }
+
+      first_delta = Tokens.extract_token_delta(%{}, first)
+      assert first_delta.input_tokens == 100
+      assert first_delta.output_tokens == 20
+      assert first_delta.total_tokens == 120
+
+      running = %{
+        last_reported_input_tokens: first_delta.input_reported,
+        last_reported_output_tokens: first_delta.output_reported,
+        last_reported_total_tokens: first_delta.total_reported
+      }
+
+      second = %{
+        event: :stream_event,
+        timestamp: @ts,
+        payload: %{
+          "event" => "step_update",
+          "step_update" => %{"usage" => %{"input_tokens" => 150, "output_tokens" => 35}}
+        }
+      }
+
+      second_delta = Tokens.extract_token_delta(running, second)
+      assert second_delta.input_tokens == 50
+      assert second_delta.output_tokens == 15
+      assert second_delta.total_tokens == 65
+      assert second_delta.input_reported == 150
+      assert second_delta.output_reported == 35
+      assert second_delta.total_reported == 185
+    end
+
+    test "synthesizes total from output-only usage" do
+      update = %{event: :turn_completed, timestamp: @ts, usage: %{output_tokens: 11}}
+      delta = Tokens.extract_token_delta(%{}, update)
+      assert delta.input_tokens == 0
+      assert delta.output_tokens == 11
+      assert delta.total_tokens == 11
+    end
   end
 
   describe "extract_rate_limits/1" do
     test "extracts a direct rate_limits bucket map" do
       rl = %{"limit_id" => "primary", "primary" => %{"remaining" => 10, "limit" => 100}}
       assert Tokens.extract_rate_limits(%{"rate_limits" => rl}) == rl
+    end
+
+    test "extracts atom-key :rate_limits on the update" do
+      rl = %{"limit_id" => "primary", "primary" => %{"remaining" => 3}}
+      assert Tokens.extract_rate_limits(%{rate_limits: rl}) == rl
+    end
+
+    test "treats the update itself as a rate-limit map" do
+      rl = %{"limit_name" => "x", "secondary" => %{"remaining" => 1}}
+      assert Tokens.extract_rate_limits(rl) == rl
     end
 
     test "finds rate limits nested deep under payload" do
@@ -108,6 +478,16 @@ defmodule CymphonyElixir.Orchestrator.TokensTest do
     test "finds rate limits inside a list" do
       rl = %{:limit_id => "primary", :secondary => %{remaining: 2}}
       assert Tokens.extract_rate_limits(%{"payload" => [%{"noise" => 1}, rl]}) == rl
+    end
+
+    test "finds the first rate-limit map among extra siblings" do
+      rl = %{"limit_id" => "credits", "credits" => %{"remaining" => 4}}
+
+      assert Tokens.extract_rate_limits(%{
+               "payload" => %{"noise" => 1, "limits" => rl, "more" => "later"}
+             }) == rl
+
+      assert Tokens.extract_rate_limits(%{"payload" => ["noise", rl, "later"]}) == rl
     end
 
     test "returns nil when no rate limits are present or input is not a map" do

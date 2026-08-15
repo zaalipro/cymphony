@@ -59,7 +59,8 @@ defmodule CymphonyElixir.Agent.Codex do
             emit(on_message, %{event: :stream_event, payload: event, raw: line})
             integrate_event(acc, event)
 
-          {:error, _} ->
+          _other ->
+            # Blank lines, stderr noise, and non-object JSON are ignored.
             acc
         end
       end)
@@ -82,16 +83,32 @@ defmodule CymphonyElixir.Agent.Codex do
     end
   end
 
-  defp integrate_event(acc, %{"type" => "thread.started"} = event),
-    do: %{acc | session_id: event["thread_id"] || acc.session_id}
+  defp integrate_event(acc, event) do
+    acc
+    |> maybe_take_thread_id(event)
+    |> integrate_typed_event(event)
+  end
 
-  defp integrate_event(acc, %{"type" => "item.completed", "item" => %{"type" => "agent_message", "text" => text}})
+  # Prefer thread.started; if it is missing, accept thread_id from any later event.
+  defp maybe_take_thread_id(acc, %{"type" => "thread.started", "thread_id" => thread_id})
+       when is_binary(thread_id) and thread_id != "" do
+    %{acc | session_id: thread_id}
+  end
+
+  defp maybe_take_thread_id(%{session_id: nil} = acc, %{"thread_id" => thread_id})
+       when is_binary(thread_id) and thread_id != "" do
+    %{acc | session_id: thread_id}
+  end
+
+  defp maybe_take_thread_id(acc, _event), do: acc
+
+  defp integrate_typed_event(acc, %{"type" => "item.completed", "item" => %{"type" => "agent_message", "text" => text}})
        when is_binary(text),
        do: %{acc | last_message: text}
 
-  defp integrate_event(acc, %{"type" => "turn.completed"} = event), do: %{acc | completed: event}
-  defp integrate_event(acc, %{"type" => "turn.failed"} = event), do: %{acc | failed: event["error"] || event}
-  defp integrate_event(acc, _event), do: acc
+  defp integrate_typed_event(acc, %{"type" => "turn.completed"} = event), do: %{acc | completed: event}
+  defp integrate_typed_event(acc, %{"type" => "turn.failed"} = event), do: %{acc | failed: event["error"] || event}
+  defp integrate_typed_event(acc, _event), do: acc
 
   defp normalize_usage(%{} = usage) do
     input = integer_or_zero(usage["input_tokens"])

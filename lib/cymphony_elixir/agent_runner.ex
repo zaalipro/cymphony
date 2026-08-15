@@ -6,9 +6,11 @@ defmodule CymphonyElixir.AgentRunner do
 
   require Logger
   alias CymphonyElixir.Agent.Runner
-  alias CymphonyElixir.{Config, Linear.Issue, PromptBuilder, Tracker, Workspace}
+  alias CymphonyElixir.{Config, HarnessStream, Linear.Issue, PromptBuilder, Tracker, Workspace}
 
   @type worker_host :: String.t() | nil
+
+  @harness_heartbeat_interval_ms 2_000
 
   @spec run(map(), pid() | nil, keyword()) :: :ok | no_return()
   def run(issue, agent_update_recipient \\ nil, opts \\ []) do
@@ -60,11 +62,34 @@ defmodule CymphonyElixir.AgentRunner do
 
   defp send_agent_update(recipient, %Issue{id: issue_id}, message)
        when is_binary(issue_id) and is_pid(recipient) do
-    send(recipient, {:agent_worker_update, issue_id, message})
+    if is_map(message) and message[:event] == :harness_stdout do
+      # EP-STREAM: live CLI stdout is ring-buffered; do not forward :harness_stdout to the orchestrator.
+      HarnessStream.append(issue_id, to_string(message[:raw] || ""))
+      maybe_send_harness_heartbeat(recipient, issue_id, message)
+    else
+      send(recipient, {:agent_worker_update, issue_id, message})
+    end
+
     :ok
   end
 
   defp send_agent_update(_recipient, _issue, _message), do: :ok
+
+  defp maybe_send_harness_heartbeat(recipient, issue_id, message) do
+    now_ms = System.monotonic_time(:millisecond)
+    key = {:harness_heartbeat, issue_id}
+
+    case Process.get(key) do
+      last_ms when is_integer(last_ms) and now_ms - last_ms < @harness_heartbeat_interval_ms ->
+        :ok
+
+      _ ->
+        Process.put(key, now_ms)
+        timestamp = message[:timestamp] || DateTime.utc_now()
+        send(recipient, {:agent_worker_update, issue_id, %{event: :harness_heartbeat, timestamp: timestamp}})
+        :ok
+    end
+  end
 
   defp send_worker_runtime_info(recipient, %Issue{id: issue_id}, worker_host, workspace)
        when is_binary(issue_id) and is_pid(recipient) and is_binary(workspace) do
@@ -98,14 +123,32 @@ defmodule CymphonyElixir.AgentRunner do
 
     with {:ok, session} <- Runner.start_session(workspace, session_opts) do
       try do
-        do_run_agent_turns(session, workspace, issue, agent_update_recipient, opts, issue_state_fetcher, 1, max_turns, config)
+        ctx = %{
+          workspace: workspace,
+          recipient: agent_update_recipient,
+          opts: opts,
+          issue_state_fetcher: issue_state_fetcher,
+          max_turns: max_turns,
+          config: config
+        }
+
+        do_run_agent_turns(session, issue, 1, ctx)
       after
         Runner.stop_session(session)
       end
     end
   end
 
-  defp do_run_agent_turns(agent_session, workspace, issue, agent_update_recipient, opts, issue_state_fetcher, turn_number, max_turns, config) do
+  defp do_run_agent_turns(agent_session, issue, turn_number, ctx) do
+    %{
+      workspace: workspace,
+      recipient: agent_update_recipient,
+      opts: opts,
+      issue_state_fetcher: issue_state_fetcher,
+      max_turns: max_turns,
+      config: config
+    } = ctx
+
     prompt = build_turn_prompt(issue, opts, turn_number, max_turns, config)
 
     with {:ok, turn_result} <-
@@ -126,18 +169,7 @@ defmodule CymphonyElixir.AgentRunner do
 
           # Resume the agent session for the next turn
           agent_session = %{agent_session | session_id: session_id}
-
-          do_run_agent_turns(
-            agent_session,
-            workspace,
-            refreshed_issue,
-            agent_update_recipient,
-            opts,
-            issue_state_fetcher,
-            turn_number + 1,
-            max_turns,
-            config
-          )
+          do_run_agent_turns(agent_session, refreshed_issue, turn_number + 1, ctx)
 
         {:continue, refreshed_issue} ->
           Logger.info("Reached agent.max_turns for #{issue_context(refreshed_issue)} with issue still active; returning control to orchestrator")

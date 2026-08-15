@@ -3,6 +3,7 @@ defmodule CymphonyElixir.RunSpecResolverTest do
 
   import ExUnit.CaptureLog
 
+  alias CymphonyElixir.Config.Schema
   alias CymphonyElixir.Linear.Issue
   alias CymphonyElixir.RunSpecResolver
 
@@ -48,6 +49,10 @@ defmodule CymphonyElixir.RunSpecResolverTest do
         end)
 
       assert log =~ "duplicate"
+    end
+
+    test "agent:antigravity is accepted as a known kind" do
+      assert RunSpecResolver.from_labels(["agent:antigravity"]) == %{agent_kind: "antigravity"}
     end
 
     test "unknown agent kind falls through with a warning" do
@@ -103,8 +108,17 @@ defmodule CymphonyElixir.RunSpecResolverTest do
       assert RunSpecResolver.from_description("no directive here") == %{}
     end
 
-    test "unknown agent kind in directive falls through" do
-      assert RunSpecResolver.from_description("cymphony: agent=gemini") == %{}
+    test "cymphony: agent=antigravity is accepted as a known kind" do
+      assert RunSpecResolver.from_description("cymphony: agent=antigravity") == %{agent_kind: "antigravity"}
+    end
+
+    test "unknown agent kind in directive falls through with a warning" do
+      log =
+        capture_log(fn ->
+          assert RunSpecResolver.from_description("cymphony: agent=gemini") == %{}
+        end)
+
+      assert log =~ "unknown agent"
     end
 
     test "case-insensitive directive prefix" do
@@ -115,7 +129,7 @@ defmodule CymphonyElixir.RunSpecResolverTest do
 
   describe "resolve/2" do
     defp config_with(agent_overrides) do
-      {:ok, settings} = CymphonyElixir.Config.Schema.parse(%{"agent" => agent_overrides})
+      {:ok, settings} = Schema.parse(%{"agent" => agent_overrides})
       settings
     end
 
@@ -148,7 +162,7 @@ defmodule CymphonyElixir.RunSpecResolverTest do
 
     test "label agent switch does not implicitly pin that kind's provider" do
       {:ok, settings} =
-        CymphonyElixir.Config.Schema.parse(%{
+        Schema.parse(%{
           "agent" => %{"kind" => "claude"},
           "claude" => %{"provider" => "cz"},
           "codex" => %{"provider" => "oa"}
@@ -170,6 +184,35 @@ defmodule CymphonyElixir.RunSpecResolverTest do
       directive_only = RunSpecResolver.resolve(issue(labels: [], description: "cymphony: model=m1"), config_with(%{}))
       assert directive_only.model == "m1"
       assert directive_only.source == :directive
+    end
+
+    test "agent:antigravity label wins over config kind" do
+      resolved = RunSpecResolver.resolve(issue(labels: ["agent:antigravity"]), config_with(%{"kind" => "claude"}))
+
+      assert resolved.agent_kind == "antigravity"
+      assert resolved.source == :labels
+    end
+
+    test "cymphony: agent=antigravity directive wins over config kind" do
+      resolved =
+        RunSpecResolver.resolve(
+          issue(labels: [], description: "cymphony: agent=antigravity"),
+          config_with(%{"kind" => "claude"})
+        )
+
+      assert resolved.agent_kind == "antigravity"
+      assert resolved.source == :directive
+    end
+
+    test "unknown agent label is dropped so config kind remains" do
+      log =
+        capture_log(fn ->
+          resolved = RunSpecResolver.resolve(issue(labels: ["agent:gemini"]), config_with(%{"kind" => "claude"}))
+          assert resolved.agent_kind == "claude"
+          assert resolved.source == :config
+        end)
+
+      assert log =~ "unknown agent"
     end
   end
 

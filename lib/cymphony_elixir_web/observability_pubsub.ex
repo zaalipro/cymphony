@@ -44,5 +44,27 @@ defmodule CymphonyElixirWeb.ObservabilityPubSub do
     end
   end
 
+  @spec subscribe_harness(String.t()) :: :ok | {:error, term()}
+  def subscribe_harness(issue_id) when is_binary(issue_id) do
+    Phoenix.PubSub.subscribe(@pubsub, harness_topic(issue_id))
+  end
+
+  @spec unsubscribe_harness(String.t()) :: :ok
+  def unsubscribe_harness(issue_id) when is_binary(issue_id) do
+    Phoenix.PubSub.unsubscribe(@pubsub, harness_topic(issue_id))
+  end
+
+  @spec broadcast_harness(String.t(), map()) :: :ok
+  def broadcast_harness(issue_id, payload) when is_binary(issue_id) and is_map(payload) do
+    case Process.whereis(@pubsub) do
+      pid when is_pid(pid) ->
+        Phoenix.PubSub.broadcast(@pubsub, harness_topic(issue_id), payload)
+
+      _ ->
+        :ok
+    end
+  end
+
   defp issue_topic(issue_id), do: "observability:issue:#{issue_id}"
+  defp harness_topic(issue_id), do: "observability:issue:#{issue_id}:harness"
 end

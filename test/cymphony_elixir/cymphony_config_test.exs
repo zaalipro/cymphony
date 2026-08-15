@@ -6,6 +6,83 @@ defmodule CymphonyElixir.Cymphony.ConfigTest do
   alias CymphonyElixir.Cymphony.WorkflowGenerator
   alias CymphonyElixir.Workflow
 
+  describe "normalize/1" do
+    test "keeps a non-empty projects list as-is" do
+      config = %{"projects" => [%{"name" => "alpha"}], "extra" => 1}
+      assert CymphonyConfig.normalize(config) == config
+    end
+
+    test "keeps a config that already has a projects key even when the list is empty" do
+      config = %{"projects" => []}
+      assert CymphonyConfig.normalize(config) == config
+    end
+
+    test "wraps a flat config using linear_project_slug as the project name" do
+      config = %{"linear_project_slug" => "farm", "linear_api_key" => "k"}
+
+      assert CymphonyConfig.normalize(config) == %{
+               "projects" => [
+                 %{
+                   "linear_project_slug" => "farm",
+                   "linear_api_key" => "k",
+                   "name" => "farm"
+                 }
+               ]
+             }
+    end
+
+    test "wraps a flat config with name default when slug is missing" do
+      assert CymphonyConfig.normalize(%{"workspace_root" => "/tmp"}) == %{
+               "projects" => [%{"workspace_root" => "/tmp", "name" => "default"}]
+             }
+    end
+  end
+
+  describe "projects/1" do
+    test "returns the projects list from a normalized config" do
+      projects = [%{"name" => "alpha"}, %{"name" => "beta"}]
+      assert CymphonyConfig.projects(%{"projects" => projects}) == projects
+    end
+
+    test "returns an empty list when projects is absent or not a list" do
+      assert CymphonyConfig.projects(%{}) == []
+      assert CymphonyConfig.projects(%{"projects" => "oops"}) == []
+      assert CymphonyConfig.projects(%{"projects" => %{}}) == []
+      assert CymphonyConfig.projects("not a map") == []
+    end
+  end
+
+  describe "find_project/2" do
+    @config %{"projects" => [%{"name" => "alpha", "agent" => "claude"}, %{"name" => "beta"}]}
+
+    test "returns the matching project by name" do
+      assert {:ok, %{"name" => "alpha", "agent" => "claude"}} =
+               CymphonyConfig.find_project(@config, "alpha")
+    end
+
+    test "returns :project_not_found when no project matches" do
+      assert CymphonyConfig.find_project(@config, "ghost") == {:error, :project_not_found}
+      assert CymphonyConfig.find_project(%{}, "alpha") == {:error, :project_not_found}
+    end
+  end
+
+  describe "parse_providers_csv/1" do
+    test "parses, trims, and drops empty segments" do
+      assert CymphonyConfig.parse_providers_csv("cv1, cz2,,ck1 ,") == {:ok, ["cv1", "cz2", "ck1"]}
+    end
+
+    test "returns :empty for a blank string" do
+      assert CymphonyConfig.parse_providers_csv("") == {:error, :empty}
+      assert CymphonyConfig.parse_providers_csv(" , , ") == {:error, :empty}
+    end
+
+    test "returns :empty for non-binary values" do
+      assert CymphonyConfig.parse_providers_csv(nil) == {:error, :empty}
+      assert CymphonyConfig.parse_providers_csv(123) == {:error, :empty}
+      assert CymphonyConfig.parse_providers_csv(["cv1"]) == {:error, :empty}
+    end
+  end
+
   describe "to_schema_map/1" do
     test "builds a Schema-parseable map with generation defaults applied" do
       map = CymphonyConfig.to_schema_map(%{"linear_api_key" => "k", "linear_project_slug" => "slug"})
@@ -21,6 +98,9 @@ defmodule CymphonyElixir.Cymphony.ConfigTest do
       assert parsed.agent.max_turns == 20
       assert parsed.claude.command == "claude"
       assert parsed.claude.output_format == "stream-json"
+      assert map["antigravity"]["command"] == "agy"
+      assert map["antigravity"]["output_format"] == "stream-json"
+      assert map["antigravity"]["skip_permissions"] == true
     end
 
     test "explicit values override defaults" do
@@ -50,11 +130,23 @@ defmodule CymphonyElixir.Cymphony.ConfigTest do
       refute Map.has_key?(none_map["claude"], "providers")
     end
 
+    test "empty provider values fall through and omit both keys" do
+      empty_list = CymphonyConfig.to_schema_map(%{"providers" => [], "provider" => ""})
+      refute Map.has_key?(empty_list["claude"], "provider")
+      refute Map.has_key?(empty_list["claude"], "providers")
+
+      non_list = CymphonyConfig.to_schema_map(%{"providers" => "cv1", "provider" => nil})
+      refute Map.has_key?(non_list["claude"], "provider")
+      refute Map.has_key?(non_list["claude"], "providers")
+    end
+
     test "github_repo_url adds an after_create clone hook; absence omits hooks" do
       with_repo = CymphonyConfig.to_schema_map(%{"github_repo_url" => "git@github.com:me/repo.git"})
       assert with_repo["hooks"]["after_create"] =~ "git clone --depth 1 git@github.com:me/repo.git"
 
       refute Map.has_key?(CymphonyConfig.to_schema_map(%{}), "hooks")
+      refute Map.has_key?(CymphonyConfig.to_schema_map(%{"github_repo_url" => ""}), "hooks")
+      refute Map.has_key?(CymphonyConfig.to_schema_map(%{"github_repo_url" => 1}), "hooks")
     end
   end
 
@@ -85,12 +177,33 @@ defmodule CymphonyElixir.Cymphony.ConfigTest do
       assert schema_map["claude"]["provider"] == "cz"
       assert schema_map["claude"]["command"] == "claude"
       assert schema_map["codex"]["command"] == "codex"
+      assert schema_map["antigravity"]["command"] == "agy"
       refute Map.has_key?(schema_map["codex"], "provider")
+      refute Map.has_key?(schema_map["antigravity"], "provider")
     end
 
     test "unknown agent kind falls back to claude" do
       schema_map = CymphonyConfig.to_schema_map(%{"agent" => "gemini"})
       assert schema_map["agent"]["kind"] == "claude"
+    end
+
+    test "routes providers onto the antigravity section when that kind is active" do
+      schema_map =
+        CymphonyConfig.to_schema_map(%{
+          "agent" => "antigravity",
+          "providers" => ["g1", "g2"]
+        })
+
+      assert schema_map["agent"]["kind"] == "antigravity"
+      assert schema_map["antigravity"]["command"] == "agy"
+      assert schema_map["antigravity"]["output_format"] == "stream-json"
+      assert schema_map["antigravity"]["skip_permissions"] == true
+      assert schema_map["antigravity"]["providers"] == ["g1", "g2"]
+      assert schema_map["antigravity"]["provider"] == "g1"
+      refute Map.has_key?(schema_map["claude"], "providers")
+      refute Map.has_key?(schema_map["claude"], "provider")
+      refute Map.has_key?(schema_map["codex"], "providers")
+      refute Map.has_key?(schema_map["codex"], "provider")
     end
   end
 

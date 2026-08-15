@@ -1,6 +1,8 @@
 defmodule CymphonyElixir.CoreTest do
   use CymphonyElixir.TestSupport
 
+  alias CymphonyElixir.Cymphony.PromptTemplate
+
   test "config defaults and validation checks" do
     write_workflow_file!(Workflow.workflow_file_path(),
       tracker_api_token: nil,
@@ -1016,7 +1018,7 @@ defmodule CymphonyElixir.CoreTest do
   end
 
   test "generated default workflow prompt includes review re-entry comment handling" do
-    prompt = CymphonyElixir.Cymphony.PromptTemplate.get()
+    prompt = PromptTemplate.get()
 
     assert prompt =~ "Review re-entry and human comment intake"
     assert prompt =~ "Human Review"

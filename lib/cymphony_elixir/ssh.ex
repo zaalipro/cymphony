@@ -17,6 +17,7 @@ defmodule CymphonyElixir.SSH do
         [
           :binary,
           :exit_status,
+          :eof,
           :stderr_to_stdout,
           args: Enum.map(ssh_args(host, command), &String.to_charlist/1)
         ]

@@ -482,4 +482,338 @@ defmodule CymphonyElixir.Agent.RunnerTest do
       File.rm_rf(test_root)
     end
   end
+
+  test "emits harness_stdout for each completed line before parse_output and turn_completed" do
+    test_root =
+      Path.join(
+        System.tmp_dir!(),
+        "cymphony-elixir-harness-stdout-#{System.unique_integer([:positive])}"
+      )
+
+    try do
+      workspace_root = Path.join(test_root, "workspaces")
+      workspace = Path.join(workspace_root, "MT-5000")
+      claude_binary = Path.join(test_root, "fake-claude")
+
+      File.mkdir_p!(workspace)
+
+      File.write!(claude_binary, """
+      #!/bin/sh
+      echo 'first-harness-line'
+      echo '{"result":"done","session_id":"sess-harness","usage":{"input_tokens":1,"output_tokens":1}}'
+      """)
+
+      File.chmod!(claude_binary, 0o755)
+
+      write_workflow_file!(Workflow.workflow_file_path(),
+        workspace_root: workspace_root,
+        claude_command: claude_binary
+      )
+
+      issue = %Issue{
+        id: "issue-harness-stdout",
+        identifier: "MT-5000",
+        title: "Harness stdout",
+        description: "Emit incremental harness_stdout before parse_output",
+        state: "In Progress",
+        url: "https://example.org/issues/MT-5000",
+        labels: ["backend"]
+      }
+
+      {:ok, collector} = Agent.start_link(fn -> [] end)
+
+      on_message = fn message ->
+        Agent.update(collector, fn messages -> messages ++ [message] end)
+      end
+
+      assert {:ok, %{session_id: "sess-harness"}} =
+               Runner.run(workspace, "do the thing", issue, on_message: on_message)
+
+      messages = Agent.get(collector, & &1)
+      events = Enum.map(messages, & &1.event)
+      harness = Enum.filter(messages, &(&1.event == :harness_stdout))
+
+      assert length(harness) == 2
+      assert Enum.at(harness, 0).raw =~ "first-harness-line"
+      assert Enum.at(harness, 1).raw =~ "sess-harness"
+      assert match?(%DateTime{}, Enum.at(harness, 0).timestamp)
+      assert match?(%DateTime{}, Enum.at(harness, 1).timestamp)
+
+      first_harness = Enum.find_index(events, &(&1 == :harness_stdout))
+      last_harness = length(events) - 1 - Enum.find_index(Enum.reverse(events), &(&1 == :harness_stdout))
+      completed = Enum.find_index(events, &(&1 == :turn_completed))
+      stream_event = Enum.find_index(events, &(&1 == :stream_event))
+
+      assert first_harness < completed
+      assert last_harness < completed
+      refute :stream_event in Enum.take(events, last_harness + 1)
+
+      if stream_event do
+        assert last_harness < stream_event
+      end
+    after
+      File.rm_rf(test_root)
+    end
+  end
+
+  test "emits harness_stdout for a leftover buffer on exit 0" do
+    test_root =
+      Path.join(
+        System.tmp_dir!(),
+        "cymphony-elixir-harness-leftover-#{System.unique_integer([:positive])}"
+      )
+
+    try do
+      workspace_root = Path.join(test_root, "workspaces")
+      workspace = Path.join(workspace_root, "MT-5001")
+      claude_binary = Path.join(test_root, "fake-claude")
+
+      File.mkdir_p!(workspace)
+
+      File.write!(claude_binary, """
+      #!/bin/sh
+      printf 'first-harness-line\\n'
+      printf '{"result":"done","session_id":"sess-leftover"}'
+      """)
+
+      File.chmod!(claude_binary, 0o755)
+
+      write_workflow_file!(Workflow.workflow_file_path(),
+        workspace_root: workspace_root,
+        claude_command: claude_binary
+      )
+
+      issue = %Issue{
+        id: "issue-harness-leftover",
+        identifier: "MT-5001",
+        title: "Harness leftover",
+        description: "Leftover buffer on exit 0 is emitted as harness_stdout",
+        state: "In Progress",
+        url: "https://example.org/issues/MT-5001",
+        labels: ["backend"]
+      }
+
+      {:ok, collector} = Agent.start_link(fn -> [] end)
+
+      on_message = fn message ->
+        Agent.update(collector, fn messages -> messages ++ [message] end)
+      end
+
+      assert {:ok, %{session_id: "sess-leftover"}} =
+               Runner.run(workspace, "do the thing", issue, on_message: on_message)
+
+      messages = Agent.get(collector, & &1)
+      harness = Enum.filter(messages, &(&1.event == :harness_stdout))
+      events = Enum.map(messages, & &1.event)
+
+      assert length(harness) == 2
+      assert Enum.at(harness, 0).raw =~ "first-harness-line"
+      assert Enum.at(harness, 1).raw =~ "sess-leftover"
+      assert Enum.find_index(events, &(&1 == :harness_stdout)) < Enum.find_index(events, &(&1 == :turn_completed))
+    after
+      File.rm_rf(test_root)
+    end
+  end
+
+  test "slices harness_stdout raw to 2048 characters" do
+    test_root =
+      Path.join(
+        System.tmp_dir!(),
+        "cymphony-elixir-harness-slice-#{System.unique_integer([:positive])}"
+      )
+
+    try do
+      workspace_root = Path.join(test_root, "workspaces")
+      workspace = Path.join(workspace_root, "MT-5002")
+      claude_binary = Path.join(test_root, "fake-claude")
+
+      File.mkdir_p!(workspace)
+
+      File.write!(claude_binary, """
+      #!/bin/sh
+      awk 'BEGIN{for(i=0;i<3000;i++) printf "x"; print ""}'
+      echo '{"result":"done","session_id":"sess-slice"}'
+      """)
+
+      File.chmod!(claude_binary, 0o755)
+
+      write_workflow_file!(Workflow.workflow_file_path(),
+        workspace_root: workspace_root,
+        claude_command: claude_binary
+      )
+
+      issue = %Issue{
+        id: "issue-harness-slice",
+        identifier: "MT-5002",
+        title: "Harness slice",
+        description: "Long harness lines are sliced to 2048",
+        state: "In Progress",
+        url: "https://example.org/issues/MT-5002",
+        labels: ["backend"]
+      }
+
+      {:ok, collector} = Agent.start_link(fn -> [] end)
+
+      on_message = fn message ->
+        Agent.update(collector, fn messages -> messages ++ [message] end)
+      end
+
+      assert {:ok, %{session_id: "sess-slice"}} =
+               Runner.run(workspace, "do the thing", issue, on_message: on_message)
+
+      harness = collector |> Agent.get(& &1) |> Enum.filter(&(&1.event == :harness_stdout))
+      long_line = Enum.find(harness, &String.starts_with?(&1.raw, "x"))
+
+      assert long_line
+      assert String.length(long_line.raw) == 2048
+    after
+      File.rm_rf(test_root)
+    end
+  end
+
+  test "emits harness_stdout for completed lines even when the process later exits nonzero" do
+    test_root =
+      Path.join(
+        System.tmp_dir!(),
+        "cymphony-elixir-harness-exit-#{System.unique_integer([:positive])}"
+      )
+
+    try do
+      workspace_root = Path.join(test_root, "workspaces")
+      workspace = Path.join(workspace_root, "MT-5003")
+      claude_binary = Path.join(test_root, "fake-claude")
+
+      File.mkdir_p!(workspace)
+
+      File.write!(claude_binary, """
+      #!/bin/sh
+      echo 'before-fail'
+      printf 'leftover-not-emitted'
+      exit 1
+      """)
+
+      File.chmod!(claude_binary, 0o755)
+
+      write_workflow_file!(Workflow.workflow_file_path(),
+        workspace_root: workspace_root,
+        claude_command: claude_binary
+      )
+
+      issue = %Issue{
+        id: "issue-harness-exit",
+        identifier: "MT-5003",
+        title: "Harness nonzero exit",
+        description: "eol lines emit; leftover on nonzero does not; no parse_output",
+        state: "In Progress",
+        url: "https://example.org/issues/MT-5003",
+        labels: ["backend"]
+      }
+
+      {:ok, collector} = Agent.start_link(fn -> [] end)
+
+      on_message = fn message ->
+        Agent.update(collector, fn messages -> messages ++ [message] end)
+      end
+
+      assert {:error, {:agent_exit, 1, remaining}} =
+               Runner.run(workspace, "do the thing", issue, on_message: on_message)
+
+      assert remaining =~ "leftover-not-emitted"
+
+      messages = Agent.get(collector, & &1)
+      events = Enum.map(messages, & &1.event)
+      harness = Enum.filter(messages, &(&1.event == :harness_stdout))
+
+      assert length(harness) == 1
+      assert Enum.at(harness, 0).raw =~ "before-fail"
+      refute Enum.any?(harness, &(&1.raw =~ "leftover-not-emitted"))
+      assert :turn_ended_with_error in events
+      refute :turn_completed in events
+      refute :stream_event in events
+    after
+      File.rm_rf(test_root)
+    end
+  end
+
+  test "start_session routes antigravity kind to the antigravity settings section" do
+    test_root =
+      Path.join(
+        System.tmp_dir!(),
+        "cymphony-elixir-antigravity-section-#{System.unique_integer([:positive])}"
+      )
+
+    try do
+      workspace_root = Path.join(test_root, "workspaces")
+      workspace = Path.join(workspace_root, "MT-4000")
+      File.mkdir_p!(workspace)
+
+      write_workflow_file!(Workflow.workflow_file_path(),
+        workspace_root: workspace_root,
+        claude_command: "/bin/false-claude",
+        claude_provider: "claude-only"
+      )
+
+      stub_settings = %{
+        agent: %{kind: "claude", model: nil, effort: nil},
+        claude: %{command: "/bin/false-claude", provider: "claude-only"},
+        antigravity: %{
+          command: "agy-from-section",
+          output_format: "stream-json",
+          skip_permissions: true,
+          sandbox: false,
+          print_timeout: nil,
+          extra_args: nil,
+          provider: "agy-provider",
+          providers: []
+        },
+        workspace: %{root: workspace_root},
+        tracker: %{kind: "linear", api_key: "token"}
+      }
+
+      assert {:ok, session} =
+               Runner.start_session(workspace, config: stub_settings, agent_kind: "antigravity")
+
+      assert session.run_spec.kind == "antigravity"
+      assert session.run_spec.settings.command == "agy-from-section"
+      assert session.run_spec.settings.provider == "agy-provider"
+      assert session.run_spec.provider == "agy-provider"
+      assert session.agent_module == CymphonyElixir.Agent.Antigravity
+      refute session.run_spec.settings.command == stub_settings.claude.command
+    after
+      File.rm_rf(test_root)
+    end
+  end
+
+  test "start_session uses schema antigravity defaults when kind is antigravity" do
+    test_root =
+      Path.join(
+        System.tmp_dir!(),
+        "cymphony-elixir-antigravity-schema-#{System.unique_integer([:positive])}"
+      )
+
+    try do
+      workspace_root = Path.join(test_root, "workspaces")
+      workspace = Path.join(workspace_root, "MT-4001")
+      File.mkdir_p!(workspace)
+
+      write_workflow_file!(Workflow.workflow_file_path(),
+        workspace_root: workspace_root,
+        claude_command: "/bin/false-claude",
+        claude_provider: "claude-only"
+      )
+
+      settings = Config.settings!()
+
+      assert {:ok, session} =
+               Runner.start_session(workspace, config: settings, agent_kind: "antigravity")
+
+      assert session.run_spec.kind == "antigravity"
+      assert session.run_spec.settings.command == "agy"
+      assert session.run_spec.settings.output_format == "stream-json"
+      assert session.run_spec.settings.skip_permissions == true
+      refute session.run_spec.settings.command == settings.claude.command
+    after
+      File.rm_rf(test_root)
+    end
+  end
 end

@@ -70,6 +70,14 @@ defmodule CymphonyElixir.Cymphony.ConfigAgentSettingsTest do
       assert alpha["effort"] == "high"
     end
 
+    test "accepts antigravity as an agent kind" do
+      assert :ok = CymphonyConfig.update_agent_settings("alpha", %{"agent" => "antigravity"})
+
+      {:ok, config} = CymphonyConfig.load()
+      {:ok, alpha} = CymphonyConfig.find_project(config, "alpha")
+      assert alpha["agent"] == "antigravity"
+    end
+
     test "rejects unknown agent kinds" do
       assert {:error, :invalid_agent_kind} =
                CymphonyConfig.update_agent_settings("alpha", %{"agent" => "gemini"})
