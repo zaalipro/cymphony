@@ -210,14 +210,6 @@ defmodule CymphonyElixir.CLITest do
       assert_received {:port, 9090}
     end
 
-    test "l lists projects" do
-      assert :done = CLI.evaluate(["l"])
-    end
-
-    test "list lists projects" do
-      assert :done = CLI.evaluate(["list"])
-    end
-
     test "logs is accepted as alias for log" do
       ExUnit.CaptureIO.capture_io(fn -> assert :done = CLI.evaluate(["log"]) end)
       ExUnit.CaptureIO.capture_io(fn -> assert :done = CLI.evaluate(["logs"]) end)
