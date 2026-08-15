@@ -1067,7 +1067,19 @@ defmodule CymphonyElixir.ExtensionsTest do
       File.write!(Path.join(tmp, "config.json"), "{\"projects\": [{\"name\": \"default\"}]}")
       Application.put_env(:cymphony_elixir, :config_dir_override, tmp)
 
+      # Stub the codex catalog so rendering codex model suggestions never
+      # shells out to a possibly-missing `codex` binary (e.g. on CI).
+      previous_fetcher = Application.fetch_env(:cymphony_elixir, :codex_catalog_fetcher)
+      Application.put_env(:cymphony_elixir, :codex_catalog_fetcher, fn -> {:ok, ~s({"models": []})} end)
+      CymphonyElixir.AgentCatalog.clear_cache()
+
       on_exit(fn ->
+        case previous_fetcher do
+          {:ok, fetcher} -> Application.put_env(:cymphony_elixir, :codex_catalog_fetcher, fetcher)
+          :error -> Application.delete_env(:cymphony_elixir, :codex_catalog_fetcher)
+        end
+
+        CymphonyElixir.AgentCatalog.clear_cache()
         Application.delete_env(:cymphony_elixir, :config_dir_override)
         File.rm_rf!(tmp)
       end)
