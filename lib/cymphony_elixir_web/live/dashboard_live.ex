@@ -211,7 +211,11 @@ defmodule CymphonyElixirWeb.DashboardLive do
       {:ok, settings} ->
         case Control.set_agent_settings({:project, project_name}, settings) do
           :ok ->
-            socket = update(socket, :agent_setting_drafts, &Map.delete(&1, project_name))
+            confirmed = confirmed_agent_draft(settings)
+
+            socket =
+              update(socket, :agent_setting_drafts, &apply_confirmed_draft(&1, project_name, confirmed))
+
             {:noreply, reload_payload_now(put_flash(socket, :info, "#{project_name}: agent settings updated"))}
 
           {:error, :not_found} ->
@@ -303,7 +307,8 @@ defmodule CymphonyElixirWeb.DashboardLive do
      socket
      |> assign(:payload, payload)
      |> assign(:now, DateTime.utc_now())
-     |> assign(:token_samples, token_samples)}
+     |> assign(:token_samples, token_samples)
+     |> update(:agent_setting_drafts, &prune_agent_drafts(&1, payload))}
   end
 
   @impl true
@@ -663,9 +668,9 @@ defmodule CymphonyElixirWeb.DashboardLive do
                   class="inline-form inline-form--agent advanced-only"
                 >
                   <input type="hidden" name="project" value={project.name} />
-                  <label class="inline-label" for={"agent-#{project.name}"}>agent</label>
+                  <label class="inline-label" for={"agent-#{project.name}-#{agent_settings.kind}"}>agent</label>
                   <select
-                    id={"agent-#{project.name}"}
+                    id={"agent-#{project.name}-#{agent_settings.kind}"}
                     name="agent_kind"
                     class="inline-input inline-input--narrow"
                   >
@@ -692,8 +697,14 @@ defmodule CymphonyElixirWeb.DashboardLive do
                     <% end %>
                   </datalist>
 
-                  <label class="inline-label" for={"effort-#{project.name}"}>effort</label>
-                  <select id={"effort-#{project.name}"} name="effort" class="inline-input inline-input--narrow">
+                  <label class="inline-label" for={"effort-#{project.name}-#{agent_settings.kind}-#{agent_settings.effort}"}>
+                    effort
+                  </label>
+                  <select
+                    id={"effort-#{project.name}-#{agent_settings.kind}-#{agent_settings.effort}"}
+                    name="effort"
+                    class="inline-input inline-input--narrow"
+                  >
                     <option value="" selected={agent_settings.effort == ""}>default</option>
                     <%= for level <- effort_levels(agent_settings.kind) do %>
                       <option value={level} selected={agent_settings.effort == level}><%= level %></option>
@@ -1090,7 +1101,48 @@ defmodule CymphonyElixirWeb.DashboardLive do
     |> assign(:payload, payload)
     |> assign(:token_samples, token_samples)
     |> assign(:last_payload_refresh, System.monotonic_time(:millisecond))
+    |> update(:agent_setting_drafts, &prune_agent_drafts(&1, payload))
   end
+
+  # A successful submit keeps a confirmed draft so the immediate render shows
+  # the submitted values; once the payload reflects them the draft is redundant
+  # and must go, or it would shadow later server-side changes.
+  defp confirmed_agent_draft(settings) do
+    case Map.get(settings, "agent") do
+      kind when is_binary(kind) and kind != "" ->
+        %{kind: kind, model: Map.get(settings, "model", ""), effort: Map.get(settings, "effort", "")}
+
+      _ ->
+        nil
+    end
+  end
+
+  defp prune_agent_drafts(drafts, payload) do
+    Enum.reduce(Map.get(payload, :projects) || [], drafts, &prune_one_draft/2)
+  end
+
+  defp prune_one_draft(project, drafts) do
+    case Map.get(drafts, Map.get(project, :name)) do
+      %{} = draft -> maybe_prune_draft(drafts, project, draft)
+      _ -> drafts
+    end
+  end
+
+  defp maybe_prune_draft(drafts, project, draft) do
+    persisted = project_agent_settings(%{}, project)
+
+    if draft.kind == persisted.kind and draft.model == persisted.model and
+         draft.effort == persisted.effort do
+      Map.delete(drafts, Map.get(project, :name))
+    else
+      drafts
+    end
+  end
+
+  defp apply_confirmed_draft(drafts, project_name, nil), do: Map.delete(drafts, project_name)
+
+  defp apply_confirmed_draft(drafts, project_name, confirmed),
+    do: Map.put(drafts, project_name, confirmed)
 
   # Suggestions only — values are pass-through free text. Codex entries come
   # from the live `codex debug models` catalog (cached); claude from its

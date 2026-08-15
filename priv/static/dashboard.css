@@ -800,10 +800,10 @@ html[data-ui-mode="advanced"] .mode-switch-button[data-mode-set="advanced"] {
 .project-section--paused::before { opacity: 0.2; }
 
 .project-section-header {
-  display: grid;
-  grid-template-columns: 1fr auto;
-  gap: 14px;
+  display: flex;
+  flex-wrap: wrap;
   align-items: center;
+  gap: 10px 14px;
 }
 
 .project-section-title-block {
@@ -841,10 +841,12 @@ html[data-ui-mode="advanced"] .mode-switch-button[data-mode-set="advanced"] {
 }
 
 .project-section-controls {
-  display: inline-flex;
+  display: flex;
   align-items: center;
-  gap: 6px;
+  gap: 8px;
   flex-wrap: wrap;
+  margin-left: auto;
+  min-width: 0;
 }
 
 /* ============================================================
@@ -1390,11 +1392,12 @@ select.inline-input--narrow {
   }
 
   .project-section-header {
-    grid-template-columns: 1fr;
+    flex-direction: column;
+    align-items: stretch;
   }
 
   .project-section-controls {
-    justify-self: start;
+    margin-left: 0;
   }
 }
 

@@ -1102,6 +1102,10 @@ defmodule CymphonyElixir.ExtensionsTest do
       assert_receive {:orchestrator_call, {:set_agent_settings, %{"agent" => "codex", "model" => "gpt-5.2-codex", "effort" => "high"}}},
                      1_000
 
+      # The immediate re-render must already show the submitted kind, not the
+      # previous one (confirmed-draft until the payload catches up).
+      assert has_element?(view, ~s|form[phx-submit="set_project_agent"] option[value="codex"][selected]|)
+
       {:ok, persisted} = Jason.decode(File.read!(Path.join(tmp, "config.json")))
       [project | _] = persisted["projects"]
       assert project["agent"] == "codex"
