@@ -1866,10 +1866,10 @@ Enablement (extension):
   `div.queue-card-edit` when `{project, id}` is in assign `:queue_edit_ids`;
   `form.queue-edit-form` (`phx-change=preview_queue_run_spec`,
   `phx-submit=set_queue_run_spec`); hidden `project` + `issue`;
-  `select#queue-agent-<id>` `name=agent_kind` keep `''`;
-  `<.model_combobox id=queue-model-<id> list_id=model-suggestions-queue-<id>>`;
-  `select#queue-effort-<id>` keep `''`; submit `Pin`; no provider. Empty / keep skips a
-  field. Pin persists with the queue and does **not** kill anything.
+  comboboxes for `agent_kind` / `model` / `effort` preselect the card pin when
+  set, otherwise the project header agent/model/effort (no `keep` blank);
+  submit `Pin`; no provider. Pin persists with the queue and does **not** kill
+  anything. Empty / `"keep"` in the pin payload still skip a field (API compat).
 - LiveView mount assigns `:queue_edit_ids` (`MapSet.new()`) and
   `:queue_run_spec_drafts` (`%{}`). Events:
   - `reorder_queue` — params `project` + full identifier `order` list; optimistic
@@ -1877,7 +1877,8 @@ Enablement (extension):
   - `toggle_queue_edit` — `project` + `issue`; toggle `{project, identifier}` in
     `:queue_edit_ids`
   - `preview_queue_run_spec` — draft `:queue_run_spec_drafts[{project, id}]` like
-    `preview_issue_run_spec`; kind change clears model/effort; no persist
+    `preview_issue_run_spec`; kind change to another harness clears model/effort;
+    changing back to the inherited kind restores its model/effort; no persist
   - `set_queue_run_spec` — hidden `project` + `issue`; empty / keep skip;
     `Control.set_queue_pin`; do not kill
 - `QueueBoard` hook mounts on `div#queue-board-<project.name>.queue-board-list` in
