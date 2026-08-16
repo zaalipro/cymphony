@@ -832,6 +832,61 @@ defmodule CymphonyElixir.DashboardLiveTest do
     refute has_element?(view, "p.empty-state")
   end
 
+  test "queue edit preselects project header spec when the card has no pin" do
+    start_dashboard(
+      snapshot:
+        static_snapshot()
+        |> Map.put(:agent_kind, "antigravity")
+        |> Map.put(:agent_model, "gpt-5.6-luna")
+        |> Map.put(:agent_effort, "max")
+        |> Map.put(:waiting, [waiting_snapshot_entry(%{identifier: "LLM-51", title: "Ready next"})])
+    )
+
+    {:ok, view, _html} = live(build_conn(), "/")
+
+    view
+    |> element(~s|button.queue-card-edit-toggle[phx-value-issue="LLM-51"]|)
+    |> render_click()
+
+    assert has_element?(view, ~s|form.queue-edit-form input[name="agent_kind"][value="antigravity"]|)
+    assert has_element?(view, ~s|form.queue-edit-form input[name="model"][value="gpt-5.6-luna"]|)
+    assert has_element?(view, ~s|form.queue-edit-form input[name="effort"][value="max"]|)
+
+    form = view |> element("form.queue-edit-form") |> render()
+    refute form =~ ~s(data-value="")
+    refute form =~ ">keep<"
+  end
+
+  test "queue edit preselects a card pin over the project header" do
+    start_dashboard(
+      snapshot:
+        static_snapshot()
+        |> Map.put(:agent_kind, "antigravity")
+        |> Map.put(:agent_model, "gpt-5.6-luna")
+        |> Map.put(:agent_effort, "max")
+        |> Map.put(:waiting, [
+          waiting_snapshot_entry(%{
+            identifier: "LLM-51",
+            title: "Pinned card",
+            agent_kind: "codex",
+            model: "gpt-5.2-codex",
+            effort: "high"
+          })
+        ])
+    )
+
+    {:ok, view, _html} = live(build_conn(), "/")
+
+    view
+    |> element(~s|button.queue-card-edit-toggle[phx-value-issue="LLM-51"]|)
+    |> render_click()
+
+    assert has_element?(view, ~s|form.queue-edit-form input[name="agent_kind"][value="codex"]|)
+    assert has_element?(view, ~s|form.queue-edit-form input[name="model"][value="gpt-5.2-codex"]|)
+    assert has_element?(view, ~s|form.queue-edit-form input[name="effort"][value="high"]|)
+    refute has_element?(view, ~s|form.queue-edit-form input[name="agent_kind"][value="antigravity"]|)
+  end
+
   test "preview_queue_run_spec drafts kind and clears model and effort when kind changes" do
     start_dashboard(
       snapshot:

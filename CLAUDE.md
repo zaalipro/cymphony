@@ -198,7 +198,7 @@ The Phoenix LiveView dashboard (`lib/cymphony_elixir_web/live/dashboard_live.ex`
 | `reorder_queue` | Params `project` + full identifier `order` list. Optimistic client reorder, then `Control.set_queue_order`, reload. Persists `queue_order` (not Linear). |
 | `toggle_queue_edit` | Params `project` + `issue`. Toggle `{project, identifier}` in assign `:queue_edit_ids`. |
 | `preview_queue_run_spec` | Draft `:queue_run_spec_drafts[{project, id}]` like `preview_issue_run_spec`. Kind change clears model/effort. No persist. No provider. |
-| `set_queue_run_spec` | Hidden `project` + `issue`. Empty / keep skip. `Control.set_queue_pin`. Does **not** kill (issue is not running). |
+| `set_queue_run_spec` | Hidden `project` + `issue`. Comboboxes preselect the card pin or the project header spec (no `keep`). Empty / keep in the payload still skip. `Control.set_queue_pin`. Does **not** kill (issue is not running). |
 | `toggle_harness_follow` | Flip Follow/Paused on the expanded session's Harness stdout pane |
 | `pause_dispatch` / `resume_dispatch` | Stop/start dispatching new issues for **all** projects; running sessions complete normally |
 | `toggle_project_pause` | Pause or resume dispatching for a single project from its section header |

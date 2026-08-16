@@ -1087,7 +1087,7 @@ defmodule CymphonyElixirWeb.DashboardLive do
                   <%= for {entry, rank} <- Enum.with_index(project_waiting(project)) do %>
                     <% identifier = entry.issue_identifier %>
                     <% editing? = MapSet.member?(@queue_edit_ids, {project.name, identifier}) %>
-                    <% queue_spec = queue_run_spec_settings(@queue_run_spec_drafts, project.name, entry) %>
+                    <% queue_spec = queue_run_spec_settings(@queue_run_spec_drafts, project, entry) %>
                     <article
                       id={"queue-card-#{project.name}-#{identifier}"}
                       class={"queue-card" <> if(rank == 0, do: " queue-card--next", else: "") <> if(editing?, do: " is-editing", else: "")}
@@ -1139,8 +1139,8 @@ defmodule CymphonyElixirWeb.DashboardLive do
                                 name="agent_kind"
                                 value={queue_spec.kind}
                                 list_id={"queue-agent-options-#{identifier}"}
-                                options={kind_menu_options(true)}
-                                placeholder="keep"
+                                options={kind_menu_options(false)}
+                                placeholder="agent"
                               />
                             </div>
                             <div class="menu-field">
@@ -1151,7 +1151,7 @@ defmodule CymphonyElixirWeb.DashboardLive do
                                 value={queue_spec.model}
                                 list_id={"model-suggestions-queue-#{identifier}"}
                                 options={model_suggestions(queue_spec.suggestion_kind)}
-                                placeholder="default"
+                                placeholder="model"
                                 allow_custom={true}
                               />
                             </div>
@@ -1162,8 +1162,8 @@ defmodule CymphonyElixirWeb.DashboardLive do
                                 name="effort"
                                 value={queue_spec.effort}
                                 list_id={"queue-effort-options-#{identifier}"}
-                                options={effort_menu_options(queue_spec.suggestion_kind, :keep)}
-                                placeholder="keep"
+                                options={effort_menu_options(queue_spec.suggestion_kind, false)}
+                                placeholder="effort"
                               />
                             </div>
                             <button type="submit" class="subtle-button subtle-button--accent queue-edit-pin">Pin</button>
@@ -1631,9 +1631,11 @@ defmodule CymphonyElixirWeb.DashboardLive do
     [%{value: "", label: label} | kind_menu_options(false)]
   end
 
-  defp effort_menu_options(kind, blank) do
+  defp effort_menu_options(kind, false), do: Enum.map(effort_levels(kind), &%{value: &1, label: &1})
+
+  defp effort_menu_options(kind, blank) when blank in [true, :keep, :default] do
     label = if blank == :default, do: "default", else: "keep"
-    [%{value: "", label: label} | Enum.map(effort_levels(kind), &%{value: &1, label: &1})]
+    [%{value: "", label: label} | effort_menu_options(kind, false)]
   end
 
   defp model_combobox(assigns) do
@@ -1902,42 +1904,73 @@ defmodule CymphonyElixirWeb.DashboardLive do
     |> Jason.encode!()
   end
 
-  defp queue_run_spec_settings(drafts, project_name, entry) do
-    default_kind = Map.get(entry, :agent_kind) || ""
+  defp queue_run_spec_settings(drafts, project, entry) when is_map(project) do
+    inherited = inherited_queue_run_spec(project, entry)
 
-    default = %{
-      kind: default_kind,
-      model: Map.get(entry, :model) || "",
-      effort: Map.get(entry, :effort) || "",
-      suggestion_kind: suggestion_kind(default_kind, entry)
-    }
-
-    case Map.get(drafts, {project_name, entry.issue_identifier}) do
+    case Map.get(drafts, {Map.get(project, :name), entry.issue_identifier}) do
       nil ->
-        default
+        inherited
 
       draft ->
-        kind = Map.get(draft, :kind, default_kind)
+        kind = Map.get(draft, :kind, inherited.kind)
 
         %{
           kind: kind,
-          model: Map.get(draft, :model, default.model),
-          effort: Map.get(draft, :effort, default.effort),
+          model: Map.get(draft, :model, inherited.model),
+          effort: Map.get(draft, :effort, inherited.effort),
           suggestion_kind: suggestion_kind(kind, entry)
         }
     end
   end
 
+  defp inherited_queue_run_spec(project, entry) do
+    project_settings = project_agent_settings(%{}, project)
+    kind = present_run_spec(Map.get(entry, :agent_kind)) || project_settings.kind
+
+    %{
+      kind: kind,
+      model: present_run_spec(Map.get(entry, :model)) || project_settings.model,
+      effort: present_run_spec(Map.get(entry, :effort)) || project_settings.effort,
+      suggestion_kind: suggestion_kind(kind, entry)
+    }
+  end
+
+  defp present_run_spec(value) when is_binary(value) do
+    case String.trim(value) do
+      "" -> nil
+      trimmed -> trimmed
+    end
+  end
+
+  defp present_run_spec(_value), do: nil
+
   defp put_queue_run_spec_draft(socket, project_name, issue, kind, params) do
     if kind == "" or Agent.known_kind?(kind) do
+      project =
+        Enum.find(socket.assigns.payload[:projects] || [], &(&1.name == project_name)) ||
+          %{name: project_name}
+
       entry = find_waiting_entry(socket.assigns.payload, project_name, issue)
-      current = queue_run_spec_settings(socket.assigns.queue_run_spec_drafts, project_name, entry)
+      current = queue_run_spec_settings(socket.assigns.queue_run_spec_drafts, project, entry)
+      inherited = inherited_queue_run_spec(project, entry)
       agent_changed? = current.kind != kind
+
+      {model, effort} =
+        cond do
+          not agent_changed? ->
+            {Map.get(params, "model", current.model), Map.get(params, "effort", current.effort)}
+
+          kind != "" and kind == inherited.kind ->
+            {inherited.model, inherited.effort}
+
+          true ->
+            {"", ""}
+        end
 
       draft = %{
         kind: kind,
-        model: if(agent_changed?, do: "", else: Map.get(params, "model", "")),
-        effort: if(agent_changed?, do: "", else: Map.get(params, "effort", ""))
+        model: model,
+        effort: effort
       }
 
       assign(
