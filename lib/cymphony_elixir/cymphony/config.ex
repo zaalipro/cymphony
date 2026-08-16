@@ -484,6 +484,186 @@ defmodule CymphonyElixir.Cymphony.Config do
     end)
   end
 
+  @queue_attr_keys ["queue_order", "queue_pins", "queue_priority_seen"]
+  @queue_pin_field_keys ["agent_kind", "model", "effort"]
+
+  @doc """
+  Merges per-project dispatch-queue keys onto `config.json` and `save/1`s.
+
+  Accepts any of `"queue_order"` (list of identifier binaries), `"queue_pins"`
+  (identifier => `%{"agent_kind"|"model"|"effort" => binary}`), and
+  `"queue_priority_seen"` (identifier => integer | nil). Empty pin fields and
+  empty pin entries are dropped. Provided keys replace the stored value
+  (`queue_pins` is the full map, not a per-id patch).
+
+  `project_name` nil updates every `projects[]` entry (and a legacy flat map
+  when `projects` is not a list). Does not rewrite `WORKFLOW.md` or touch
+  `dashboard_refresh_seconds`.
+  """
+  @spec update_project_queue(String.t() | nil, map()) ::
+          {:ok, map()} | {:error, :invalid_queue | term()}
+  def update_project_queue(project_name, attrs)
+      when (is_binary(project_name) or is_nil(project_name)) and is_map(attrs) do
+    with {:ok, sanitized} <- sanitize_queue_attrs(attrs),
+         {:ok, config} <- load(),
+         {:ok, updated} <- apply_project_queue(config, project_name, sanitized),
+         :ok <- save(updated) do
+      {:ok, updated}
+    end
+  end
+
+  def update_project_queue(_project_name, _attrs), do: {:error, :invalid_queue}
+
+  defp sanitize_queue_attrs(attrs) do
+    Enum.reduce_while(@queue_attr_keys, {:ok, %{}}, fn key, {:ok, acc} ->
+      case Map.fetch(attrs, key) do
+        :error ->
+          {:cont, {:ok, acc}}
+
+        {:ok, value} ->
+          case sanitize_queue_attr(key, value) do
+            {:ok, sanitized} -> {:cont, {:ok, Map.put(acc, key, sanitized)}}
+            :error -> {:halt, {:error, :invalid_queue}}
+          end
+      end
+    end)
+  end
+
+  defp sanitize_queue_attr("queue_order", value), do: sanitize_queue_order(value)
+  defp sanitize_queue_attr("queue_pins", value), do: sanitize_queue_pins(value)
+  defp sanitize_queue_attr("queue_priority_seen", value), do: sanitize_queue_priority_seen(value)
+
+  defp sanitize_queue_order(order) when is_list(order), do: collect_queue_ids(order)
+  defp sanitize_queue_order(_order), do: :error
+
+  defp sanitize_queue_pins(pins) when is_map(pins) do
+    Enum.reduce_while(pins, {:ok, %{}}, fn {key, pin}, {:ok, acc} ->
+      with {:ok, id} <- sanitize_queue_id(key),
+           {:ok, fields} <- sanitize_pin_fields(pin) do
+        acc = if fields == %{}, do: acc, else: Map.put(acc, id, fields)
+        {:cont, {:ok, acc}}
+      else
+        :error -> {:halt, :error}
+      end
+    end)
+  end
+
+  defp sanitize_queue_pins(_pins), do: :error
+
+  defp sanitize_queue_priority_seen(seen) when is_map(seen) do
+    Enum.reduce_while(seen, {:ok, %{}}, fn {key, value}, {:ok, acc} ->
+      with {:ok, id} <- sanitize_queue_id(key),
+           {:ok, priority} <- sanitize_seen_priority(value) do
+        {:cont, {:ok, Map.put(acc, id, priority)}}
+      else
+        :error -> {:halt, :error}
+      end
+    end)
+  end
+
+  defp sanitize_queue_priority_seen(_seen), do: :error
+
+  defp collect_queue_ids(values) do
+    Enum.reduce_while(values, {:ok, []}, fn value, {:ok, acc} ->
+      case sanitize_queue_id(value) do
+        {:ok, id} ->
+          {:cont, {:ok, [id | acc]}}
+
+        :error ->
+          if blank_queue_id?(value) do
+            {:cont, {:ok, acc}}
+          else
+            {:halt, :error}
+          end
+      end
+    end)
+    |> case do
+      {:ok, ids} -> {:ok, Enum.reverse(ids)}
+      :error -> :error
+    end
+  end
+
+  defp blank_queue_id?(value) when is_binary(value), do: String.trim(value) == ""
+  defp blank_queue_id?(_value), do: false
+
+  defp sanitize_queue_id(key) when is_binary(key) do
+    case String.trim(key) do
+      "" -> :error
+      trimmed -> {:ok, trimmed}
+    end
+  end
+
+  defp sanitize_queue_id(_key), do: :error
+
+  defp sanitize_pin_fields(pin) when is_map(pin) do
+    fields =
+      Enum.reduce(@queue_pin_field_keys, %{}, fn key, acc ->
+        case pin_field_value(pin, key) do
+          value when is_binary(value) -> put_present_pin_field(acc, key, value)
+          _ -> acc
+        end
+      end)
+
+    {:ok, fields}
+  end
+
+  defp sanitize_pin_fields(_pin), do: :error
+
+  defp pin_field_value(pin, "agent_kind") do
+    binary_pin_value(pin, ["agent_kind", :agent_kind, "kind", :kind])
+  end
+
+  defp pin_field_value(pin, "model"), do: binary_pin_value(pin, ["model", :model])
+  defp pin_field_value(pin, "effort"), do: binary_pin_value(pin, ["effort", :effort])
+  defp pin_field_value(_pin, _key), do: nil
+
+  defp binary_pin_value(pin, keys) do
+    Enum.find_value(keys, fn key ->
+      case Map.get(pin, key) do
+        value when is_binary(value) -> value
+        _ -> nil
+      end
+    end)
+  end
+
+  defp put_present_pin_field(acc, key, value) do
+    case String.trim(value) do
+      "" -> acc
+      "keep" -> acc
+      trimmed -> Map.put(acc, key, trimmed)
+    end
+  end
+
+  defp sanitize_seen_priority(value) when is_integer(value) or is_nil(value), do: {:ok, value}
+  defp sanitize_seen_priority(_value), do: :error
+
+  defp apply_project_queue(%{"projects" => projects} = config, project_name, attrs)
+       when is_list(projects) do
+    updated_projects =
+      Enum.map(projects, fn project ->
+        cond do
+          is_nil(project_name) ->
+            put_queue_attrs(project, attrs)
+
+          project["name"] == project_name ->
+            put_queue_attrs(project, attrs)
+
+          true ->
+            project
+        end
+      end)
+
+    {:ok, Map.put(config, "projects", updated_projects)}
+  end
+
+  defp apply_project_queue(config, _project_name, attrs) when is_map(config) do
+    {:ok, put_queue_attrs(config, attrs)}
+  end
+
+  defp put_queue_attrs(project, attrs) do
+    Enum.reduce(attrs, project, fn {key, value}, acc -> Map.put(acc, key, value) end)
+  end
+
   @doc """
   Parses a comma-separated provider list into a normalized list of names.
   Trims whitespace and drops empty segments. Returns `{:error, :empty}` if no

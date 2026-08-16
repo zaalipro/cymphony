@@ -9,7 +9,10 @@ defmodule CymphonyElixir.Tracker.Memory do
 
   @spec fetch_candidate_issues() :: {:ok, [Issue.t()]} | {:error, term()}
   def fetch_candidate_issues do
-    {:ok, issue_entries()}
+    case Application.get_env(:cymphony_elixir, :memory_tracker_error) do
+      nil -> {:ok, issue_entries()}
+      reason -> {:error, reason}
+    end
   end
 
   @spec fetch_candidate_issues(term()) :: {:ok, [Issue.t()]} | {:error, term()}

@@ -302,6 +302,59 @@ defmodule CymphonyElixirWeb.ObservabilityApiController do
     end
   end
 
+  @doc """
+  Replaces the waiting-list order for `?project=` (required). Distinct from
+  Linear priority. No Linear writes.
+  """
+  @spec queue(Conn.t(), map()) :: Conn.t()
+  def queue(conn, params) do
+    case required_project(params) do
+      :error ->
+        error_response(conn, 422, "invalid_scope", "query param 'project' is required")
+
+      {:ok, project} ->
+        case Control.parse_queue_order(params["order"]) do
+          {:ok, order} ->
+            respond_queue_order(conn, project, order)
+
+          :error ->
+            error_response(
+              conn,
+              422,
+              "invalid_queue_order",
+              "body 'order' must be a list of issue identifiers"
+            )
+        end
+    end
+  end
+
+  @doc """
+  Pins agent/model/effort for one waiting issue on `?project=` (required).
+  Empty/`keep` fields are skipped. Does not kill a session. No Linear writes.
+  """
+  @spec queue_pin(Conn.t(), map()) :: Conn.t()
+  def queue_pin(conn, params) do
+    case required_project(params) do
+      :error ->
+        error_response(conn, 422, "invalid_scope", "query param 'project' is required")
+
+      {:ok, project} ->
+        case Control.parse_queue_pin(params) do
+          {:ok, {issue, pin}} ->
+            respond_queue_pin(conn, project, issue, pin)
+
+          :error ->
+            error_response(
+              conn,
+              422,
+              "invalid_queue_pin",
+              "body must include issue and at least one of kind/model/effort; kind must be one of: " <>
+                Enum.join(Agent.known_kinds(), ", ")
+            )
+        end
+    end
+  end
+
   @spec method_not_allowed(Conn.t(), map()) :: Conn.t()
   def method_not_allowed(conn, _params) do
     error_response(conn, 405, "method_not_allowed", "Method not allowed")
@@ -373,4 +426,53 @@ defmodule CymphonyElixirWeb.ObservabilityApiController do
   end
 
   defp parse_providers(_), do: :error
+
+  defp required_project(params) when is_map(params) do
+    case Map.get(params, "project") do
+      name when is_binary(name) ->
+        case String.trim(name) do
+          "" -> :error
+          trimmed -> {:ok, trimmed}
+        end
+
+      _ ->
+        :error
+    end
+  end
+
+  defp respond_queue_order(conn, project, order) do
+    case Control.set_queue_order({:project, project}, order) do
+      :ok ->
+        conn
+        |> put_status(202)
+        |> json(%{order: order, project: project})
+
+      {:error, reason} when reason in [:invalid_scope, :not_found] ->
+        error_response(conn, 422, "invalid_scope", "query param 'project' is required")
+
+      {:error, _reason} ->
+        error_response(conn, 422, "invalid_queue_order", "Could not persist queue order")
+    end
+  end
+
+  defp respond_queue_pin(conn, project, issue, pin) do
+    case Control.set_queue_pin({:project, project}, issue, pin) do
+      :ok ->
+        conn
+        |> put_status(202)
+        |> json(%{
+          issue: issue,
+          agent_kind: pin["agent_kind"],
+          model: pin["model"],
+          effort: pin["effort"],
+          project: project
+        })
+
+      {:error, reason} when reason in [:invalid_scope, :not_found] ->
+        error_response(conn, 422, "invalid_scope", "query param 'project' is required")
+
+      {:error, _reason} ->
+        error_response(conn, 422, "invalid_queue_pin", "Could not persist queue pin")
+    end
+  end
 end

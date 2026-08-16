@@ -26,7 +26,7 @@ If you've used [openai/symphony](https://github.com/openai/symphony), the core i
 | Claude command | one binary | **Custom Claude command per project** — point one project at the official `claude` CLI, another at a wrapper that swaps in z.ai / Kimi / OpenRouter credentials, etc. |
 | Providers | one API endpoint | **Rotate across multiple Claude-compatible backends** — list two or more providers and Cymphony spreads new sessions across them randomly. Avoids hitting any single backend's rate limit. |
 | Live UI | terminal-only | **Phoenix LiveView dashboard** with kill / retry / pause / set-provider per running session |
-| HTTP API | — | `/api/v1/*` for state, pause, concurrency, providers, refresh, Linear connect, add-project |
+| HTTP API | — | `/api/v1/*` for state, pause, concurrency, providers, queue order/pin, refresh, Linear connect, add-project |
 | Workspace lifecycle | clone-on-create | **after_create / before_run / after_run / before_remove hooks**, optional retention sweep |
 | Setup | edit a YAML file | `cymphony setup` wizard, all config in `~/.cymphony/config.json` |
 | Hot reload | restart | edit `WORKFLOW.md`, picked up next tick |
@@ -210,7 +210,7 @@ cymphony restart             # bounce
 cymphony logs 100            # tail the last 100 lines of the log
 ```
 
-Without `port`, Cymphony runs without the web UI — useful for headless servers. With `port`, you get a real-time dashboard showing every running session, token usage, retry queue, rate limits, and per-project controls.
+Without `port`, Cymphony runs without the web UI — useful for headless servers. With `port`, you get a real-time dashboard showing the Up next / Queue board, every running session, token usage, retry queue, rate limits, and per-project controls.
 
 ### The `port` flag
 
@@ -401,7 +401,7 @@ Same usage from the CLI — `cymphony c cz`, `cymphony c cv1,cz` — Cymphony ju
 
 ### How rotation works
 
-When you list multiple providers, Cymphony picks one **at random** for each new session — so 6 sessions across 3 providers averages roughly 2 each. There's no central queue: each dispatch is independent. If one backend goes down, only the sessions assigned to it fail (and retry with backoff).
+When you list multiple providers, Cymphony picks one **at random** for each new session — so 6 sessions across 3 providers averages roughly 2 each. There is no central **provider** queue: each dispatch independently samples the rotation. (Issue order is a different thing — the per-project **Up next** / Queue board.) If one backend goes down, only the sessions assigned to it fail (and retry with backoff).
 
 You can change a project's provider list **at runtime** without restarting:
 
@@ -432,7 +432,7 @@ Cymphony runs as many projects as you have configured, all in one daemon. Each p
 - its own concurrency cap (set globally with `cr N`, or per-project via dashboard)
 - its own provider list (set globally with `c ...`, or per-project)
 - its own pause/resume toggle
-- its own dashboard section with the running sessions and retry queue
+- its own dashboard section with the **Up next** / Queue board, running sessions, and retry queue
 
 Add a project after the fact:
 
@@ -460,18 +460,19 @@ The dashboard opens in **Simple** mode: plain-language autonomy status, the acti
 
 The dashboard shows:
 
-- **Command bar (top)** — autonomy state plus working / waiting / usage / runtime counters in Simple mode; throughput, polling cadence, and rate limits in Advanced mode
-- **Per-project sections** — one card per project with the project name, running count, "tasks at once", and Pause/Resume. Advanced mode extracts labeled controls out of the cramped agent pill: `agent` (native `#agent-<project>` select), a `.model-switcher` Combobox (type-to-filter suggestions), `effort` (native `#effort-<project>` select), and `providers` (visible only when the selected kind is `claude`). Changing the kind persists immediately (kind only) and hides/shows the providers field on the next render. **Set** still saves kind + model + effort together. Both paths rewrite the project's generated `WORKFLOW.md` and overlay `config.json` so the select stays on the new kind after the next refresh.
+- **Command bar (top)** — autonomy state plus working / waiting / usage / runtime counters in Simple mode; throughput, polling cadence, and rate limits in Advanced mode. Advanced adds a `.metric-pill--queue.section--queue` for `counts.waiting`; the simple Waiting pill stays `counts.retrying`.
+- **Per-project sections** — one card per project with the project name, counts (`N/M running · Q queued · R retrying`), "tasks at once", and Pause/Resume. Advanced mode extracts labeled controls out of the cramped agent pill: `agent` (native `#agent-<project>` select), a `.model-switcher` Combobox (type-to-filter suggestions), `effort` (native `#effort-<project>` select), and `providers` (visible only when the selected kind is `claude`). Changing the kind persists immediately (kind only) and hides/shows the providers field on the next render. **Set** still saves kind + model + effort together. Both paths rewrite the project's generated `WORKFLOW.md` and overlay `config.json` so the select stays on the new kind after the next refresh.
+- **Up next / Queue board** — `section.queue-board.section--board` **above** In Progress. Cards are dispatch-ready Linear issues that are not running (and not in the retry list). Hidden when `waiting` is empty. Drag permutes the sticky operator order (`reorder_queue`); Cymphony rank is the left-to-right then wrap index (`0` = next slot). Card **Edit** pins `agent_kind` / model / effort for the next dispatch (empty / keep skips; does not kill). Display pref `{Board, board}` hides the board (`html[data-hidden-sections~=board]`).
 - **Compact session rows** — Linear ID, title, state, runtime, and Stop. Advanced mode adds provider, host, token, workspace, log, and restart details. Expanding a row shows a **Harness** pane (live CLI stdout, Follow/Paused) and a restart form that can pin `agent_kind` / provider / model / effort. Restart model is the same type-to-filter Combobox; the Provider field is Claude-only. Session provider chips stay visible for every kind.
-- **Retry queue** — inline at the bottom of each project section
+- **Retry queue** — inline at the **bottom** of each project section (below In Progress; not on the board)
 - **Recent completions** — global ring buffer of the last 100 finished sessions, collapsed by default in Simple mode
-- **Settings drawer (⚙)** — Experience mode, then **Linear** + **Projects**, then Automation / Display (including dashboard refresh seconds). See below.
+- **Settings drawer** — Experience mode, then **Linear** + **Projects**, then Automation / Display (including dashboard refresh seconds and the Board visibility checkbox). See below. Theme and drawer toggles are CSS geometry, not emoji.
 
 Live updates are pushed via Phoenix Channels — no manual refresh.
 
 ### Settings drawer — Linear, add project, and refresh seconds
 
-Open **⚙ Settings**. After Experience and before Automation (visible in Simple and Advanced):
+Open **Settings**. After Experience and before Automation (visible in Simple and Advanced):
 
 1. **Linear** — paste a personal API key into the password field (`#linear-api-key`) and click **Connect** (`phx-submit="connect_linear"`, also `POST /api/v1/linear`). Status becomes **Connected** and shows a last-4 mask (`••••xxxx`). The key is stored in `~/.cymphony/config.json` as `linear_api_key` (file mode `0600`) and stamped onto every project. `LINEAR_API_KEY` is only a fallback when the file has no key. The raw key is never shown again in the UI, flashes, or API responses.
 2. **Projects** — once connected, type-to-filter a Linear project from the `#add-project-slug` Combobox (not a native select), enter a Cymphony name, optionally a GitHub repo URL, and click **Add project** (`phx-submit="add_project"`, also `POST /api/v1/projects`). Advanced add-project fields include a model Combobox; `#add-project-provider` is visible only when the selected agent is `claude` (`preview_add_project`). The project is appended to `config.json`, a temp `WORKFLOW.md` is written, and the orchestrator starts immediately — no daemon restart. Duplicate name or Linear slug is rejected with a visible error.
@@ -496,7 +497,7 @@ All under `/api/v1/`:
 
 | Method | Path | Description |
 |---|---|---|
-| `GET` | `/state` | full snapshot JSON |
+| `GET` | `/state` | full snapshot JSON (`waiting` + `counts.waiting` / `waiting_count`) |
 | `GET` | `/linear` | Linear connect status: `connected`, `masked_key`, `source` (never the raw key) |
 | `POST` | `/linear` | body `{"api_key":"..."}` — validate + persist `linear_api_key`; `202` status or `422` |
 | `GET` | `/linear/projects` | accessible Linear projects `{id,name,slug_id}` (`422` if not connected) |
@@ -511,9 +512,11 @@ All under `/api/v1/`:
 | `POST` | `/concurrency` `?project=Name` | body `{"value": 5}` |
 | `POST` | `/providers` `?project=Name` | body `{"value": "cv1,cz"}` |
 | `POST` | `/agent` `?project=Name` | body `{"kind","model","effort"}` — persist + rewrite project `WORKFLOW.md` so `agent_kind` survives refresh |
+| `POST` | `/queue` `?project=Name` | body `{"order":["LLM-51","LLM-12"]}` — persist sticky waiting order; `202` `{order,project}` or `422` `invalid_queue_order`. **Required** `?project=`. Declared before `/<issue_identifier>`. |
+| `POST` | `/queue-pin` `?project=Name` | body `{"issue":"LLM-51","kind","model","effort"}` — pin agent/model/effort for the next waiting dispatch (empty/`keep` skipped; at least one field); `202` or `422` `invalid_queue_pin`. Does not kill. No Linear writes. Declared before `/<issue_identifier>`. |
 | `GET` | `/completed` `?limit=N` | recent completions ring buffer |
 
-`/linear`, `/linear/projects`, `POST /projects`, and `POST /refresh-interval` are declared before `/<issue_identifier>`. Unsupported methods on those routes return `405`. `POST /linear` never echoes `api_key`.
+`/linear`, `/linear/projects`, `POST /projects`, `POST /api/v1/queue`, `POST /api/v1/queue-pin`, and `POST /refresh-interval` are declared before `/<issue_identifier>`. Unsupported methods on those routes return `405`. `POST /linear` never echoes `api_key`.
 
 ---
 
@@ -560,7 +563,7 @@ Linear  ──poll──>  Cymphony  ──spawn──>  Workspace  ──exec�
 ```
 
 1. **Poll** — every 5 seconds, Cymphony fetches each project's "Todo" issues from Linear
-2. **Dispatch** — for each unclaimed issue, Cymphony picks an available concurrency slot, picks a provider (random from the rotation list), and spawns an `AgentRunner` task
+2. **Dispatch** — after `Queue.reconcile`, the next free slot starts the **leftmost** waiting card (sticky operator order; `Dispatch.sort_for_dispatch` is initial order only). Cymphony picks a provider (random from the rotation list) and spawns an `AgentRunner` task
 3. **Workspace** — the runner creates a fresh per-issue directory, runs your `after_create` hook (e.g. `git clone`), then your `before_run` hook
 4. **Agent** — the runner launches Claude Code with the workflow prompt as the user message, streams stdout, parses tool-use events, and updates the dashboard live
 5. **Termination** — when the issue moves to `Done`, `Closed`, `Cancelled`, or `Duplicate`, Cymphony kills the agent and runs `before_remove` + `after_run` hooks
@@ -598,7 +601,7 @@ Layered:
 - **CLI** (`cli.ex`) — flag parsing, multi-project entry point, background daemon controls
 - **Config** (`cymphony/config.ex`) — reads `~/.cymphony/config.json`, generates per-project `WORKFLOW.md` in `tmp/`, writes runtime updates back
 - **Workflow store** (`workflow_store.ex`) — owns the parsed workflow per project, supports hot reload
-- **Orchestrator** (`orchestrator.ex`) — heart of the dispatch loop, holds `running:` map and `retrying:` queue, enforces concurrency, picks providers, surfaces snapshots
+- **Orchestrator** (`orchestrator.ex`) — heart of the dispatch loop, holds `running:`, `waiting:`, and `retrying:`, enforces concurrency, picks providers, surfaces snapshots
 - **Agent runner** (`agent_runner.ex`) — per-task process, runs lifecycle hooks, calls `Claude.AppServer`
 - **Shell provider** (`cymphony/shell_provider.ex`) — sources `~/.cld` / `.zshrc` / `.bashrc` in a zsh subprocess to resolve `cz`, `cv1`, etc. into env-var maps; cached in `:persistent_term`
 - **Workspace** (`workspace.ex`) — path-safety validation, lifecycle hooks, optional SSH worker, retention sweep

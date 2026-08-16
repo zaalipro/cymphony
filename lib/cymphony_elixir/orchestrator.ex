@@ -23,7 +23,7 @@ defmodule CymphonyElixir.Orchestrator do
 
   alias CymphonyElixir.Cymphony.Config, as: CymphonyConfig
   alias CymphonyElixir.Linear.Issue
-  alias CymphonyElixir.Orchestrator.{Dispatch, Stall, Tokens}
+  alias CymphonyElixir.Orchestrator.{Dispatch, Queue, Stall, Tokens}
   alias CymphonyElixirWeb.ObservabilityPubSub
 
   @continuation_retry_delay_ms 1_000
@@ -56,6 +56,10 @@ defmodule CymphonyElixir.Orchestrator do
       :runtime_agent,
       paused: false,
       running: %{},
+      waiting: [],
+      queue_order: nil,
+      queue_pins: %{},
+      queue_priority_seen: %{},
       recent_completed: [],
       claimed: MapSet.new(),
       retry_attempts: %{},
@@ -77,6 +81,7 @@ defmodule CymphonyElixir.Orchestrator do
     now_ms = System.monotonic_time(:millisecond)
     project_name = Keyword.get(opts, :project_name)
     {config, prompt_template} = load_project_config_from_store(project_name)
+    {queue_order, queue_pins, queue_priority_seen} = load_project_queue(project_name)
 
     state = %State{
       config: config,
@@ -89,6 +94,10 @@ defmodule CymphonyElixir.Orchestrator do
       poll_check_in_progress: false,
       tick_timer_ref: nil,
       tick_token: nil,
+      waiting: [],
+      queue_order: queue_order,
+      queue_pins: queue_pins,
+      queue_priority_seen: queue_priority_seen,
       recent_completed: load_recent_completed(project_name),
       token_totals: @empty_token_totals,
       rate_limits: nil
@@ -289,9 +298,8 @@ defmodule CymphonyElixir.Orchestrator do
     state = reconcile_running_issues(state)
 
     with :ok <- Config.validate!(state.config),
-         {:ok, issues} <- Tracker.fetch_candidate_issues(state.config),
-         true <- available_slots(state) > 0 do
-      choose_issues(issues, state)
+         {:ok, issues} <- Tracker.fetch_candidate_issues(state.config) do
+      attach_and_dispatch_waiting(state, issues)
     else
       {:error, :missing_linear_api_token} ->
         Logger.error("Linear API token missing in WORKFLOW.md")
@@ -329,9 +337,6 @@ defmodule CymphonyElixir.Orchestrator do
 
       {:error, reason} ->
         Logger.error("Failed to fetch from Linear: #{inspect(reason)}")
-        state
-
-      false ->
         state
     end
   end
@@ -393,6 +398,12 @@ defmodule CymphonyElixir.Orchestrator do
   @spec dispatch_issue_for_test(GenServer.server(), Issue.t()) :: :ok
   def dispatch_issue_for_test(server, %Issue{} = issue) do
     GenServer.call(server, {:dispatch_issue_for_test, issue})
+  end
+
+  @doc false
+  @spec run_poll_cycle_for_test(GenServer.server()) :: :ok
+  def run_poll_cycle_for_test(server) do
+    GenServer.call(server, :run_poll_cycle_for_test, 15_000)
   end
 
   @doc false
@@ -573,19 +584,96 @@ defmodule CymphonyElixir.Orchestrator do
 
   defp terminate_task(_pid), do: :ok
 
-  defp choose_issues(issues, state) do
+  defp attach_and_dispatch_waiting(%State{} = state, issues) when is_list(issues) do
+    eligible = filter_waiting_eligible(issues, state)
+    saved_order = state.queue_order
+    prev_seen = state.queue_priority_seen || %{}
+    {ordered, seen} = Queue.reconcile(eligible, saved_order, prev_seen)
+    order_keys = waiting_order_keys(ordered)
+
+    state = %{
+      state
+      | waiting: ordered,
+        queue_order: assign_queue_order(saved_order, order_keys),
+        queue_priority_seen: seen
+    }
+
+    state
+    |> maybe_persist_queue_order(saved_order, prev_seen)
+    |> dispatch_waiting_list()
+  end
+
+  defp filter_waiting_eligible(issues, %State{} = state) do
     active_states = active_state_set(state)
     terminal_states = terminal_state_set(state)
 
+    Enum.filter(issues, &waiting_eligible?(&1, state, active_states, terminal_states))
+  end
+
+  defp waiting_eligible?(%Issue{} = issue, %State{} = state, active_states, terminal_states) do
+    candidate_issue?(issue, active_states, terminal_states) and
+      !todo_issue_blocked_by_non_terminal?(issue, terminal_states) and
+      !MapSet.member?(state.claimed, issue.id) and
+      !Map.has_key?(state.running, issue.id) and
+      !Map.has_key?(state.retry_attempts, issue.id)
+  end
+
+  defp waiting_eligible?(_issue, _state, _active_states, _terminal_states), do: false
+
+  defp assign_queue_order(nil, []), do: nil
+  defp assign_queue_order(nil, keys) when is_list(keys), do: keys
+  defp assign_queue_order(_saved, keys) when is_list(keys), do: keys
+
+  defp waiting_order_keys(issues) when is_list(issues) do
     issues
-    |> Dispatch.sort_for_dispatch()
-    |> Enum.reduce(state, fn issue, state_acc ->
-      if should_dispatch_issue?(issue, state_acc, active_states, terminal_states) do
-        dispatch_issue(state_acc, issue)
-      else
-        state_acc
-      end
-    end)
+    |> Enum.map(&Queue.issue_key/1)
+    |> Enum.reject(&is_nil/1)
+  end
+
+  defp dispatch_waiting_list(%State{waiting: waiting} = state) when is_list(waiting) do
+    walk_waiting_dispatch(state, waiting)
+  end
+
+  defp dispatch_waiting_list(%State{} = state), do: state
+
+  defp walk_waiting_dispatch(%State{} = state, []), do: state
+
+  defp walk_waiting_dispatch(%State{} = state, [issue | rest]) do
+    cond do
+      available_slots(state) == 0 ->
+        state
+
+      not waiting_capacity_available?(issue, state) ->
+        walk_waiting_dispatch(state, rest)
+
+      should_dispatch_issue?(issue, state, active_state_set(state), terminal_state_set(state)) ->
+        state
+        |> spawn_waiting_issue(issue)
+        |> walk_waiting_dispatch(rest)
+
+      true ->
+        walk_waiting_dispatch(state, rest)
+    end
+  end
+
+  defp waiting_capacity_available?(%Issue{} = issue, %State{} = state) do
+    state_slots_available?(issue, state.running, state) and worker_slots_available?(state)
+  end
+
+  defp spawn_waiting_issue(%State{} = state, %Issue{} = issue) do
+    new_state = dispatch_issue(state, issue, nil, nil, from_waiting: true)
+
+    if waiting_issue_consumed?(new_state, issue) do
+      %{new_state | waiting: Enum.reject(new_state.waiting, &(&1.id == issue.id))}
+    else
+      new_state
+    end
+  end
+
+  defp waiting_issue_consumed?(%State{} = state, %Issue{id: issue_id}) do
+    Map.has_key?(state.running, issue_id) or
+      Map.has_key?(state.retry_attempts, issue_id) or
+      MapSet.member?(state.claimed, issue_id)
   end
 
   defp should_dispatch_issue?(
@@ -795,17 +883,66 @@ defmodule CymphonyElixir.Orchestrator do
 
   defp dispatch_run_spec(%State{} = state, issue, opts) do
     resolved = RunSpecResolver.resolve(issue, state_config(state))
-    agent_kind = Keyword.get(opts, :agent_kind_override) || resolved.agent_kind
+    pin = queue_pin_for(state, issue)
+    from_waiting? = Keyword.get(opts, :from_waiting, false)
+    pin_kind = pin_field(pin, :agent_kind)
+    pin_model = pin_field(pin, :model)
+    pin_effort = pin_field(pin, :effort)
+
+    agent_kind =
+      pick_run_spec_field(
+        from_waiting?,
+        pin_kind,
+        Keyword.get(opts, :agent_kind_override),
+        resolved.agent_kind
+      )
+
+    model =
+      pick_run_spec_field(
+        from_waiting?,
+        pin_model,
+        Keyword.get(opts, :model_override),
+        resolved.model
+      )
+
+    effort =
+      pick_run_spec_field(
+        from_waiting?,
+        pin_effort,
+        Keyword.get(opts, :effort_override),
+        resolved.effort
+      )
+
+    source =
+      if pin_applied?(pin_kind, pin_model, pin_effort, agent_kind, model, effort) do
+        :pin
+      else
+        resolved.source
+      end
 
     %{
       resolved: resolved,
+      source: source,
       agent_kind: agent_kind,
       provider:
         Keyword.get(opts, :provider_override) || resolved.provider ||
           select_provider_for_kind(state, agent_kind),
-      model: Keyword.get(opts, :model_override) || resolved.model,
-      effort: Keyword.get(opts, :effort_override) || resolved.effort
+      model: model,
+      effort: effort
     }
+  end
+
+  defp pick_run_spec_field(true, pin, _override, _fallback) when not is_nil(pin), do: pin
+  defp pick_run_spec_field(true, _pin, override, _fallback) when not is_nil(override), do: override
+  defp pick_run_spec_field(true, _pin, _override, fallback), do: fallback
+  defp pick_run_spec_field(false, _pin, override, _fallback) when not is_nil(override), do: override
+  defp pick_run_spec_field(false, pin, _override, _fallback) when not is_nil(pin), do: pin
+  defp pick_run_spec_field(false, _pin, _override, fallback), do: fallback
+
+  defp pin_applied?(pin_kind, pin_model, pin_effort, agent_kind, model, effort) do
+    (is_binary(pin_kind) and pin_kind == agent_kind) or
+      (is_binary(pin_model) and pin_model == model) or
+      (is_binary(pin_effort) and pin_effort == effort)
   end
 
   defp start_issue_agent_task(state, issue, attempt, recipient, worker_host, spec) do
@@ -879,7 +1016,9 @@ defmodule CymphonyElixir.Orchestrator do
   end
 
   defp spawned_issue_log_detail(worker_host, spec, attempt) do
-    "worker_host=#{worker_host || "local"} provider=#{spec.provider || "default"} agent=#{spec.agent_kind} model=#{spec.model || "default"} effort=#{spec.effort || "default"} source=#{spec.resolved.source} attempt=#{inspect(attempt)}"
+    source = Map.get(spec, :source) || spec.resolved.source
+
+    "worker_host=#{worker_host || "local"} provider=#{spec.provider || "default"} agent=#{spec.agent_kind} model=#{spec.model || "default"} effort=#{spec.effort || "default"} source=#{source} attempt=#{inspect(attempt)}"
   end
 
   defp handle_spawn_failure(state, issue, attempt, worker_host, reason, opts) do
@@ -1488,6 +1627,27 @@ defmodule CymphonyElixir.Orchestrator do
     :exit, _ -> :unavailable
   end
 
+  @spec reorder_queue(GenServer.server(), [String.t()]) ::
+          :ok | {:error, :invalid_queue_order} | :unavailable
+  def reorder_queue(server, order) when is_list(order) do
+    GenServer.call(server, {:reorder_queue, order})
+  catch
+    :exit, _ -> :unavailable
+  end
+
+  def reorder_queue(_server, _order), do: {:error, :invalid_queue_order}
+
+  @spec set_queue_run_spec(GenServer.server(), String.t(), map()) ::
+          :ok | {:error, :invalid_queue_pin} | :unavailable
+  def set_queue_run_spec(server, issue_key, pin)
+      when is_binary(issue_key) and is_map(pin) do
+    GenServer.call(server, {:set_queue_run_spec, issue_key, pin})
+  catch
+    :exit, _ -> :unavailable
+  end
+
+  def set_queue_run_spec(_server, _issue_key, _pin), do: {:error, :invalid_queue_pin}
+
   @spec snapshot() :: map() | :timeout | :unavailable
   def snapshot, do: snapshot(__MODULE__, 15_000)
 
@@ -1519,16 +1679,16 @@ defmodule CymphonyElixir.Orchestrator do
           model: Map.get(metadata, :model),
           effort: Map.get(metadata, :effort),
           workspace_path: Map.get(metadata, :workspace_path),
-          session_id: metadata.session_id,
+          session_id: Map.get(metadata, :session_id),
           agent_os_pid: Map.get(metadata, :agent_os_pid),
           input_tokens: Map.get(metadata, :input_tokens, 0),
           output_tokens: Map.get(metadata, :output_tokens, 0),
           total_tokens: Map.get(metadata, :total_tokens, 0),
           turn_count: Map.get(metadata, :turn_count, 0),
           started_at: metadata.started_at,
-          last_agent_timestamp: metadata.last_agent_timestamp,
-          last_agent_message: metadata.last_agent_message,
-          last_agent_event: metadata.last_agent_event,
+          last_agent_timestamp: Map.get(metadata, :last_agent_timestamp),
+          last_agent_message: Map.get(metadata, :last_agent_message),
+          last_agent_event: Map.get(metadata, :last_agent_event),
           log_events: Map.get(metadata, :log_events, []),
           runtime_seconds: running_seconds(metadata.started_at, now)
         }
@@ -1548,10 +1708,13 @@ defmodule CymphonyElixir.Orchestrator do
         }
       end)
 
+    waiting = snapshot_waiting_rows(state)
+
     {:reply,
      %{
        project_name: state.project_name,
        running: running,
+       waiting: waiting,
        retrying: retrying,
        recent_completed: state.recent_completed,
        token_totals: state.token_totals,
@@ -1610,6 +1773,11 @@ defmodule CymphonyElixir.Orchestrator do
 
   def handle_call({:dispatch_issue_for_test, issue}, _from, state) do
     {:reply, :ok, do_dispatch_issue(state, issue, nil, nil, [])}
+  end
+
+  def handle_call(:run_poll_cycle_for_test, _from, state) do
+    state = refresh_runtime_config(state)
+    {:reply, :ok, maybe_dispatch(state)}
   end
 
   def handle_call({:retry_issue_now, issue_id}, _from, state) do
@@ -1729,6 +1897,41 @@ defmodule CymphonyElixir.Orchestrator do
         notify_dashboard()
         {:reply, :ok, new_state}
     end
+  end
+
+  def handle_call({:reorder_queue, order}, _from, state) when is_list(order) do
+    if valid_queue_order?(order) do
+      waiting = Queue.apply_drag(state.waiting || [], order)
+      persist_project_queue(state.project_name, %{"queue_order" => order})
+      notify_dashboard()
+      {:reply, :ok, %{state | waiting: waiting, queue_order: order}}
+    else
+      {:reply, {:error, :invalid_queue_order}, state}
+    end
+  end
+
+  def handle_call({:reorder_queue, _order}, _from, state) do
+    {:reply, {:error, :invalid_queue_order}, state}
+  end
+
+  def handle_call({:set_queue_pin, issue_key, pin}, from, state) do
+    handle_call({:set_queue_run_spec, issue_key, pin}, from, state)
+  end
+
+  def handle_call({:set_queue_run_spec, issue_key, pin}, _from, state)
+      when is_binary(issue_key) and issue_key != "" and is_map(pin) do
+    queue_pins = apply_queue_pin(state.queue_pins, issue_key, pin)
+
+    persist_project_queue(state.project_name, %{
+      "queue_pins" => persistable_queue_pins(queue_pins)
+    })
+
+    notify_dashboard()
+    {:reply, :ok, %{state | queue_pins: queue_pins}}
+  end
+
+  def handle_call({:set_queue_run_spec, _issue_key, _pin}, _from, state) do
+    {:reply, {:error, :invalid_queue_pin}, state}
   end
 
   defp integrate_agent_update(running_entry, %{event: event, timestamp: timestamp} = update) do
@@ -2138,4 +2341,255 @@ defmodule CymphonyElixir.Orchestrator do
   end
 
   defp running_seconds(_started_at, _now), do: 0
+
+  defp snapshot_waiting_rows(%State{} = state) do
+    waiting = state.waiting || []
+
+    Enum.flat_map(waiting, fn
+      %Issue{} = issue ->
+        pin = queue_pin_for(state, issue)
+
+        [
+          %{
+            issue_id: issue.id,
+            identifier: issue.identifier,
+            issue: issue,
+            priority: issue.priority,
+            state: issue.state,
+            created_at: issue.created_at,
+            agent_kind: pin_field(pin, :agent_kind),
+            model: pin_field(pin, :model),
+            effort: pin_field(pin, :effort)
+          }
+        ]
+
+      _ ->
+        []
+    end)
+  end
+
+  defp load_project_queue(project_name) do
+    case CymphonyConfig.load() do
+      {:ok, config} ->
+        case project_for_queue(config, project_name) do
+          {:ok, project} -> parse_project_queue(project)
+          _ -> empty_queue_fields()
+        end
+
+      _ ->
+        empty_queue_fields()
+    end
+  end
+
+  defp empty_queue_fields, do: {nil, %{}, %{}}
+
+  defp project_for_queue(config, project_name) when is_binary(project_name) do
+    CymphonyConfig.find_project(config, project_name)
+  end
+
+  defp project_for_queue(config, _project_name) do
+    case CymphonyConfig.projects(config) do
+      [project] when is_map(project) -> {:ok, project}
+      _ -> {:error, :project_not_found}
+    end
+  end
+
+  defp parse_project_queue(project) when is_map(project) do
+    {
+      parse_loaded_queue_order(project),
+      parse_loaded_queue_pins(project),
+      parse_loaded_priority_seen(project)
+    }
+  end
+
+  defp parse_project_queue(_project), do: empty_queue_fields()
+
+  defp parse_loaded_queue_order(project) do
+    case Map.fetch(project, "queue_order") do
+      {:ok, order} when is_list(order) -> Enum.filter(order, &is_binary/1)
+      _ -> nil
+    end
+  end
+
+  defp parse_loaded_queue_pins(project) do
+    case Map.get(project, "queue_pins") do
+      pins when is_map(pins) ->
+        Enum.reduce(pins, %{}, fn
+          {key, pin}, acc when is_binary(key) and is_map(pin) ->
+            parsed = normalize_pin_map(pin)
+
+            if map_size(parsed) == 0, do: acc, else: Map.put(acc, key, parsed)
+
+          _, acc ->
+            acc
+        end)
+
+      _ ->
+        %{}
+    end
+  end
+
+  defp parse_loaded_priority_seen(project) do
+    case Map.get(project, "queue_priority_seen") do
+      seen when is_map(seen) ->
+        Enum.reduce(seen, %{}, fn
+          {key, value}, acc when is_binary(key) and (is_integer(value) or is_nil(value)) ->
+            Map.put(acc, key, value)
+
+          _, acc ->
+            acc
+        end)
+
+      _ ->
+        %{}
+    end
+  end
+
+  defp maybe_persist_queue_order(%State{} = state, prev_order, prev_seen) do
+    if persist_queue_order?(state, prev_order, prev_seen) do
+      persist_project_queue(state.project_name, %{
+        "queue_order" => state.queue_order || [],
+        "queue_priority_seen" => state.queue_priority_seen || %{}
+      })
+    end
+
+    state
+  end
+
+  defp persist_queue_order?(%State{} = state, prev_order, prev_seen) do
+    changed? = state.queue_order != prev_order or state.queue_priority_seen != prev_seen
+    changed? and not (is_nil(prev_order) and state.queue_order in [nil, []])
+  end
+
+  defp persist_project_queue(project_name, attrs) when is_map(attrs) and map_size(attrs) > 0 do
+    case CymphonyConfig.update_project_queue(project_name, attrs) do
+      :ok ->
+        :ok
+
+      {:ok, _} ->
+        :ok
+
+      {:error, reason} ->
+        Logger.warning("event=\"queue.persist\" status=error reason=#{inspect(reason)}")
+        :ok
+    end
+  end
+
+  defp persist_project_queue(_project_name, _attrs), do: :ok
+
+  defp valid_queue_order?(order) when is_list(order) do
+    Enum.all?(order, fn key -> is_binary(key) and key != "" end)
+  end
+
+  defp valid_queue_order?(_order), do: false
+
+  defp queue_pin_for(%State{queue_pins: pins}, %Issue{} = issue) when is_map(pins) do
+    Map.get(pins, Queue.issue_key(issue)) || Map.get(pins, issue.id) || %{}
+  end
+
+  defp queue_pin_for(_state, _issue), do: %{}
+
+  defp pin_field(pin, :agent_kind) when is_map(pin) do
+    value = pin_raw(pin, :agent_kind) || pin_raw(pin, "agent_kind") || pin_raw(pin, "kind")
+
+    if Agent.known_kind?(value), do: value, else: nil
+  end
+
+  defp pin_field(pin, key) when is_map(pin) and is_atom(key) do
+    value = pin_raw(pin, key) || pin_raw(pin, Atom.to_string(key))
+    if skip_pin_value?(value), do: nil, else: value
+  end
+
+  defp pin_field(_pin, _key), do: nil
+
+  defp pin_raw(pin, key) do
+    case Map.get(pin, key) do
+      value when is_binary(value) -> value
+      _ -> nil
+    end
+  end
+
+  defp skip_pin_value?(value) when value in [nil, "", "keep"], do: true
+  defp skip_pin_value?(value) when is_binary(value), do: false
+  defp skip_pin_value?(_value), do: true
+
+  defp merge_queue_pin(existing, incoming) when is_map(existing) and is_map(incoming) do
+    existing
+    |> normalize_pin_map()
+    |> put_pin_field(:agent_kind, incoming_pin_value(incoming, :agent_kind))
+    |> put_pin_field(:model, incoming_pin_value(incoming, :model))
+    |> put_pin_field(:effort, incoming_pin_value(incoming, :effort))
+  end
+
+  defp merge_queue_pin(_existing, incoming) when is_map(incoming) do
+    merge_queue_pin(%{}, incoming)
+  end
+
+  defp incoming_pin_value(incoming, :agent_kind) do
+    value =
+      pin_raw(incoming, :agent_kind) || pin_raw(incoming, "agent_kind") ||
+        pin_raw(incoming, "kind") || pin_raw(incoming, :kind)
+
+    cond do
+      skip_pin_value?(value) -> :skip
+      Agent.known_kind?(value) -> value
+      true -> :skip
+    end
+  end
+
+  defp incoming_pin_value(incoming, key) do
+    value = pin_raw(incoming, key) || pin_raw(incoming, Atom.to_string(key))
+    if skip_pin_value?(value), do: :skip, else: value
+  end
+
+  defp put_pin_field(pin, _key, :skip), do: pin
+  defp put_pin_field(pin, key, value), do: Map.put(pin, key, value)
+
+  defp normalize_pin_map(pin) when is_map(pin) do
+    %{}
+    |> put_normalized_pin(:agent_kind, pin_field(pin, :agent_kind))
+    |> put_normalized_pin(:model, pin_field(pin, :model))
+    |> put_normalized_pin(:effort, pin_field(pin, :effort))
+  end
+
+  defp normalize_pin_map(_pin), do: %{}
+
+  defp put_normalized_pin(pin, _key, nil), do: pin
+  defp put_normalized_pin(pin, key, value), do: Map.put(pin, key, value)
+
+  defp json_pin(pin) when is_map(pin) do
+    %{}
+    |> maybe_put_json_pin("agent_kind", pin_field(pin, :agent_kind))
+    |> maybe_put_json_pin("model", pin_field(pin, :model))
+    |> maybe_put_json_pin("effort", pin_field(pin, :effort))
+  end
+
+  defp maybe_put_json_pin(map, _key, nil), do: map
+  defp maybe_put_json_pin(map, key, value), do: Map.put(map, key, value)
+
+  defp apply_queue_pin(pins, issue_key, pin) when is_map(pins) and is_map(pin) do
+    if pin == %{} do
+      Map.delete(pins, issue_key)
+    else
+      merged = merge_queue_pin(Map.get(pins, issue_key, %{}), pin)
+
+      if map_size(merged) == 0 do
+        Map.delete(pins, issue_key)
+      else
+        Map.put(pins, issue_key, merged)
+      end
+    end
+  end
+
+  defp persistable_queue_pins(pins) when is_map(pins) do
+    Enum.reduce(pins, %{}, fn {key, pin}, acc ->
+      encoded = json_pin(pin)
+
+      if encoded == %{} do
+        acc
+      else
+        Map.put(acc, to_string(key), encoded)
+      end
+    end)
+  end
 end

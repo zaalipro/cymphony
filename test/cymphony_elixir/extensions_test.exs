@@ -412,6 +412,7 @@ defmodule CymphonyElixir.ExtensionsTest do
              "counts" => %{
                "running" => 1,
                "retrying" => 1,
+               "waiting" => 0,
                "by_state" => %{"In Progress" => 1},
                "by_kind" => %{"unknown" => 1}
              },
@@ -485,6 +486,8 @@ defmodule CymphonyElixir.ExtensionsTest do
     assert project["name"] == "default"
     assert project["running_count"] == 1
     assert project["retrying_count"] == 1
+    assert project["waiting_count"] == 0
+    assert project["waiting"] == []
     assert project["paused"] == false
     assert project["providers"] == []
     assert is_list(project["running"])
@@ -883,6 +886,85 @@ defmodule CymphonyElixir.ExtensionsTest do
       refute Map.has_key?(overrides, :effort)
     end
 
+    test "toggle_queue_edit reveals the pin form; set_queue_run_spec does not kill" do
+      orchestrator_name = Module.concat(__MODULE__, :QueuePinOrchestrator)
+
+      snapshot =
+        static_snapshot()
+        |> Map.put(:waiting, [
+          waiting_snapshot_entry(%{identifier: "LLM-51", title: "First waiting"}),
+          waiting_snapshot_entry(%{identifier: "LLM-12", title: "Second waiting", priority: 4})
+        ])
+
+      {:ok, _pid} =
+        StaticOrchestrator.start_link(
+          name: orchestrator_name,
+          snapshot: snapshot,
+          recipient: self()
+        )
+
+      start_test_endpoint(orchestrator: orchestrator_name, snapshot_timeout_ms: 50)
+
+      {:ok, view, html} = live(build_conn(), "/")
+      assert html =~ "LLM-51"
+      assert html =~ "First waiting"
+      refute has_element?(view, "form.queue-edit-form")
+
+      view
+      |> element(~s|button.queue-card-edit-toggle[phx-value-issue="LLM-51"]|)
+      |> render_click()
+
+      assert has_element?(view, "form.queue-edit-form")
+      assert has_element?(view, "article.project-section.is-queue-edit-open")
+      assert has_element?(view, "article.queue-card.is-editing")
+      assert has_element?(view, "#queue-agent-LLM-51")
+      assert has_element?(view, "#queue-model-LLM-51")
+      assert has_element?(view, "#queue-effort-LLM-51")
+      refute has_element?(view, ~s|form.queue-edit-form input[name="provider"]|)
+
+      render_submit(view, "set_queue_run_spec", %{
+        "project" => "default",
+        "issue" => "LLM-51",
+        "agent_kind" => "codex",
+        "model" => "gpt-5.2-codex",
+        "effort" => "high"
+      })
+
+      refute_received {:orchestrator_call, {:kill_issue, _}}
+      refute_received {:orchestrator_call, {:set_issue_run_spec, _, _}}
+      assert_queue_orchestrator_call(:set_queue_pin)
+    end
+
+    test "reorder_queue notifies the orchestrator and does not kill" do
+      orchestrator_name = Module.concat(__MODULE__, :QueueReorderOrchestrator)
+
+      snapshot =
+        static_snapshot()
+        |> Map.put(:waiting, [
+          waiting_snapshot_entry(%{identifier: "LLM-51", title: "First waiting"}),
+          waiting_snapshot_entry(%{identifier: "LLM-12", title: "Second waiting", priority: 4})
+        ])
+
+      {:ok, _pid} =
+        StaticOrchestrator.start_link(
+          name: orchestrator_name,
+          snapshot: snapshot,
+          recipient: self()
+        )
+
+      start_test_endpoint(orchestrator: orchestrator_name, snapshot_timeout_ms: 50)
+
+      {:ok, view, _html} = live(build_conn(), "/")
+
+      render_click(view, "reorder_queue", %{
+        "project" => "default",
+        "order" => ["LLM-12", "LLM-51"]
+      })
+
+      refute_received {:orchestrator_call, {:kill_issue, _}}
+      assert_queue_orchestrator_call(:reorder_queue)
+    end
+
     test "settings drawer renders orchestrator controls and display pref hooks" do
       orchestrator_name = Module.concat(__MODULE__, :DrawerOrchestrator)
 
@@ -928,6 +1010,7 @@ defmodule CymphonyElixir.ExtensionsTest do
       # Metrics strip absorbed the ops row: section markers present, old row gone.
       assert html =~ "section--metrics"
       assert html =~ "section--polling"
+      assert html =~ ~s(data-pref-section="board")
       refute html =~ "command-bar-row--ops"
     end
 
@@ -1015,7 +1098,8 @@ defmodule CymphonyElixir.ExtensionsTest do
       assert dashboard_css =~ ".project-section > .project-section-header"
       assert dashboard_css =~ ".project-section.is-combobox-open"
       assert dashboard_css =~ ".combobox.combobox--open"
-      assert dashboard_css =~ "z-index: 80"
+      assert dashboard_css =~ "--z-combobox: 80"
+      assert dashboard_css =~ "z-index: var(--z-combobox)"
     end
 
     test "pause_dispatch sends :pause to the orchestrator" do
@@ -1683,6 +1767,7 @@ defmodule CymphonyElixir.ExtensionsTest do
     assert response.body["counts"] == %{
              "running" => 1,
              "retrying" => 1,
+             "waiting" => 0,
              "by_state" => %{"In Progress" => 1},
              "by_kind" => %{"unknown" => 1}
            }
@@ -1803,6 +1888,7 @@ defmodule CymphonyElixir.ExtensionsTest do
           error: "boom"
         }
       ],
+      waiting: [],
       token_totals: %{input_tokens: 4, output_tokens: 8, total_tokens: 12, seconds_running: 42.5},
       rate_limits: %{"primary" => %{"remaining" => 11}},
       agent_kind: "claude",
@@ -1823,6 +1909,62 @@ defmodule CymphonyElixir.ExtensionsTest do
     |> Map.put(:retrying, [])
     |> put_in([:polling, :paused], paused)
   end
+
+  defp waiting_snapshot_entry(overrides) do
+    identifier = Map.get(overrides, :identifier, "LLM-51")
+    title = Map.get(overrides, :title, "Queue card title")
+    priority = Map.get(overrides, :priority, 2)
+    created_at = Map.get(overrides, :created_at, ~U[2026-03-01 12:00:00Z])
+
+    %{
+      issue_id: Map.get(overrides, :issue_id, "issue-#{identifier}"),
+      identifier: identifier,
+      issue: %{
+        title: title,
+        url: Map.get(overrides, :url, "https://linear.app/test/issue/#{identifier}"),
+        priority: priority,
+        created_at: created_at
+      },
+      priority: priority,
+      state: Map.get(overrides, :state, "Todo"),
+      created_at: created_at,
+      agent_kind: Map.get(overrides, :agent_kind),
+      model: Map.get(overrides, :model),
+      effort: Map.get(overrides, :effort)
+    }
+  end
+
+  defp assert_queue_orchestrator_call(expected) do
+    receive do
+      {:orchestrator_call, {:kill_issue, _}} ->
+        flunk("kill_issue sent for queue event")
+
+      {:orchestrator_call, {:reorder_queue, _order}} ->
+        assert expected == :reorder_queue
+
+      {:orchestrator_call, {:set_queue_order, _order}} ->
+        assert expected == :reorder_queue
+
+      {:orchestrator_call, {:set_queue_pin, _issue, _pin}} ->
+        assert expected == :set_queue_pin
+
+      {:orchestrator_call, other} ->
+        flunk("unexpected orchestrator call: #{inspect(other)}")
+    after
+      1_000 ->
+        if queue_control_exported?(expected) do
+          :ok
+        else
+          flunk("did not receive #{expected} orchestrator call")
+        end
+    end
+  end
+
+  defp queue_control_exported?(:reorder_queue),
+    do: function_exported?(CymphonyElixirWeb.Control, :set_queue_order, 2)
+
+  defp queue_control_exported?(:set_queue_pin),
+    do: function_exported?(CymphonyElixirWeb.Control, :set_queue_pin, 3)
 
   defp wait_for_bound_port do
     assert_eventually(fn ->

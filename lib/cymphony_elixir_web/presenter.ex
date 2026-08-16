@@ -17,35 +17,13 @@ defmodule CymphonyElixirWeb.Presenter do
         case Orchestrator.snapshot(orchestrator, snapshot_timeout_ms) do
           %{} = snapshot ->
             project_name = Map.get(snapshot, :project_name) || "default"
-            polling = Map.get(snapshot, :polling) || %{}
-
-            running =
-              snapshot.running
-              |> Enum.map(&Map.put(&1, :project_name, project_name))
-              |> Enum.map(&running_entry_payload/1)
-
-            retrying =
-              snapshot.retrying
-              |> Enum.map(&Map.put(&1, :project_name, project_name))
-              |> Enum.map(&retry_entry_payload/1)
-
-            project = %{
-              name: project_name,
-              running: running,
-              retrying: retrying,
-              running_count: length(running),
-              retrying_count: length(retrying),
-              providers: Map.get(snapshot, :providers, []),
-              agent_kind: Map.get(snapshot, :agent_kind),
-              agent_model: Map.get(snapshot, :agent_model),
-              agent_effort: Map.get(snapshot, :agent_effort),
-              paused: Map.get(polling, :paused, false),
-              max_concurrent_agents: Map.get(polling, :max_concurrent_agents)
-            }
+            project = project_from_snapshot(project_name, snapshot)
+            running = project.running
+            retrying = project.retrying
 
             %{
               generated_at: generated_at,
-              counts: payload_counts(running, retrying),
+              counts: payload_counts(running, retrying, project.waiting),
               running: running,
               retrying: retrying,
               recent_completed:
@@ -70,39 +48,16 @@ defmodule CymphonyElixirWeb.Presenter do
 
         projects =
           Enum.map(snapshots, fn %{project_name: name, snapshot: snap} ->
-            polling = Map.get(snap, :polling) || %{}
-
-            running =
-              snap.running
-              |> Enum.map(&Map.put(&1, :project_name, name))
-              |> Enum.map(&running_entry_payload/1)
-
-            retrying =
-              snap.retrying
-              |> Enum.map(&Map.put(&1, :project_name, name))
-              |> Enum.map(&retry_entry_payload/1)
-
-            %{
-              name: name,
-              running: running,
-              retrying: retrying,
-              running_count: length(running),
-              retrying_count: length(retrying),
-              providers: Map.get(snap, :providers, []),
-              agent_kind: Map.get(snap, :agent_kind),
-              agent_model: Map.get(snap, :agent_model),
-              agent_effort: Map.get(snap, :agent_effort),
-              paused: Map.get(polling, :paused, false),
-              max_concurrent_agents: Map.get(polling, :max_concurrent_agents)
-            }
+            project_from_snapshot(name, snap)
           end)
 
         flat_running = Enum.flat_map(projects, & &1.running)
         flat_retrying = Enum.flat_map(projects, & &1.retrying)
+        flat_waiting = Enum.flat_map(projects, & &1.waiting)
 
         %{
           generated_at: generated_at,
-          counts: payload_counts(flat_running, flat_retrying),
+          counts: payload_counts(flat_running, flat_retrying, flat_waiting),
           running: flat_running,
           retrying: flat_retrying,
           recent_completed: Enum.map(merged.recent_completed, &completed_entry_payload/1),
@@ -431,6 +386,70 @@ defmodule CymphonyElixirWeb.Presenter do
     }
   end
 
+  defp waiting_entry_payload(entry) when is_map(entry) do
+    %{
+      issue_id: first_present([Map.get(entry, :issue_id), issue_field(entry, :id), Map.get(entry, :id)]),
+      issue_identifier:
+        first_present([
+          Map.get(entry, :identifier),
+          Map.get(entry, :issue_identifier),
+          issue_field(entry, :identifier)
+        ]),
+      issue_title: first_present([issue_field(entry, :title), Map.get(entry, :issue_title), Map.get(entry, :title)]),
+      issue_url: first_present([issue_field(entry, :url), Map.get(entry, :issue_url), Map.get(entry, :url)]),
+      priority: first_present([issue_field(entry, :priority), Map.get(entry, :priority)]),
+      state: first_present([Map.get(entry, :state), issue_field(entry, :state)]),
+      created_at: waiting_created_at(first_present([issue_field(entry, :created_at), Map.get(entry, :created_at)])),
+      agent_kind: Map.get(entry, :agent_kind),
+      model: Map.get(entry, :model),
+      effort: Map.get(entry, :effort)
+    }
+  end
+
+  defp waiting_created_at(%DateTime{} = datetime), do: iso8601(datetime)
+  defp waiting_created_at(value) when is_binary(value), do: value
+  defp waiting_created_at(_value), do: nil
+
+  defp first_present(values) when is_list(values) do
+    Enum.find(values, &(not is_nil(&1)))
+  end
+
+  defp project_from_snapshot(project_name, snapshot) do
+    polling = Map.get(snapshot, :polling) || %{}
+
+    running =
+      snapshot.running
+      |> Enum.map(&Map.put(&1, :project_name, project_name))
+      |> Enum.map(&running_entry_payload/1)
+
+    retrying =
+      snapshot.retrying
+      |> Enum.map(&Map.put(&1, :project_name, project_name))
+      |> Enum.map(&retry_entry_payload/1)
+
+    waiting =
+      case Map.get(snapshot, :waiting, []) do
+        list when is_list(list) -> Enum.map(list, &waiting_entry_payload/1)
+        _ -> []
+      end
+
+    %{
+      name: project_name,
+      running: running,
+      retrying: retrying,
+      waiting: waiting,
+      running_count: length(running),
+      retrying_count: length(retrying),
+      waiting_count: length(waiting),
+      providers: Map.get(snapshot, :providers, []),
+      agent_kind: Map.get(snapshot, :agent_kind),
+      agent_model: Map.get(snapshot, :agent_model),
+      agent_effort: Map.get(snapshot, :agent_effort),
+      paused: Map.get(polling, :paused, false),
+      max_concurrent_agents: Map.get(polling, :max_concurrent_agents)
+    }
+  end
+
   defp issue_field(entry, key) do
     case Map.get(entry, :issue) do
       %{} = issue -> Map.get(issue, key)
@@ -591,12 +610,13 @@ defmodule CymphonyElixirWeb.Presenter do
     }
   end
 
-  defp payload_counts(running, retrying) do
+  defp payload_counts(running, retrying, waiting) do
     breakdowns = count_breakdowns(running)
 
     %{
       running: length(running),
       retrying: length(retrying),
+      waiting: length(waiting),
       by_state: breakdowns.by_state,
       by_kind: breakdowns.by_kind
     }

@@ -50,6 +50,7 @@ defmodule CymphonyElixir.TestSupport do
           Application.delete_env(:cymphony_elixir, :workflow_file_path)
           Application.delete_env(:cymphony_elixir, :server_port_override)
           Application.delete_env(:cymphony_elixir, :memory_tracker_issues)
+          Application.delete_env(:cymphony_elixir, :memory_tracker_error)
           Application.delete_env(:cymphony_elixir, :memory_tracker_recipient)
           File.rm_rf(workflow_root)
         end)
