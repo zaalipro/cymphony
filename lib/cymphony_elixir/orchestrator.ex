@@ -290,16 +290,13 @@ defmodule CymphonyElixir.Orchestrator do
     {:noreply, state}
   end
 
-  defp maybe_dispatch(%State{paused: true} = state) do
-    reconcile_running_issues(state)
-  end
-
   defp maybe_dispatch(%State{} = state) do
     state = reconcile_running_issues(state)
 
     with :ok <- Config.validate!(state.config),
          {:ok, issues} <- Tracker.fetch_candidate_issues(state.config) do
-      attach_and_dispatch_waiting(state, issues)
+      state = attach_waiting(state, issues)
+      if state.paused, do: state, else: dispatch_waiting_list(state)
     else
       {:error, :missing_linear_api_token} ->
         Logger.error("Linear API token missing in WORKFLOW.md")
@@ -584,7 +581,7 @@ defmodule CymphonyElixir.Orchestrator do
 
   defp terminate_task(_pid), do: :ok
 
-  defp attach_and_dispatch_waiting(%State{} = state, issues) when is_list(issues) do
+  defp attach_waiting(%State{} = state, issues) when is_list(issues) do
     eligible = filter_waiting_eligible(issues, state)
     saved_order = state.queue_order
     prev_seen = state.queue_priority_seen || %{}
@@ -598,9 +595,7 @@ defmodule CymphonyElixir.Orchestrator do
         queue_priority_seen: seen
     }
 
-    state
-    |> maybe_persist_queue_order(saved_order, prev_seen)
-    |> dispatch_waiting_list()
+    maybe_persist_queue_order(state, saved_order, prev_seen)
   end
 
   defp filter_waiting_eligible(issues, %State{} = state) do

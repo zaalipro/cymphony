@@ -879,16 +879,17 @@ Tick sequence:
 
 1. Reconcile running issues.
 2. Run dispatch preflight validation.
-3. When not paused, fetch candidate issues from the tracker using active states
-   (always fetch, including when `available_slots == 0`). Paused ticks skip fetch
-   and **must keep the last `waiting` list**. Fetch or config errors also keep
-   last `waiting`.
+3. Fetch candidate issues from the tracker using active states (always fetch,
+   including when paused and when `available_slots == 0`). Fetch or config
+   errors keep last `waiting`.
 4. After a successful fetch, filter waiting-eligible issues and run
    `Queue.reconcile` (sticky operator order). Assign `State.waiting`. Do not
    claim waiting ids. Do not re-sort via `Dispatch.sort_for_dispatch` once a
-   saved or reconciled order exists.
-5. Dispatch from the **leftmost** waiting card while global slots remain
-   (Section 8.2). Skip a head only when per-state or per-host slots are full.
+   saved or reconciled order exists. Canceled / no-longer-eligible cards drop
+   off; newly Todo issues appear. Dashboard Refresh uses this same path.
+5. When **not** paused, dispatch from the **leftmost** waiting card while
+   global slots remain (Section 8.2). Skip a head only when per-state or
+   per-host slots are full. Paused ticks refresh `waiting` and must not spawn.
 6. Notify observability/status consumers of state changes.
 
 If per-tick validation fails, dispatch is skipped for that tick, but reconciliation still happens
@@ -970,16 +971,16 @@ that card only). Persist across daemon restart.
 
 #### Dispatch consumes leftmost waiting
 
-`maybe_dispatch` always fetches when not paused (including `available_slots == 0`). After
-a successful fetch, filter eligible, `Queue.reconcile`, assign `State.waiting`. Then walk
-leftmost:
+`maybe_dispatch` always fetches (including when paused and when `available_slots == 0`). After
+a successful fetch, filter eligible, `Queue.reconcile`, assign `State.waiting`. When not
+paused, walk leftmost:
 
 - If global slots are `0`, stop dispatching (keep remaining `waiting`).
 - If the head fails **only** `state_slots_available?` or `worker_slots_available?`, skip
   that card (leave it on `waiting`) and try the next.
 - If `should_dispatch`, spawn (claim only then) and drop the card from `waiting`.
 
-Paused ticks skip fetch and **must keep last `waiting`**. Fetch/config errors keep last
+Paused ticks still fetch and rebuild `waiting`, but must not spawn. Fetch/config errors keep last
 `waiting`. Next free slot starts the leftmost waiting card.
 
 #### Per-issue run spec resolution
@@ -2349,11 +2350,6 @@ on_tick(state):
     schedule_tick(state.poll_interval_ms)
     return state  # keep last waiting
 
-  if paused:
-    notify_observers()
-    schedule_tick(state.poll_interval_ms)
-    return state  # skip fetch; keep last waiting
-
   issues = tracker.fetch_candidate_issues()
   if issues failed:
     log_tracker_error()
@@ -2361,7 +2357,7 @@ on_tick(state):
     schedule_tick(state.poll_interval_ms)
     return state  # keep last waiting
 
-  # always fetch when not paused, including available_slots == 0
+  # always fetch, including when paused and available_slots == 0
   eligible = filter_waiting_eligible(issues)
     # candidate_issue? and not todo_blocked and not claimed
     # and not running and not retry_attempts
@@ -2369,6 +2365,11 @@ on_tick(state):
     # sets state.waiting; may persist queue_order + queue_priority_seen
     # do not claim waiting ids
     # do not re-sort via sort_for_dispatch once a saved/reconciled order exists
+
+  if paused:
+    notify_observers()
+    schedule_tick(state.poll_interval_ms)
+    return state  # waiting refreshed; do not spawn
 
   for issue in state.waiting:  # leftmost first
     if no_global_slots(state):
