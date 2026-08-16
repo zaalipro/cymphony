@@ -9,6 +9,7 @@ defmodule CymphonyElixirWeb.ControlTest do
   alias CymphonyElixir.ProjectSupervisor
   alias CymphonyElixir.WorkflowStore
   alias CymphonyElixirWeb.Control
+  alias CymphonyElixirWeb.Endpoint
 
   @fake_key "lin_api_fake"
   @test_key "lin_test"
@@ -291,6 +292,31 @@ defmodule CymphonyElixirWeb.ControlTest do
       assert alpha["queue_pins"]["LLM-51"]["model"] == "opus"
     end
 
+    test "an :all fan-out halts on the first project whose persist fails", %{tmp: tmp} do
+      start_orch!("alpha")
+      start_orch!("beta")
+
+      # Every persist now fails on load, so the reduce halts at the first project.
+      File.rm!(Path.join(tmp, "config.json"))
+
+      assert {:error, reason} = Control.set_concurrency(:all, 4)
+      assert reason =~ "Failed to read"
+
+      assert_receive {:orch, _, {:set_concurrency, 4}}
+      refute_receive {:orch, _, {:set_concurrency, 4}}, 100
+    end
+
+    test "set_queue_pin skips blank and \"keep\" fields on the incoming pin", %{tmp: tmp} do
+      start_orch!("alpha")
+
+      pin = %{"agent_kind" => "codex", "model" => "   ", "effort" => "keep"}
+      assert Control.set_queue_pin({:project, "alpha"}, "LLM-51", pin) == :ok
+
+      {:ok, cfg} = Jason.decode(File.read!(Path.join(tmp, "config.json")))
+      alpha = Enum.find(cfg["projects"], &(&1["name"] == "alpha"))
+      assert alpha["queue_pins"]["LLM-51"] == %{"agent_kind" => "codex"}
+    end
+
     test "set_queue_pin stringifies atom LiveView keys and does not clobber siblings", %{tmp: tmp} do
       File.write!(
         Path.join(tmp, "config.json"),
@@ -461,9 +487,11 @@ defmodule CymphonyElixirWeb.ControlTest do
       workflow_path = Path.join(tmp, "WORKFLOW.md")
       File.write!(workflow_path, WorkflowGenerator.generate(project))
 
+      store_name = ProjectSupervisor.via_tuple("alpha", :workflow_store)
+
       start_supervised!(%{
         id: {:fake_store, "alpha"},
-        start: {WorkflowStore, :start_link, [[name: ProjectSupervisor.via_tuple("alpha", :workflow_store), workflow_path: workflow_path]]}
+        start: {WorkflowStore, :start_link, [[name: store_name, workflow_path: workflow_path]]}
       })
 
       start_orch!("alpha")
@@ -593,9 +621,11 @@ defmodule CymphonyElixirWeb.ControlTest do
       workflow_path = Path.join(tmp, "WORKFLOW.md")
       File.write!(workflow_path, WorkflowGenerator.generate(project))
 
+      store_name = ProjectSupervisor.via_tuple("alpha", :workflow_store)
+
       start_supervised!(%{
         id: {:connect_store, "alpha"},
-        start: {WorkflowStore, :start_link, [[name: ProjectSupervisor.via_tuple("alpha", :workflow_store), workflow_path: workflow_path]]}
+        start: {WorkflowStore, :start_link, [[name: store_name, workflow_path: workflow_path]]}
       })
 
       start_orch!("alpha")
@@ -767,6 +797,65 @@ defmodule CymphonyElixirWeb.ControlTest do
       assert {:error, {:project_start_failed, _reason}} =
                Control.add_project(%{"name" => "Boom", "linear_project_slug" => "boom-slug"})
     end
+  end
+
+  # With no project orchestrator registered, `apply_scope(:all, …)` falls back to
+  # the endpoint-configured orchestrator. These cover the three shapes that
+  # `:orchestrator` can hold.
+  describe "legacy orchestrator fallback" do
+    setup do
+      previous = Application.get_env(:cymphony_elixir, Endpoint)
+      on_exit(fn -> restore_app_env(Endpoint, previous) end)
+      :ok
+    end
+
+    test "calls an endpoint-configured orchestrator pid" do
+      legacy = start_detached_orch!()
+      start_test_endpoint!(orchestrator: legacy)
+
+      assert Control.pause(:all) == :ok
+      assert_receive {:orch, ^legacy, :pause}
+    end
+
+    test "skips an endpoint orchestrator that is neither a pid nor a registered name" do
+      start_test_endpoint!(orchestrator: {:global, :nobody})
+
+      assert Control.resume(:all) == :ok
+      refute_receive {:orch, _, :resume}, 100
+    end
+
+    test "tolerates an endpoint process whose config table is gone" do
+      # A bare process under the endpoint name makes Endpoint.config/1 raise
+      # ArgumentError on the missing ETS table; persist must still succeed.
+      fake = spawn(fn -> Process.sleep(:infinity) end)
+      Process.register(fake, Endpoint)
+      on_exit(fn -> Process.exit(fake, :kill) end)
+
+      assert Control.pause(:all) == :ok
+    end
+  end
+
+  # Registered under a non-`:orchestrator` role so `list_orchestrators/0` ignores
+  # it and the legacy endpoint path is still taken.
+  defp start_detached_orch! do
+    project = "legacy-#{System.unique_integer([:positive])}"
+    orch_name = ProjectSupervisor.via_tuple(project, :workflow_store)
+
+    start_supervised!(%{
+      id: {:legacy_orch, project},
+      start: {FakeOrch, :start_link, [[name: orch_name, recipient: self()]]}
+    })
+  end
+
+  defp start_test_endpoint!(overrides) do
+    config =
+      :cymphony_elixir
+      |> Application.get_env(Endpoint, [])
+      |> Keyword.merge(server: false, secret_key_base: String.duplicate("s", 64))
+      |> Keyword.merge(overrides)
+
+    Application.put_env(:cymphony_elixir, Endpoint, config)
+    start_supervised!({Endpoint, []})
   end
 
   defp start_orch!(project) do

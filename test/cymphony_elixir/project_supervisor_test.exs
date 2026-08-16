@@ -267,6 +267,23 @@ defmodule CymphonyElixir.ProjectSupervisorTest do
     assert {:error, :project_not_found} = ProjectSupervisor.rewrite_workflow(name)
   end
 
+  test "await_unregistered/2 gives up once its budget is spent" do
+    name = "lingering-#{System.unique_integer([:positive])}"
+
+    # The test process holds the name for the whole test, so the only way out of
+    # the wait is exhausting the budget.
+    {:ok, _} = Registry.register(CymphonyElixir.ProjectRegistry, {name, :orchestrator}, nil)
+
+    started = System.monotonic_time(:millisecond)
+    assert :ok = ProjectSupervisor.await_unregistered(name, 20)
+    assert System.monotonic_time(:millisecond) - started >= 20
+  end
+
+  test "await_unregistered/2 returns immediately when nothing is registered" do
+    assert :ok =
+             ProjectSupervisor.await_unregistered("free-#{System.unique_integer([:positive])}", 20)
+  end
+
   defp memory_workflow_path!(overrides \\ []) do
     path = Path.join(System.tmp_dir!(), "cymphony-ps-#{System.unique_integer([:positive])}.md")
 

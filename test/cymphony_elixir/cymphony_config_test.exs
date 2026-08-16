@@ -148,6 +148,14 @@ defmodule CymphonyElixir.Cymphony.ConfigTest do
       refute Map.has_key?(CymphonyConfig.to_schema_map(%{"github_repo_url" => ""}), "hooks")
       refute Map.has_key?(CymphonyConfig.to_schema_map(%{"github_repo_url" => 1}), "hooks")
     end
+
+    test "github_repo_url that is not an scp-style git@ remote is cloned verbatim" do
+      https = CymphonyConfig.to_schema_map(%{"github_repo_url" => "  https://github.com/me/repo.git  "})
+      assert https["hooks"]["after_create"] == "git clone --depth 1 https://github.com/me/repo.git .\n"
+
+      other_host = CymphonyConfig.to_schema_map(%{"github_repo_url" => "git@gitlab.com:me/repo.git"})
+      assert other_host["hooks"]["after_create"] =~ "git clone --depth 1 git@gitlab.com:me/repo.git"
+    end
   end
 
   describe "to_schema_map/1 agent shape" do

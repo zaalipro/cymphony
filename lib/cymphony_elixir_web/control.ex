@@ -268,14 +268,7 @@ defmodule CymphonyElixirWeb.Control do
         persist_result(persist_fun.(nil))
 
       orchestrators ->
-        Enum.reduce_while(orchestrators, :ok, fn {project, pid}, :ok ->
-          orch_fun.(pid)
-
-          case persist_result(persist_fun.(project)) do
-            :ok -> {:cont, :ok}
-            {:error, _} = error -> {:halt, error}
-          end
-        end)
+        Enum.reduce_while(orchestrators, :ok, &apply_scope_to_orchestrator(&1, &2, orch_fun, persist_fun))
     end
   end
 
@@ -294,6 +287,15 @@ defmodule CymphonyElixirWeb.Control do
           _ ->
             {:error, :not_found}
         end
+    end
+  end
+
+  defp apply_scope_to_orchestrator({project, pid}, :ok, orch_fun, persist_fun) do
+    orch_fun.(pid)
+
+    case persist_result(persist_fun.(project)) do
+      :ok -> {:cont, :ok}
+      {:error, _reason} = error -> {:halt, error}
     end
   end
 
@@ -363,14 +365,14 @@ defmodule CymphonyElixirWeb.Control do
     end
   end
 
-  defp stringify_pin_map(pin) when is_map(pin) do
+  # Both call sites are already guarded by `is_map/1`, so there is no fallback
+  # clause — dialyzer proves one unreachable.
+  defp stringify_pin_map(pin) do
     %{}
     |> put_string_pin_field(pin, [:agent_kind, "agent_kind", :kind, "kind"], "agent_kind")
     |> put_string_pin_field(pin, [:model, "model"], "model")
     |> put_string_pin_field(pin, [:effort, "effort"], "effort")
   end
-
-  defp stringify_pin_map(_pin), do: %{}
 
   defp put_string_pin_field(acc, pin, keys, dest) do
     case first_binary_from(pin, keys) do
@@ -425,9 +427,8 @@ defmodule CymphonyElixirWeb.Control do
 
   defp parse_pin_fields(params) do
     with {:ok, pin} <- put_pin_field(%{}, params, ["kind", "agent_kind"], "agent_kind"),
-         {:ok, pin} <- put_pin_field(pin, params, ["model"], "model"),
-         {:ok, pin} <- put_pin_field(pin, params, ["effort"], "effort") do
-      {:ok, pin}
+         {:ok, pin} <- put_pin_field(pin, params, ["model"], "model") do
+      put_pin_field(pin, params, ["effort"], "effort")
     end
   end
 
