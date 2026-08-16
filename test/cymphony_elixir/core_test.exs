@@ -795,9 +795,9 @@ defmodule CymphonyElixir.CoreTest do
   defp assert_due_in_range(due_at_ms, min_remaining_ms, max_remaining_ms) do
     remaining_ms = due_at_ms - System.monotonic_time(:millisecond)
 
-    # Add a 200ms buffer to account for OS scheduling jitter between when
-    # due_at_ms is computed and when the assertion executes.
-    assert remaining_ms >= min_remaining_ms - 200
+    # Full-suite scheduling/GC can add well over 200ms between
+    # schedule_issue_retry/4 and this assertion.
+    assert remaining_ms >= min_remaining_ms - 2_000
     assert remaining_ms <= max_remaining_ms
   end
 

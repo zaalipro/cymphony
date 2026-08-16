@@ -21,6 +21,7 @@ defmodule CymphonyElixir.Orchestrator do
     Workspace
   }
 
+  alias CymphonyElixir.Cymphony.Config, as: CymphonyConfig
   alias CymphonyElixir.Linear.Issue
   alias CymphonyElixir.Orchestrator.{Dispatch, Stall, Tokens}
   alias CymphonyElixirWeb.ObservabilityPubSub
@@ -1947,6 +1948,7 @@ defmodule CymphonyElixir.Orchestrator do
       {:ok, config} ->
         config =
           config
+          |> apply_config_json_overrides(state.project_name)
           |> apply_runtime_agent_overrides(state.runtime_agent)
           |> then(&apply_runtime_provider_overrides(nil, &1, state.providers))
 
@@ -1968,6 +1970,7 @@ defmodule CymphonyElixir.Orchestrator do
       case load_project_config(state) do
         {:ok, new_config} ->
           new_config
+          |> apply_config_json_overrides(state.project_name)
           |> apply_runtime_agent_overrides(state.runtime_agent)
           |> then(&apply_runtime_provider_overrides(state.config, &1, state.providers))
 
@@ -1986,6 +1989,63 @@ defmodule CymphonyElixir.Orchestrator do
 
   defp preserve_providers([_ | _] = providers, _config), do: providers
   defp preserve_providers(_, config), do: extract_providers(config)
+
+  # Overlay ~/.cymphony/config.json so snapshot follows persisted agent/key
+  # even when the temp WORKFLOW.md is stale. load/find failure is a no-op.
+  defp apply_config_json_overrides(config, project_name)
+       when is_map(config) and is_binary(project_name) do
+    with {:ok, file_config} <- CymphonyConfig.load(),
+         {:ok, project} <- CymphonyConfig.find_project(file_config, project_name) do
+      overlay_config_json_project(config, project)
+    else
+      _ -> config
+    end
+  end
+
+  defp apply_config_json_overrides(config, _project_name), do: config
+
+  defp overlay_config_json_project(config, project) when is_map(project) do
+    agent = config.agent
+
+    agent =
+      if Agent.known_kind?(project["agent"]) do
+        %{agent | kind: project["agent"]}
+      else
+        agent
+      end
+
+    agent =
+      case Map.fetch(project, "model") do
+        {:ok, model} when is_binary(model) ->
+          %{agent | model: empty_to_nil(model)}
+
+        _ ->
+          agent
+      end
+
+    agent =
+      case Map.fetch(project, "effort") do
+        {:ok, effort} when is_binary(effort) ->
+          %{agent | effort: empty_to_nil(effort)}
+
+        _ ->
+          agent
+      end
+
+    tracker =
+      case project["linear_api_key"] do
+        key when is_binary(key) and key != "" ->
+          %{config.tracker | api_key: key}
+
+        _ ->
+          config.tracker
+      end
+
+    %{config | agent: agent, tracker: tracker}
+  end
+
+  defp empty_to_nil(""), do: nil
+  defp empty_to_nil(value), do: value
 
   defp apply_runtime_agent_overrides(config, %{kind: kind, model: model, effort: effort}) when is_map(config) do
     %{config | agent: %{config.agent | kind: kind, model: model, effort: effort}}

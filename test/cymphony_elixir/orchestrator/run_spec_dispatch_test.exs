@@ -218,6 +218,50 @@ defmodule CymphonyElixir.Orchestrator.RunSpecDispatchTest do
     assert snapshot.agent_command == "agy"
   end
 
+  test "snapshot.agent_kind follows config.json when runtime_agent is unset" do
+    write_workflow_file!(Workflow.workflow_file_path(), agent_kind: "claude")
+    project_name = put_config_json_project!(%{"agent" => "codex"})
+
+    orchestrator_name = Module.concat(__MODULE__, :ConfigJsonAgentOrch)
+    {:ok, pid} = Orchestrator.start_link(name: orchestrator_name, project_name: project_name)
+    on_exit(fn -> if Process.alive?(pid), do: Process.exit(pid, :normal) end)
+
+    snapshot = GenServer.call(pid, :snapshot)
+    assert snapshot.agent_kind == "codex"
+    assert :sys.get_state(pid).runtime_agent == nil
+  end
+
+  test "set_agent_settings still wins snapshot while runtime_agent is set" do
+    write_workflow_file!(Workflow.workflow_file_path(), agent_kind: "claude")
+    project_name = put_config_json_project!(%{"agent" => "codex"})
+
+    orchestrator_name = Module.concat(__MODULE__, :RuntimeAgentWinsOrch)
+    {:ok, pid} = Orchestrator.start_link(name: orchestrator_name, project_name: project_name)
+    on_exit(fn -> if Process.alive?(pid), do: Process.exit(pid, :normal) end)
+
+    assert :ok = Orchestrator.set_agent_settings(pid, %{"agent" => "antigravity"})
+    assert :sys.get_state(pid).runtime_agent.kind == "antigravity"
+
+    snapshot = GenServer.call(pid, :snapshot)
+    assert snapshot.agent_kind == "antigravity"
+  end
+
+  test "snapshot overlays tracker.api_key from config.json linear_api_key" do
+    write_workflow_file!(Workflow.workflow_file_path(),
+      agent_kind: "claude",
+      tracker_api_token: "token"
+    )
+
+    project_name = put_config_json_project!(%{"linear_api_key" => "lin_test"})
+
+    orchestrator_name = Module.concat(__MODULE__, :ConfigJsonKeyOrch)
+    {:ok, pid} = Orchestrator.start_link(name: orchestrator_name, project_name: project_name)
+    on_exit(fn -> if Process.alive?(pid), do: Process.exit(pid, :normal) end)
+
+    _snapshot = GenServer.call(pid, :snapshot)
+    assert :sys.get_state(pid).config.tracker.api_key == "lin_test"
+  end
+
   test "a retry dispatch re-resolves labels (label edits take effect on next attempt)" do
     orchestrator_name = Module.concat(__MODULE__, :RetryResolveOrch)
     {:ok, pid} = Orchestrator.start_link(name: orchestrator_name)
@@ -241,5 +285,34 @@ defmodule CymphonyElixir.Orchestrator.RunSpecDispatchTest do
     :ok = Orchestrator.dispatch_issue_for_test(pid, %{base | labels: ["effort:max"]})
     assert %{running: [second]} = GenServer.call(pid, :snapshot)
     assert second.effort == "max"
+  end
+
+  defp put_config_json_project!(attrs) when is_map(attrs) do
+    tmp = Path.join(System.tmp_dir!(), "cymphony-cfgjson-#{System.unique_integer([:positive])}")
+    File.mkdir_p!(tmp)
+    previous = Application.get_env(:cymphony_elixir, :config_dir_override)
+    Application.put_env(:cymphony_elixir, :config_dir_override, tmp)
+
+    on_exit(fn ->
+      if is_binary(previous) do
+        Application.put_env(:cymphony_elixir, :config_dir_override, previous)
+      else
+        Application.delete_env(:cymphony_elixir, :config_dir_override)
+      end
+
+      File.rm_rf(tmp)
+    end)
+
+    project =
+      Map.merge(
+        %{
+          "name" => "overlay-#{System.unique_integer([:positive])}",
+          "linear_project_slug" => "demo-slug"
+        },
+        attrs
+      )
+
+    :ok = CymphonyElixir.Cymphony.Config.save(%{"projects" => [project]})
+    project["name"]
   end
 end

@@ -27,7 +27,13 @@ defmodule CymphonyElixir.DashboardLiveTest do
     end
 
     @impl true
-    def init(opts), do: {:ok, opts}
+    def init(opts) do
+      if project_name = Keyword.get(opts, :project_name) do
+        {:ok, _} = Registry.register(CymphonyElixir.ProjectRegistry, {project_name, :orchestrator}, nil)
+      end
+
+      {:ok, opts}
+    end
 
     @impl true
     def handle_call(:snapshot, _from, state) do
@@ -234,7 +240,11 @@ defmodule CymphonyElixir.DashboardLiveTest do
     payload = view_assigns(view).payload
     [entry | rest] = payload.running
     entry = Map.put(entry, :tokens_per_second, 12.34)
-    send(view.pid, {:payload_loaded, %{payload | running: [entry | rest], projects: patch_running(payload.projects, entry)}})
+
+    send(
+      view.pid,
+      {:payload_loaded, view_assigns(view).payload_seq, %{payload | running: [entry | rest], projects: patch_running(payload.projects, entry)}}
+    )
 
     html = render(view)
     assert html =~ "12.3 t/s"
@@ -256,7 +266,260 @@ defmodule CymphonyElixir.DashboardLiveTest do
     refute view_assigns(view).harness_tails["MT-HTTP"].follow
   end
 
+  test "settings drawer connects Linear and never echoes the API key" do
+    start_dashboard()
+    {:ok, view, html} = live(build_conn(), "/")
+
+    assert html =~ "Disconnected"
+    assert html =~ "Connect Linear to add a project"
+    refute has_element?(view, "#add-project-form")
+    assert has_element?(view, "#linear-connect-form")
+    assert has_element?(view, "#linear-api-key")
+
+    view
+    |> form("#linear-connect-form", %{api_key: ""})
+    |> render_submit()
+
+    assert has_element?(view, "p.settings-error", "API key cannot be empty")
+    refute render(view) =~ "lin_api_fake"
+
+    stub_linear_graphql(fn _payload, _headers ->
+      {:ok, %{status: 401, body: %{}}}
+    end)
+
+    view
+    |> form("#linear-connect-form", %{api_key: "lin_api_fake"})
+    |> render_submit()
+
+    assert has_element?(view, "p.settings-error", "Linear rejected that API key")
+    refute render(view) =~ "lin_api_fake"
+
+    stub_linear_graphql(fn _payload, _headers ->
+      {:ok, %{status: 200, body: %{"data" => %{}}}}
+    end)
+
+    view
+    |> form("#linear-connect-form", %{api_key: "lin_api_fake"})
+    |> render_submit()
+
+    assert has_element?(view, "p.settings-error", "Linear rejected that API key")
+    refute render(view) =~ "lin_api_fake"
+
+    stub_linear_graphql(&linear_success_request/2)
+
+    view
+    |> form("#linear-connect-form", %{api_key: "lin_api_fake"})
+    |> render_submit()
+
+    html = render(view)
+    assert html =~ "Connected"
+    assert has_element?(view, "span.linear-key-mask", "••••fake")
+    assert html =~ "Linear connected · ••••fake"
+    refute html =~ "lin_api_fake"
+    refute html =~ "••••••••"
+
+    assert_eventually(fn ->
+      render(view) =~ "ailogic-ced4159f70c4"
+    end)
+
+    assert has_element?(view, "#add-project-form")
+    assert render(view) =~ ~s(value="ailogic-ced4159f70c4")
+  end
+
+  test "add_project duplicate error and success after a stubbed start" do
+    start_dashboard()
+    stub_linear_graphql(&linear_success_request/2)
+    {:ok, view, _html} = live(build_conn(), "/")
+
+    view
+    |> form("#linear-connect-form", %{api_key: "lin_api_fake"})
+    |> render_submit()
+
+    send(
+      view.pid,
+      {:linear_projects_loaded,
+       [
+         %{id: "proj-1", name: "Agent Farm", slug_id: "ailogic-ced4159f70c4"},
+         %{id: "proj-2", name: "Other Farm", slug_id: "other-slug-aaaaaaaa"}
+       ]}
+    )
+
+    render(view)
+
+    {:ok, config} = CymphonyElixir.Cymphony.Config.load()
+
+    seeded =
+      Map.put(config, "projects", [
+        %{
+          "name" => "Farm",
+          "linear_project_slug" => "ailogic-ced4159f70c4",
+          "linear_api_key" => "lin_api_fake"
+        }
+      ])
+
+    assert :ok = CymphonyElixir.Cymphony.Config.save(seeded)
+
+    view
+    |> form("#add-project-form", %{name: "Farm", linear_project_slug: "ailogic-ced4159f70c4"})
+    |> render_submit()
+
+    assert has_element?(view, "p.settings-error", "A project with that name already exists")
+    assert render(view) =~ "A project with that name already exists"
+
+    view
+    |> form("#add-project-form", %{name: "Different", linear_project_slug: "ailogic-ced4159f70c4"})
+    |> render_submit()
+
+    assert render(view) =~ "A project with that Linear slug already exists"
+
+    farm_orch = Module.concat(__MODULE__, :"Farm#{System.unique_integer([:positive])}")
+
+    start_supervised!(%{
+      id: {:added_farm_orch, farm_orch},
+      start:
+        {StaticOrchestrator, :start_link,
+         [
+           [
+             name: farm_orch,
+             project_name: "AddedFarm",
+             snapshot:
+               static_snapshot()
+               |> Map.put(:project_name, "AddedFarm")
+               |> Map.put(:running, [])
+               |> Map.put(:retrying, [])
+           ]
+         ]}
+    })
+
+    test_pid = self()
+
+    dummy_supervisor =
+      spawn(fn ->
+        {:ok, _} = Registry.register(CymphonyElixir.ProjectRegistry, {"AddedFarm", :supervisor}, nil)
+        send(test_pid, :added_farm_supervisor_registered)
+        Process.sleep(:infinity)
+      end)
+
+    assert_receive :added_farm_supervisor_registered, 1_000
+
+    on_exit(fn ->
+      if Process.alive?(dummy_supervisor), do: Process.exit(dummy_supervisor, :kill)
+    end)
+
+    view
+    |> form("#add-project-form", %{
+      name: "AddedFarm",
+      linear_project_slug: "other-slug-aaaaaaaa"
+    })
+    |> render_submit()
+
+    html = render(view)
+    assert html =~ "AddedFarm added and started"
+    assert html =~ "AddedFarm"
+    assert has_element?(view, ".project-section-name", "AddedFarm")
+    refute html =~ "lin_api_fake"
+  end
+
+  test "header agent select id is stable and survives stale payload refresh" do
+    start_dashboard()
+    {:ok, view, html} = live(build_conn(), "/")
+
+    assert html =~ ~s(id="agent-default")
+    assert html =~ ~s(id="effort-default")
+    refute html =~ ~s(id="agent-default-claude")
+    refute html =~ ~s(id="effort-default-claude")
+    assert has_element?(view, ~s|form[phx-submit="set_project_agent"] option[value="claude"][selected]|)
+
+    view
+    |> form(~s|form[phx-change="preview_project_agent"]|, %{agent_kind: "codex"})
+    |> render_change()
+
+    assert has_element?(view, ~s|#agent-default|)
+    refute has_element?(view, ~s|#agent-default-codex|)
+    assert has_element?(view, ~s|form[phx-submit="set_project_agent"] option[value="codex"][selected]|)
+    assert render(view) =~ ~s(id="agent-default")
+    assert has_element?(view, ~s|form[phx-submit="set_project_agent"] option[value="codex"][selected]|)
+
+    preview_assigns = view_assigns(view)
+    preview_payload = preview_assigns.payload
+    [preview_project | preview_rest] = preview_payload.projects
+    assert preview_project.agent_kind == "claude"
+
+    send(
+      view.pid,
+      {:payload_loaded, preview_assigns.payload_seq, %{preview_payload | projects: [Map.put(preview_project, :agent_kind, "claude") | preview_rest]}}
+    )
+
+    render(view)
+    assert has_element?(view, ~s|form[phx-submit="set_project_agent"] option[value="codex"][selected]|)
+    refute has_element?(view, ~s|form[phx-submit="set_project_agent"] option[value="claude"][selected]|)
+    assert view_assigns(view).agent_setting_drafts[preview_project.name].kind == "codex"
+
+    seq_before = view_assigns(view).payload_seq
+
+    view
+    |> form(~s|form[phx-submit="set_project_agent"]|, %{
+      agent_kind: "codex",
+      model: "gpt-5.2-codex",
+      effort: "high"
+    })
+    |> render_submit()
+
+    assert has_element?(view, ~s|form[phx-submit="set_project_agent"] option[value="codex"][selected]|)
+    seq_after = view_assigns(view).payload_seq
+    assert seq_after > seq_before
+
+    payload = view_assigns(view).payload
+    [project | rest] = payload.projects
+    assert project.agent_kind == "claude"
+
+    send(view.pid, {:payload_loaded, seq_after, payload})
+    render(view)
+    assert has_element?(view, ~s|form[phx-submit="set_project_agent"] option[value="codex"][selected]|)
+    refute has_element?(view, ~s|form[phx-submit="set_project_agent"] option[value="claude"][selected]|)
+
+    stale_project =
+      project
+      |> Map.put(:agent_kind, nil)
+      |> Map.put(:agent_model, nil)
+      |> Map.put(:agent_effort, nil)
+
+    send(view.pid, {:payload_loaded, seq_before, %{payload | projects: [stale_project | rest]}})
+    render(view)
+
+    assert has_element?(view, ~s|form[phx-submit="set_project_agent"] option[value="codex"][selected]|)
+    assert has_element?(view, ~s|#agent-default|)
+
+    matching_project =
+      project
+      |> Map.put(:agent_kind, "codex")
+      |> Map.put(:agent_model, "gpt-5.2-codex")
+      |> Map.put(:agent_effort, "high")
+
+    send(view.pid, {:payload_loaded, seq_after, %{payload | projects: [matching_project | rest]}})
+    render(view)
+
+    assert has_element?(view, ~s|form[phx-submit="set_project_agent"] option[value="codex"][selected]|)
+    refute Map.has_key?(view_assigns(view).agent_setting_drafts, project.name)
+  end
+
   defp start_dashboard(opts \\ []) do
+    isolate_cymphony_home()
+    stub_linear_graphql(fn _payload, _headers -> {:error, :stub_unused} end)
+
+    previous_fetcher = Application.fetch_env(:cymphony_elixir, :codex_catalog_fetcher)
+    Application.put_env(:cymphony_elixir, :codex_catalog_fetcher, fn -> {:ok, ~s({"models": []})} end)
+    CymphonyElixir.AgentCatalog.clear_cache()
+
+    on_exit(fn ->
+      case previous_fetcher do
+        {:ok, fetcher} -> Application.put_env(:cymphony_elixir, :codex_catalog_fetcher, fetcher)
+        :error -> Application.delete_env(:cymphony_elixir, :codex_catalog_fetcher)
+      end
+
+      CymphonyElixir.AgentCatalog.clear_cache()
+    end)
+
     orchestrator_name = Module.concat(__MODULE__, :"Orch#{System.unique_integer([:positive])}")
 
     start_supervised!({StaticOrchestrator, [name: orchestrator_name, snapshot: static_snapshot(), recipient: Keyword.get(opts, :recipient)]})
@@ -264,6 +527,83 @@ defmodule CymphonyElixir.DashboardLiveTest do
     start_test_endpoint(orchestrator: orchestrator_name, snapshot_timeout_ms: 50)
     ensure_harness_stream_started()
     orchestrator_name
+  end
+
+  defp isolate_cymphony_home do
+    tmp = Path.join(System.tmp_dir!(), "cymphony-dash-#{System.unique_integer([:positive])}")
+    File.mkdir_p!(tmp)
+    File.write!(Path.join(tmp, "config.json"), ~s({"projects":[{"name":"default"}]}))
+
+    previous_dir = Application.get_env(:cymphony_elixir, :config_dir_override)
+    previous_opts = Application.get_env(:cymphony_elixir, :linear_graphql_opts)
+    previous_key = System.get_env("LINEAR_API_KEY")
+    System.delete_env("LINEAR_API_KEY")
+    Application.put_env(:cymphony_elixir, :config_dir_override, tmp)
+
+    on_exit(fn ->
+      restore_env("LINEAR_API_KEY", previous_key)
+
+      if is_nil(previous_dir) do
+        Application.delete_env(:cymphony_elixir, :config_dir_override)
+      else
+        Application.put_env(:cymphony_elixir, :config_dir_override, previous_dir)
+      end
+
+      if is_nil(previous_opts) do
+        Application.delete_env(:cymphony_elixir, :linear_graphql_opts)
+      else
+        Application.put_env(:cymphony_elixir, :linear_graphql_opts, previous_opts)
+      end
+
+      File.rm_rf!(tmp)
+    end)
+  end
+
+  defp stub_linear_graphql(fun) when is_function(fun, 2) do
+    Application.put_env(:cymphony_elixir, :linear_graphql_opts, request_fun: fun)
+  end
+
+  defp linear_success_request(payload, _headers) do
+    query = payload["query"] || ""
+
+    cond do
+      String.contains?(query, "CymphonyLinearViewer") ->
+        {:ok, %{status: 200, body: %{"data" => %{"viewer" => %{"id" => "usr_test"}}}}}
+
+      String.contains?(query, "CymphonyLinearProjects") ->
+        {:ok,
+         %{
+           status: 200,
+           body: %{
+             "data" => %{
+               "projects" => %{
+                 "nodes" => [
+                   %{"id" => "proj-1", "name" => "Agent Farm", "slugId" => "ailogic-ced4159f70c4"}
+                 ],
+                 "pageInfo" => %{"hasNextPage" => false, "endCursor" => nil}
+               }
+             }
+           }
+         }}
+
+      true ->
+        {:ok, %{status: 200, body: %{"data" => %{}}}}
+    end
+  end
+
+  defp assert_eventually(fun, attempts \\ 20)
+
+  defp assert_eventually(fun, attempts) when attempts > 0 do
+    if fun.() do
+      true
+    else
+      Process.sleep(25)
+      assert_eventually(fun, attempts - 1)
+    end
+  end
+
+  defp assert_eventually(_fun, _attempts) do
+    flunk("condition was not met in time")
   end
 
   defp start_test_endpoint(overrides) do
@@ -323,6 +663,9 @@ defmodule CymphonyElixir.DashboardLiveTest do
       ],
       token_totals: %{input_tokens: 4, output_tokens: 8, total_tokens: 12, seconds_running: 42.5},
       rate_limits: %{"primary" => %{"remaining" => 11}},
+      agent_kind: "claude",
+      agent_model: nil,
+      agent_effort: nil,
       polling: %{
         next_poll_in_ms: 5_000,
         poll_interval_ms: 30_000,

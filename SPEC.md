@@ -349,7 +349,14 @@ Fields:
   - Default for `tracker.kind == "linear"`: `https://api.linear.app/graphql`
 - `api_key` (string)
   - May be a literal token or `$VAR_NAME`.
-  - Canonical environment variable for `tracker.kind == "linear"`: `LINEAR_API_KEY`.
+  - Durable operator store for Linear credentials is `~/.cymphony/config.json`:
+    top-level `linear_api_key`, also stamped onto every `projects[].linear_api_key`
+    (a shared key on the project map; **not** a Symphony `tracker.provider` nest).
+  - Generated per-project `WORKFLOW.md` files write that value as `tracker.api_key`.
+  - Resolution when building runtime config: non-empty `config.json` `linear_api_key`,
+    else the first project's non-empty `linear_api_key`, else process env
+    `LINEAR_API_KEY`. The env var is a fallback only (`Schema.finalize_settings/1`);
+    dashboard Connect and `POST /api/v1/linear` persist the durable file key.
   - If `$VAR_NAME` resolves to an empty string, treat the key as missing.
 - `project_slug` (string)
   - Required for dispatch when `tracker.kind == "linear"`.
@@ -693,7 +700,9 @@ This section is intentionally redundant so a coding agent can implement the conf
 
 - `tracker.kind`: string, required, currently `linear`
 - `tracker.endpoint`: string, default `https://api.linear.app/graphql` when `tracker.kind=linear`
-- `tracker.api_key`: string or `$VAR`, canonical env `LINEAR_API_KEY` when `tracker.kind=linear`
+- `tracker.api_key`: string or `$VAR`; durable source is `~/.cymphony/config.json`
+  `linear_api_key` (generated into this field). `LINEAR_API_KEY` is env fallback
+  only when the file has no non-empty key (`tracker.kind=linear`)
 - `tracker.project_slug`: string, required when `tracker.kind=linear`
 - `tracker.active_states`: list of strings, default `["Todo", "In Progress"]`
 - `tracker.terminal_states`: list of strings, default `["Closed", "Cancelled", "Canceled", "Duplicate", "Done"]`
@@ -1641,6 +1650,31 @@ Enablement (extension):
   retry delays, token consumption, runtime totals, recent events, and health/error indicators).
 - It is up to the implementation whether this is server-generated HTML or a client-side app that
   consumes the JSON API below.
+- Settings drawer (`aside.settings-drawer`) includes, after Experience and before Automation,
+  visible in both simple and advanced modes:
+  - **Linear** (`section.settings-group.settings-group--linear`): connect status
+    (`Connected` / `Disconnected`), last-4 mask of the stored key when connected, and form
+    `#linear-connect-form` (`phx-submit="connect_linear"`) with password input
+    `#linear-api-key` (`name=api_key`, `autocomplete=off`). Submit validates the key against
+    Linear, persists `linear_api_key` to `~/.cymphony/config.json` (top-level and every
+    project; file mode `0600`), and rewrites each registered project's generated
+    `WORKFLOW.md` `tracker.api_key`. Never put the raw key in LiveView assigns, flashes,
+    logs, or API responses — flash the last-4 mask only (for example `Linear connected · ••••xxxx`).
+  - **Projects** (`section.settings-group.settings-group--projects`): when disconnected,
+    help text "Connect Linear to add a project". When connected, form `#add-project-form`
+    (`phx-submit="add_project"`) with `<select id="add-project-slug" name="linear_project_slug">`
+    (options from the operator's accessible Linear projects: label `name (slug_id)`, value
+    `slug_id`), name input `#add-project-name`, optional GitHub URL `#add-project-github`,
+    and advanced-only agent/model/effort/provider fields. Submit appends the project to
+    `config.json`, writes a temp `WORKFLOW.md`, and starts the project supervisor
+    immediately — no daemon restart. Duplicate name/slug is an operator-visible error.
+- Per-project header agent `<select>` uses a stable id `agent-<project>` (never embed the
+  current kind or effort). Changing to a known kind persists immediately (kind only;
+  model/effort wait for header **Set**). Header **Set** and `POST /api/v1/agent` persist
+  kind+model+effort, rewrite the project's generated `WORKFLOW.md`, and overlay
+  `config.json` so `snapshot.agent_kind` survives the next refresh. Dashboard payload
+  reloads are generation-tokened so an in-flight stale snapshot cannot revert the select
+  after persist.
 
 #### 13.7.2 JSON REST API (`/api/v1/*`)
 
@@ -1696,6 +1730,38 @@ Minimum endpoints:
       "rate_limits": null
     }
     ```
+
+- `GET /api/v1/linear`
+  - Must be declared **before** the `GET /api/v1/<issue_identifier>` catch-all.
+  - Returns Linear connect status. `200` JSON keys: `connected` (boolean), `masked_key`
+    (last-4 mask or `null`), `source` (`"config"` | `"env"` | `null`). Never returns the
+    raw key.
+- `POST /api/v1/linear`
+  - Must be declared **before** the issue catch-all. Unsupported methods on this path
+    return `405`.
+  - Body `{"api_key":"..."}`. Validates against Linear (`viewer { id }`), then persists
+    `linear_api_key` to `~/.cymphony/config.json` (top-level and every project) and
+    rewrites each registered project's `WORKFLOW.md` `tracker.api_key`.
+  - `202` with the same `connected` / `masked_key` / `source` JSON as GET.
+  - `422` `{"error":{"code":"empty_api_key"|"invalid_api_key"|"linear_unauthorized"|"linear_error","message":"..."}}`.
+  - Never echo `api_key` in the response, logs, or error message.
+- `GET /api/v1/linear/projects`
+  - Must be declared **before** the issue catch-all.
+  - Lists Linear projects accessible with the stored key:
+    `200` `{"projects":[{"id":"...","name":"...","slug_id":"..."}]}`.
+  - `422` `{"error":{"code":"linear_not_connected","message":"..."}}` if no key is
+    resolved (file or env).
+- `POST /api/v1/projects`
+  - Must be declared **before** the issue catch-all. `GET /api/v1/projects` (running
+    counts) is unchanged.
+  - Body `{"name":"...","linear_project_slug":"..."}` plus optional `github_repo_url`,
+    `workspace_root`, `agent`, `model`, `effort`, `provider`.
+  - Appends to `~/.cymphony/config.json`, writes a temp `WORKFLOW.md`, and starts the
+    project supervisor (no daemon restart). Inherits the shared `linear_api_key`.
+  - `202` `{"name":"...","linear_project_slug":"...","started":true}` (never include the
+    raw key).
+  - `422` codes: `not_connected`, `invalid_project`, `duplicate_project_name`,
+    `duplicate_project_slug`, `project_start_failed`.
 
 - `GET /api/v1/<issue_identifier>/harness`
   - Must be declared **before** the `GET /api/v1/<issue_identifier>` catch-all.
@@ -1784,12 +1850,19 @@ optional `?project=<name>` scope):
   provider rotation; applies to subsequent dispatches only.
 - `POST /api/v1/agent` — body with any of `kind` (`"claude"`/`"codex"`/`"antigravity"`),
   `model`, `effort` (empty string clears model/effort to the agent default); updates
-  runtime agent settings and persists; applies to subsequent dispatches. Error when
+  runtime agent settings and persists to `~/.cymphony/config.json`; **rewrites the
+  project's generated `WORKFLOW.md` and overlays `config.json` agent/model/effort so
+  `snapshot.agent_kind` survives the next dashboard/API refresh**. Dashboard header
+  **Set** and change-to-save (kind-only persist on the project agent `<select>`) follow
+  the same rewrite + overlay path. Applies to subsequent dispatches. Error when
   none of those keys are present or `kind` is not a known kind:
   `"body must include at least one of kind/model/effort; kind must be one of: claude, codex, antigravity"`.
 - Dashboard `set_issue_run_spec` (LiveView / orchestrator) accepts optional
   `:provider`, `:model`, `:effort`, and `:agent_kind` overrides and kills +
   redispatches the session. Empty / `"keep"` skips a field.
+- Linear connect / add-project writes (`POST /api/v1/linear`,
+  `POST /api/v1/projects`) are documented with the Linear routes above (`202` on
+  success, `422` on validation). They do not take `?project=`.
 
 Dashboard display preferences (density, hidden sections, visible columns, list lengths) are
 client-side only (browser localStorage); they are not server state and have no API surface.
@@ -1798,8 +1871,8 @@ API design notes:
 
 - The JSON shapes above are the recommended baseline for interoperability and debugging ergonomics.
 - Implementations may add fields, but should avoid breaking existing fields within a version.
-- Endpoints should be read-only except for operational triggers like `/refresh` and the
-  operational-control endpoints above.
+- Endpoints should be read-only except for operational triggers like `/refresh`,
+  `/linear`, `POST /projects`, and the operational-control endpoints above.
 - Unsupported methods on defined routes should return `405 Method Not Allowed`.
 - API errors should use a JSON envelope such as `{"error":{"code":"...","message":"..."}}`.
 - If the dashboard is a client-side app, it should consume this API rather than duplicating state

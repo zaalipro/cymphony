@@ -179,9 +179,9 @@ The Phoenix LiveView dashboard (`lib/cymphony_elixir_web/live/dashboard_live.ex`
 
 - **Top bar** — Status badge (Live/Offline), version, theme toggle (☀ light / ☾ dark / ⌂ system), ⚙ Settings drawer toggle, Refresh button
 - **Metrics strip** — One row of stat tiles: running count, retrying count, total tokens (input/output), runtime, throughput sparkline (10-minute window), plus compact polling-countdown and rate-limit (Primary/Secondary/Credits) tiles
-- **Per-project sections** — One section per project. Header shows project name, running count vs concurrency cap, paused state, and inline controls: concurrency input (`cr`), agent select (`claude`/`codex`/`antigravity`), model input (with per-kind suggestions), effort select, providers input (`c`, comma-separated aliases), and Pause/Resume button. Each session is a compact one-line row with issue identifier (linked), title (or last activity), state/provider/agent/model/effort/host chips, runtime, tokens, and a Kill button. Click a row to expand and see session ID (copyable), workspace path (copyable), recent log events, a live **Harness** stdout pane (Follow/Paused; `HarnessStream` ring of 400 × 2048-byte lines), and a restart-with-overrides form (agent_kind/provider/model/effort). The retry queue lives inline at the bottom of each project section.
+- **Per-project sections** — One section per project. Header shows project name, running count vs concurrency cap, paused state, and inline controls: concurrency input (`cr`), agent select (`claude`/`codex`/`antigravity`, stable id `agent-<project>` — never embed kind), model input (with per-kind suggestions), effort select (stable id `effort-<project>`), providers input (`c`, comma-separated aliases), and Pause/Resume button. Changing the agent kind persists immediately (kind only; do not persist model/effort on preview). Header **Set** still saves kind+model+effort. Both paths rewrite the project's generated `WORKFLOW.md` and overlay `config.json` so `snapshot.agent_kind` survives refresh. Each session is a compact one-line row with issue identifier (linked), title (or last activity), state/provider/agent/model/effort/host chips, runtime, tokens, and a Kill button. Click a row to expand and see session ID (copyable), workspace path (copyable), recent log events, a live **Harness** stdout pane (Follow/Paused; `HarnessStream` ring of 400 × 2048-byte lines), and a restart-with-overrides form (agent_kind/provider/model/effort). The retry queue lives inline at the bottom of each project section.
 - **Recent completions** — Last 100 sessions that wrapped up: identifier, agent/model chips, runtime, total tokens, ended-at timestamp. Collapsible; backed by the persistent completion store.
-- **Settings drawer** — Right-side panel with orchestrator controls (global Pause/Resume, global concurrency) and client-side display preferences (density, section visibility, session-row columns, completions length). Display prefs persist per browser in localStorage (`cymphony-prefs`) as `data-*` attributes on `<html>`; no server state.
+- **Settings drawer** — Right-side panel. After Experience and before Automation (simple and advanced): **Linear** (`#linear-connect-form`, `phx-submit="connect_linear"`, `#linear-api-key`) and **Projects** (`#add-project-form`, `phx-submit="add_project"`, `#add-project-slug`). Then orchestrator controls (global Pause/Resume, global concurrency) and client-side display preferences (density, section visibility, session-row columns, completions length). Display prefs persist per browser in localStorage (`cymphony-prefs`) as `data-*` attributes on `<html>`; no server state. Never put the raw Linear key in assigns or flashes.
 
 ### User actions
 
@@ -199,7 +199,10 @@ The Phoenix LiveView dashboard (`lib/cymphony_elixir_web/live/dashboard_live.ex`
 | `set_concurrency` | Update `max_concurrent_agents` for **all** projects (legacy global form); persists to `~/.cymphony/config.json` |
 | `set_project_concurrency` | Update `max_concurrent_agents` for a single project from its section header; persists to config |
 | `set_project_providers` | Update the provider list (`provider` + `providers`) for a single project from its section header; persists to config and applies to next dispatch (running sessions unchanged) |
-| `set_project_agent` | Update agent kind/model/effort for a single project from its section header; persists to config, applies to next dispatch |
+| `set_project_agent` | Update agent kind/model/effort for a single project from its section header; persists to `config.json`, rewrites the project `WORKFLOW.md`, applies to next dispatch |
+| `preview_project_agent` | Draft the header agent/model/effort controls. When the kind actually changes to a known kind, persist kind only (`Control.set_agent_settings`), increment payload seq, and reload. Persist error keeps the draft and flashes; does not revert the select. |
+| `connect_linear` | Settings drawer: validate + persist Linear API key to `config.json` `linear_api_key`; rewrite each project's `WORKFLOW.md` `tracker.api_key`; flash last-4 mask only |
+| `add_project` | Settings drawer: add Linear project to `config.json`, write temp `WORKFLOW.md`, start supervisor (no daemon restart). Hidden/disabled until Linear is connected. |
 
 Each running session row shows the Linear issue identifier (linked to the issue), title (or last activity message when no title), state, provider, host, runtime, and total tokens at a glance. Expanding the row reveals priority badge, session ID, workspace path, and recent log events.
 
@@ -210,6 +213,7 @@ Theme toggle (☀ / ☾ / ⌂) is purely client-side — sets `data-theme` on `<
 - Runtime tick: every 1 second
 - Pubsub-driven payload reload on orchestrator updates (real-time via `ObservabilityPubSub`)
 - Periodic payload refresh: every 3 seconds (async via Task.Supervisor)
+- Payload loads carry a generation token (`payload_seq`). After Connect / add-project / agent persist, increment seq and ignore stale `{:payload_loaded, seq, payload}` so an in-flight snapshot cannot revert `agent_kind` or Linear status.
 
 ### Auth (optional)
 
@@ -229,7 +233,11 @@ Routes defined in `lib/cymphony_elixir_web/router.ex`:
 |-------|--------|-------------|
 | `/` | GET | LiveView dashboard |
 | `/api/v1/state` | GET | Full state snapshot JSON |
+| `/api/v1/linear` | GET | Linear connect status JSON (`connected`, `masked_key`, `source`). Never the raw key. Must be declared before the issue catch-all. |
+| `/api/v1/linear` | POST | Body `{"api_key":"..."}`. Validate + persist `linear_api_key`. `202` status or `422` (`empty_api_key` / `invalid_api_key` / `linear_unauthorized` / `linear_error`). Never echo `api_key`. |
+| `/api/v1/linear/projects` | GET | Accessible Linear projects `{"projects":[{"id","name","slug_id"}]}`. `422` `linear_not_connected` if no key. |
 | `/api/v1/projects` | GET | Project list with running/retrying counts |
+| `/api/v1/projects` | POST | Add + start a project (no daemon restart). Body `name` + `linear_project_slug` (+ optional github/workspace/agent/model/effort/provider). `202` `{name,linear_project_slug,started}`. `422`: `not_connected` / `invalid_project` / `duplicate_project_name` / `duplicate_project_slug` / `project_start_failed`. |
 | `/api/v1/:issue_identifier/harness` | GET | Live CLI stdout ring (`HarnessStream.snapshot`); optional `?project=`. Must be declared before the issue catch-all. |
 | `/api/v1/:issue_identifier` | GET | Single issue details (optional `?project=` filter) |
 | `/api/v1/refresh` | POST | Trigger Linear refresh (returns 202) |
@@ -237,7 +245,7 @@ Routes defined in `lib/cymphony_elixir_web/router.ex`:
 | `/api/v1/resume` | POST | Resume dispatching new issues. Optional `?project=<name>`. Returns 202. |
 | `/api/v1/concurrency` | POST | Update `max_concurrent_agents` at runtime. JSON body `{"value": <int>}`, optional `?project=<name>`. Persists to `~/.cymphony/config.json`. Returns 202. |
 | `/api/v1/providers` | POST | Update provider list at runtime. JSON body `{"value": "cv1,cz2,ck1"}` (comma-separated aliases), optional `?project=<name>`. Persists `provider` (head) + `providers` (full list) to `~/.cymphony/config.json`. Applies to next dispatch only — running sessions unchanged. Returns 202 with `{"providers": [...]}`. |
-| `/api/v1/agent` | POST | Update agent settings at runtime. JSON body `{"kind": "codex", "model": "...", "effort": "..."}` (each optional, at least one required; `kind` must be one of `claude`, `codex`, `antigravity`; empty string clears model/effort), optional `?project=<name>`. Persists to `~/.cymphony/config.json`. Applies to next dispatch. Returns 202. |
+| `/api/v1/agent` | POST | Update agent settings at runtime. JSON body `{"kind": "codex", "model": "...", "effort": "..."}` (each optional, at least one required; `kind` must be one of `claude`, `codex`, `antigravity`; empty string clears model/effort), optional `?project=<name>`. Persists to `~/.cymphony/config.json`, rewrites the project's generated `WORKFLOW.md`, and overlays `config.json` so `snapshot.agent_kind` survives refresh. Applies to next dispatch. Returns 202. |
 | `/api/v1/completed` | GET | Recent completed sessions (last 100, in-memory ring buffer). Optional `?project=<name>` and `?limit=N`. |
 
 All other methods return 405; all other paths return 404.

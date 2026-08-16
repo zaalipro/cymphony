@@ -43,10 +43,19 @@ defmodule CymphonyElixirWeb.DashboardLive do
       |> assign(:token_samples, update_token_samples([], initial_payload))
       |> assign(:version, @version)
       |> assign(:last_payload_refresh, last_refresh)
+      |> assign(:linear_status, Control.linear_status())
+      |> assign(:linear_projects, [])
+      |> assign(:linear_error, nil)
+      |> assign(:add_project_error, nil)
+      |> assign(:payload_seq, 0)
 
     if connected? do
       schedule_runtime_tick()
       ObservabilityPubSub.subscribe()
+
+      if socket.assigns.linear_status.connected do
+        enqueue_linear_projects_load()
+      end
     end
 
     {:ok, socket}
@@ -179,18 +188,7 @@ defmodule CymphonyElixirWeb.DashboardLive do
     case params["value"] || params["agent_kind"] do
       kind when is_binary(kind) ->
         if Agent.known_kind?(kind) do
-          project = Enum.find(socket.assigns.payload[:projects] || [], &(&1.name == project_name)) || %{name: project_name}
-          current = project_agent_settings(socket.assigns.agent_setting_drafts, project)
-          agent_changed? = current.kind != kind
-
-          draft = %{
-            kind: kind,
-            model: if(agent_changed?, do: "", else: Map.get(params, "model", "")),
-            effort: if(agent_changed?, do: "", else: Map.get(params, "effort", ""))
-          }
-
-          drafts = Map.put(socket.assigns.agent_setting_drafts, project_name, draft)
-          {:noreply, assign(socket, :agent_setting_drafts, drafts)}
+          {:noreply, preview_project_agent(socket, project_name, kind, params)}
         else
           {:noreply, socket}
         end
@@ -220,10 +218,63 @@ defmodule CymphonyElixirWeb.DashboardLive do
 
           {:error, :not_found} ->
             {:noreply, put_flash(socket, :error, "Project not found: #{project_name}")}
+
+          {:error, _reason} ->
+            confirmed = confirmed_agent_draft(settings)
+
+            socket =
+              update(socket, :agent_setting_drafts, &apply_confirmed_draft(&1, project_name, confirmed))
+
+            {:noreply, put_flash(socket, :error, "Could not persist agent settings")}
         end
 
       :error ->
         {:noreply, put_flash(socket, :error, "Agent must be one of: #{Enum.join(Agent.known_kinds(), ", ")}")}
+    end
+  end
+
+  @impl true
+  def handle_event("connect_linear", params, socket) do
+    case Control.connect_linear(params["api_key"] || "") do
+      {:ok, status} ->
+        enqueue_linear_projects_load()
+
+        {:noreply,
+         socket
+         |> assign(:linear_status, status)
+         |> assign(:linear_error, nil)
+         |> assign(:payload_seq, next_payload_seq(socket))
+         |> put_flash(:info, "Linear connected · #{status.masked_key}")}
+
+      {:error, reason} ->
+        message = linear_connect_error_message(reason)
+
+        {:noreply,
+         socket
+         |> assign(:linear_error, message)
+         |> put_flash(:error, message)}
+    end
+  end
+
+  @impl true
+  def handle_event("add_project", params, socket) do
+    case Control.add_project(add_project_attrs(params)) do
+      {:ok, project} ->
+        name = project_attr(project, "name") || project_attr(params, "name") || "Project"
+
+        {:noreply,
+         socket
+         |> assign(:add_project_error, nil)
+         |> put_flash(:info, "#{name} added and started")
+         |> reload_payload_now()}
+
+      {:error, reason} ->
+        message = add_project_error_message(reason)
+
+        {:noreply,
+         socket
+         |> assign(:add_project_error, message)
+         |> put_flash(:error, message)}
     end
   end
 
@@ -272,8 +323,10 @@ defmodule CymphonyElixirWeb.DashboardLive do
 
   @impl true
   def handle_info(:observability_updated, socket) do
-    spawn_payload_load()
-    {:noreply, assign(socket, :last_payload_refresh, System.monotonic_time(:millisecond))}
+    {:noreply,
+     socket
+     |> spawn_payload_load()
+     |> assign(:last_payload_refresh, System.monotonic_time(:millisecond))}
   end
 
   @impl true
@@ -290,8 +343,9 @@ defmodule CymphonyElixirWeb.DashboardLive do
 
     socket =
       if now - last >= @payload_refresh_ms do
-        spawn_payload_load()
-        assign(socket, :last_payload_refresh, now)
+        socket
+        |> spawn_payload_load()
+        |> assign(:last_payload_refresh, now)
       else
         socket
       end
@@ -300,15 +354,29 @@ defmodule CymphonyElixirWeb.DashboardLive do
   end
 
   @impl true
-  def handle_info({:payload_loaded, payload}, socket) do
-    token_samples = update_token_samples(socket.assigns.token_samples, payload)
+  def handle_info({:payload_loaded, seq, payload}, socket) when is_integer(seq) do
+    if seq != socket.assigns.payload_seq do
+      {:noreply, socket}
+    else
+      token_samples = update_token_samples(socket.assigns.token_samples, payload)
 
-    {:noreply,
-     socket
-     |> assign(:payload, payload)
-     |> assign(:now, DateTime.utc_now())
-     |> assign(:token_samples, token_samples)
-     |> update(:agent_setting_drafts, &prune_agent_drafts(&1, payload))}
+      {:noreply,
+       socket
+       |> assign(:payload, payload)
+       |> assign(:now, DateTime.utc_now())
+       |> assign(:token_samples, token_samples)
+       |> update(:agent_setting_drafts, &prune_agent_drafts(&1, payload))}
+    end
+  end
+
+  @impl true
+  def handle_info({:linear_projects_loaded, {:error, _reason}}, socket) do
+    {:noreply, assign(socket, :linear_error, "Could not reach Linear")}
+  end
+
+  @impl true
+  def handle_info({:linear_projects_loaded, projects}, socket) when is_list(projects) do
+    {:noreply, assign(socket, linear_projects: projects, linear_error: nil)}
   end
 
   @impl true
@@ -530,6 +598,71 @@ defmodule CymphonyElixirWeb.DashboardLive do
           </div>
         </section>
 
+        <section class="settings-group settings-group--linear">
+          <h3 class="settings-group-title">Linear</h3>
+          <span class={"linear-status " <> if(@linear_status.connected, do: "linear-status--connected", else: "linear-status--disconnected")}>
+            <%= if @linear_status.connected, do: "Connected", else: "Disconnected" %>
+          </span>
+          <%= if @linear_status.connected && @linear_status.masked_key do %>
+            <span class="linear-key-mask"><%= @linear_status.masked_key %></span>
+          <% end %>
+          <form id="linear-connect-form" phx-submit="connect_linear" class="inline-form">
+            <input
+              type="password"
+              name="api_key"
+              id="linear-api-key"
+              autocomplete="off"
+              class="inline-input"
+              value=""
+            />
+            <button type="submit" class="subtle-button">Connect</button>
+          </form>
+          <%= if @linear_error do %>
+            <p class="settings-error"><%= @linear_error %></p>
+          <% end %>
+        </section>
+
+        <section class="settings-group settings-group--projects">
+          <h3 class="settings-group-title">Projects</h3>
+          <%= if @linear_status.connected do %>
+            <form id="add-project-form" phx-submit="add_project" class="inline-form">
+              <label class="inline-label" for="add-project-slug">Linear project</label>
+              <select id="add-project-slug" name="linear_project_slug" class="inline-input">
+                <%= for project <- @linear_projects do %>
+                  <option value={linear_project_slug(project)}>
+                    <%= linear_project_name(project) %> (<%= linear_project_slug(project) %>)
+                  </option>
+                <% end %>
+              </select>
+              <label class="inline-label" for="add-project-name">name</label>
+              <input id="add-project-name" type="text" name="name" class="inline-input" />
+              <label class="inline-label" for="add-project-github">github</label>
+              <input id="add-project-github" type="text" name="github_repo_url" class="inline-input" />
+              <div class="advanced-only add-project-advanced">
+                <label class="inline-label" for="add-project-agent">agent</label>
+                <select id="add-project-agent" name="agent" class="inline-input">
+                  <option value="">default</option>
+                  <%= for k <- Agent.known_kinds() do %>
+                    <option value={k}><%= k %></option>
+                  <% end %>
+                </select>
+                <label class="inline-label" for="add-project-model">model</label>
+                <input id="add-project-model" type="text" name="model" class="inline-input" />
+                <label class="inline-label" for="add-project-effort">effort</label>
+                <input id="add-project-effort" type="text" name="effort" class="inline-input" />
+                <label class="inline-label" for="add-project-provider">provider</label>
+                <input id="add-project-provider" type="text" name="provider" class="inline-input" />
+              </div>
+              <button type="submit" class="subtle-button">Add project</button>
+            </form>
+            <%= if @add_project_error do %>
+              <p class="settings-error"><%= @add_project_error %></p>
+            <% end %>
+          <% else %>
+            <p class="settings-help">Connect Linear to add a project</p>
+          <% end %>
+        </section>
+
         <section class="settings-group">
           <h3 class="settings-group-title simple-only">Automation</h3>
           <h3 class="settings-group-title advanced-only">Orchestrator</h3>
@@ -668,9 +801,9 @@ defmodule CymphonyElixirWeb.DashboardLive do
                   class="inline-form inline-form--agent advanced-only"
                 >
                   <input type="hidden" name="project" value={project.name} />
-                  <label class="inline-label" for={"agent-#{project.name}-#{agent_settings.kind}"}>agent</label>
+                  <label class="inline-label" for={"agent-#{project.name}"}>agent</label>
                   <select
-                    id={"agent-#{project.name}-#{agent_settings.kind}"}
+                    id={"agent-#{project.name}"}
                     name="agent_kind"
                     class="inline-input inline-input--narrow"
                   >
@@ -697,11 +830,11 @@ defmodule CymphonyElixirWeb.DashboardLive do
                     <% end %>
                   </datalist>
 
-                  <label class="inline-label" for={"effort-#{project.name}-#{agent_settings.kind}-#{agent_settings.effort}"}>
+                  <label class="inline-label" for={"effort-#{project.name}"}>
                     effort
                   </label>
                   <select
-                    id={"effort-#{project.name}-#{agent_settings.kind}-#{agent_settings.effort}"}
+                    id={"effort-#{project.name}"}
                     name="effort"
                     class="inline-input inline-input--narrow"
                   >
@@ -1082,27 +1215,34 @@ defmodule CymphonyElixirWeb.DashboardLive do
     Presenter.state_payload(orchestrator(), snapshot_timeout_ms())
   end
 
-  defp spawn_payload_load do
+  defp spawn_payload_load(socket) do
+    seq = next_payload_seq(socket)
     pid = self()
 
     Task.Supervisor.start_child(CymphonyElixir.TaskSupervisor, fn ->
-      send(pid, {:payload_loaded, load_payload()})
+      send(pid, {:payload_loaded, seq, load_payload()})
     end)
+
+    assign(socket, :payload_seq, seq)
   end
 
   # Use after a state-changing operation so the next render already shows the
   # updated value, not the previous one. Async refresh is fine for periodic
   # ticks but causes a one-frame flash of stale data on form submits.
   defp reload_payload_now(socket) do
+    seq = next_payload_seq(socket)
     payload = load_payload()
     token_samples = update_token_samples(socket.assigns.token_samples, payload)
 
     socket
+    |> assign(:payload_seq, seq)
     |> assign(:payload, payload)
     |> assign(:token_samples, token_samples)
     |> assign(:last_payload_refresh, System.monotonic_time(:millisecond))
     |> update(:agent_setting_drafts, &prune_agent_drafts(&1, payload))
   end
+
+  defp next_payload_seq(socket), do: (socket.assigns[:payload_seq] || 0) + 1
 
   # A successful submit keeps a confirmed draft so the immediate render shows
   # the submitted values; once the payload reflects them the draft is redundant
@@ -1129,11 +1269,17 @@ defmodule CymphonyElixirWeb.DashboardLive do
   end
 
   defp maybe_prune_draft(drafts, project, draft) do
-    persisted = project_agent_settings(%{}, project)
+    kind = Map.get(project, :agent_kind)
 
-    if draft.kind == persisted.kind and draft.model == persisted.model and
-         draft.effort == persisted.effort do
-      Map.delete(drafts, Map.get(project, :name))
+    if Agent.known_kind?(kind) do
+      persisted = project_agent_settings(%{}, project)
+
+      if draft.kind == persisted.kind and draft.model == persisted.model and
+           draft.effort == persisted.effort do
+        Map.delete(drafts, Map.get(project, :name))
+      else
+        drafts
+      end
     else
       drafts
     end
@@ -1271,13 +1417,50 @@ defmodule CymphonyElixirWeb.DashboardLive do
     kind = Map.get(project, :agent_kind)
 
     default = %{
-      kind: if(Agent.known_kind?(kind), do: kind, else: "claude"),
+      kind: if(Agent.known_kind?(kind), do: kind, else: ""),
       model: Map.get(project, :agent_model) || "",
       effort: Map.get(project, :agent_effort) || ""
     }
 
     Map.get(drafts, project.name, default)
   end
+
+  defp preview_project_agent(socket, project_name, kind, params) do
+    project =
+      Enum.find(socket.assigns.payload[:projects] || [], &(&1.name == project_name)) ||
+        %{name: project_name}
+
+    current = project_agent_settings(socket.assigns.agent_setting_drafts, project)
+    agent_changed? = current.kind != kind
+
+    draft = %{
+      kind: kind,
+      model: if(agent_changed?, do: "", else: Map.get(params, "model", "")),
+      effort: if(agent_changed?, do: "", else: Map.get(params, "effort", ""))
+    }
+
+    socket =
+      assign(socket, :agent_setting_drafts, Map.put(socket.assigns.agent_setting_drafts, project_name, draft))
+
+    if agent_changed? do
+      persist_preview_agent_kind(socket, project_name, kind)
+    else
+      socket
+    end
+  end
+
+  defp persist_preview_agent_kind(socket, project_name, kind) do
+    case Control.set_agent_settings({:project, project_name}, %{"agent" => kind}) do
+      :ok ->
+        reload_payload_now(socket)
+
+      {:error, reason} ->
+        put_flash(socket, :error, preview_agent_persist_error(project_name, reason))
+    end
+  end
+
+  defp preview_agent_persist_error(project_name, :not_found), do: "Project not found: #{project_name}"
+  defp preview_agent_persist_error(_project_name, _reason), do: "Could not persist agent settings"
 
   defp total_runtime_seconds(payload, now) do
     completed_runtime_seconds(payload) +
@@ -1706,4 +1889,70 @@ defmodule CymphonyElixirWeb.DashboardLive do
 
     socket
   end
+
+  defp enqueue_linear_projects_load do
+    pid = self()
+
+    Task.Supervisor.start_child(CymphonyElixir.TaskSupervisor, fn ->
+      result =
+        case Control.list_linear_projects() do
+          {:ok, list} when is_list(list) -> list
+          {:error, reason} -> {:error, reason}
+          other -> {:error, other}
+        end
+
+      send(pid, {:linear_projects_loaded, result})
+    end)
+
+    :ok
+  end
+
+  defp add_project_attrs(params) when is_map(params) do
+    required = Map.take(params, ["name", "linear_project_slug"])
+
+    optional =
+      params
+      |> Map.take(["github_repo_url", "workspace_root", "agent", "model", "effort", "provider"])
+      |> Enum.reduce(%{}, fn
+        {_key, value}, acc when not is_binary(value) ->
+          acc
+
+        {key, value}, acc ->
+          case String.trim(value) do
+            "" -> acc
+            trimmed -> Map.put(acc, key, trimmed)
+          end
+      end)
+
+    Map.merge(required, optional)
+  end
+
+  defp project_attr(map, key) when is_map(map) and is_binary(key) do
+    Map.get(map, key) || Map.get(map, String.to_existing_atom(key))
+  rescue
+    ArgumentError -> Map.get(map, key)
+  end
+
+  defp linear_project_name(project) do
+    Map.get(project, :name) || Map.get(project, "name") || ""
+  end
+
+  defp linear_project_slug(project) do
+    Map.get(project, :slug_id) || Map.get(project, "slug_id") || ""
+  end
+
+  defp linear_connect_error_message(:empty), do: "API key cannot be empty"
+
+  defp linear_connect_error_message(reason) when reason in [:unauthorized, :invalid] do
+    "Linear rejected that API key"
+  end
+
+  defp linear_connect_error_message(_reason), do: "Could not reach Linear"
+
+  defp add_project_error_message(:duplicate_name), do: "A project with that name already exists"
+  defp add_project_error_message(:duplicate_slug), do: "A project with that Linear slug already exists"
+  defp add_project_error_message(:not_connected), do: "Connect Linear to add a project"
+  defp add_project_error_message(:invalid_project), do: "Name and Linear project are required"
+  defp add_project_error_message({:project_start_failed, _reason}), do: "Project was saved but failed to start"
+  defp add_project_error_message(_reason), do: "Could not add project"
 end

@@ -3,7 +3,10 @@
 # repo without a ~/.cymphony/config.json. In production, cymphony reads
 # ~/.cymphony/config.json and generates a per-project WORKFLOW.md at runtime
 # from each project's settings — this committed file is then NOT consulted.
+# Generated per-project files get tracker.api_key from config.json
+# linear_api_key (LINEAR_API_KEY is process-env fallback only).
 # Do NOT add personal project info here (Linear slugs, repo URLs, API keys).
+# No sample secrets and no real Linear keys in this file.
 tracker:
   kind: linear
   project_slug: example-00000000

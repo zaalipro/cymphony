@@ -73,6 +73,229 @@ defmodule CymphonyElixir.Cymphony.Config do
   end
 
   @doc """
+  Resolves the shared Linear API key.
+
+  Prefers a non-empty `config["linear_api_key"]`, then the first non-empty
+  project `linear_api_key`, then `LINEAR_API_KEY`.
+  """
+  @spec resolve_linear_api_key(map() | nil) :: String.t() | nil
+  def resolve_linear_api_key(nil), do: env_linear_api_key()
+
+  def resolve_linear_api_key(config) when is_map(config) do
+    file_linear_api_key(config) || env_linear_api_key()
+  end
+
+  @doc """
+  Masks a Linear API key as `••••` plus the last 4 characters.
+
+  Keys shorter than 4 characters (after trim) are entirely `••••` so the
+  mask never encodes the key length.
+  """
+  @spec mask_linear_api_key(String.t()) :: String.t()
+  def mask_linear_api_key(key) when is_binary(key) do
+    trimmed = String.trim(key)
+
+    if String.length(trimmed) < 4 do
+      "••••"
+    else
+      "••••" <> String.slice(trimmed, -4, 4)
+    end
+  end
+
+  @doc """
+  Where `resolve_linear_api_key/1` would get a key from: the config file,
+  the process environment, or nowhere.
+  """
+  @spec linear_key_source(map() | nil) :: :config | :env | nil
+  def linear_key_source(nil) do
+    if is_binary(env_linear_api_key()), do: :env, else: nil
+  end
+
+  def linear_key_source(config) when is_map(config) do
+    cond do
+      is_binary(file_linear_api_key(config)) -> :config
+      is_binary(env_linear_api_key()) -> :env
+      true -> nil
+    end
+  end
+
+  @doc """
+  Persists a shared Linear API key to `config.json` (created if missing).
+
+  Sets the top-level `linear_api_key` and stamps the same value onto every
+  `projects[]` entry. `save/1` keeps the file mode at `0o600`.
+  """
+  @spec put_linear_api_key(String.t()) :: {:ok, map()} | {:error, :empty | term()}
+  def put_linear_api_key(key) when is_binary(key) do
+    case String.trim(key) do
+      "" -> {:error, :empty}
+      trimmed -> persist_linear_api_key(trimmed)
+    end
+  end
+
+  @doc """
+  Appends a project to `config.json`, inheriting the shared Linear API key.
+  """
+  @spec add_project(map()) ::
+          {:ok, map()}
+          | {:error, :duplicate_name | :duplicate_slug | :not_connected | :invalid_project | term()}
+  def add_project(attrs) when is_map(attrs) do
+    with {:ok, name} <- required_project_string(attrs, "name"),
+         {:ok, slug} <- required_project_string(attrs, "linear_project_slug"),
+         {:ok, config} <- load_or_empty_config(),
+         {:ok, api_key} <- connected_linear_api_key(config),
+         :ok <- reject_duplicate_project(config, name, slug) do
+      project = build_added_project(attrs, name, slug, api_key)
+      persist_added_project(config, project)
+    end
+  end
+
+  defp persist_linear_api_key(key) do
+    with {:ok, config} <- load_or_empty_config() do
+      updated = stamp_linear_api_key(config, key)
+
+      case save(updated) do
+        :ok -> {:ok, updated}
+        {:error, reason} -> {:error, reason}
+      end
+    end
+  end
+
+  defp persist_added_project(config, project) do
+    updated = Map.put(config, "projects", projects(config) ++ [project])
+
+    case save(updated) do
+      :ok -> {:ok, project}
+      {:error, reason} -> {:error, reason}
+    end
+  end
+
+  defp load_or_empty_config do
+    case load() do
+      {:ok, config} ->
+        {:ok, config}
+
+      {:error, reason} ->
+        if exists?() do
+          {:error, reason}
+        else
+          {:ok, %{"projects" => []}}
+        end
+    end
+  end
+
+  defp stamp_linear_api_key(config, key) do
+    config
+    |> Map.put("linear_api_key", key)
+    |> stamp_projects_linear_key(key)
+  end
+
+  defp stamp_projects_linear_key(%{"projects" => projects} = config, key) when is_list(projects) do
+    Map.put(config, "projects", Enum.map(projects, &Map.put(&1, "linear_api_key", key)))
+  end
+
+  defp stamp_projects_linear_key(config, _key), do: config
+
+  defp file_linear_api_key(config) when is_map(config) do
+    case present_string(Map.get(config, "linear_api_key")) do
+      nil -> first_project_linear_api_key(projects(config))
+      key -> key
+    end
+  end
+
+  defp first_project_linear_api_key(project_list) do
+    Enum.find_value(project_list, fn project ->
+      present_string(Map.get(project, "linear_api_key"))
+    end)
+  end
+
+  defp env_linear_api_key, do: present_string(System.get_env("LINEAR_API_KEY"))
+
+  defp connected_linear_api_key(config) do
+    case resolve_linear_api_key(config) do
+      key when is_binary(key) -> {:ok, key}
+      _ -> {:error, :not_connected}
+    end
+  end
+
+  defp required_project_string(attrs, key) do
+    case present_string(Map.get(attrs, key)) do
+      nil -> {:error, :invalid_project}
+      value -> {:ok, value}
+    end
+  end
+
+  defp reject_duplicate_project(config, name, slug) do
+    existing = projects(config)
+
+    cond do
+      Enum.any?(existing, &(present_string(&1["name"]) == name)) ->
+        {:error, :duplicate_name}
+
+      Enum.any?(existing, &(present_string(&1["linear_project_slug"]) == slug)) ->
+        {:error, :duplicate_slug}
+
+      true ->
+        :ok
+    end
+  end
+
+  defp build_added_project(attrs, name, slug, api_key) do
+    %{
+      "name" => name,
+      "linear_project_slug" => slug,
+      "linear_api_key" => api_key,
+      "workspace_root" => added_workspace_root(attrs, name),
+      "polling_interval_ms" => added_polling_interval_ms(attrs)
+    }
+    |> maybe_put_copied(attrs, "github_repo_url")
+    |> maybe_put_agent(attrs)
+    |> maybe_put_copied(attrs, "model")
+    |> maybe_put_copied(attrs, "effort")
+    |> maybe_put_copied(attrs, "provider")
+  end
+
+  defp added_workspace_root(attrs, name) do
+    case present_string(Map.get(attrs, "workspace_root")) do
+      nil -> Path.join(Defaults.workspace_root(), name)
+      root -> root
+    end
+  end
+
+  defp added_polling_interval_ms(attrs) do
+    case Map.get(attrs, "polling_interval_ms") do
+      n when is_integer(n) and n > 0 -> n
+      _ -> Defaults.polling_interval_ms()
+    end
+  end
+
+  defp maybe_put_copied(map, attrs, key) do
+    case present_string(Map.get(attrs, key)) do
+      nil -> map
+      value -> Map.put(map, key, value)
+    end
+  end
+
+  defp maybe_put_agent(map, attrs) do
+    case present_string(Map.get(attrs, "agent")) do
+      nil ->
+        map
+
+      kind ->
+        if Agent.known_kind?(kind), do: Map.put(map, "agent", kind), else: map
+    end
+  end
+
+  defp present_string(value) when is_binary(value) do
+    case String.trim(value) do
+      "" -> nil
+      trimmed -> trimmed
+    end
+  end
+
+  defp present_string(_value), do: nil
+
+  @doc """
   Updates `max_concurrent_agents` for the named project (or for the entire
   legacy single-project config if `project_name` is `nil`) and persists to
   disk. Returns `{:ok, updated_config}` or an error tuple.

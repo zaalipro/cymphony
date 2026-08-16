@@ -1484,6 +1484,58 @@ html[data-drawer="open"] .settings-drawer {
   text-wrap: pretty;
 }
 
+.settings-group--linear,
+.settings-group--projects {
+  gap: 8px;
+}
+
+.linear-status {
+  display: inline-flex;
+  align-items: center;
+  width: fit-content;
+  padding: 2px 8px;
+  border-radius: var(--radius-pill);
+  font-size: var(--text-caption);
+  font-weight: 600;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+}
+
+.linear-status--connected {
+  color: var(--ok);
+  background: var(--ok-soft);
+}
+
+.linear-status--disconnected {
+  color: var(--ink-mute);
+  background: var(--surface-soft);
+}
+
+.linear-key-mask {
+  font-family: var(--font-mono);
+  color: var(--ink-mute);
+  font-size: var(--text-body-sm);
+}
+
+.settings-error {
+  margin: 0;
+  color: var(--danger);
+  font-size: var(--text-body-sm);
+}
+
+#linear-connect-form,
+#add-project-form {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px;
+}
+
+#add-project-form {
+  flex-direction: column;
+  align-items: stretch;
+}
+
 .mode-option-list {
   display: grid;
   gap: 8px;

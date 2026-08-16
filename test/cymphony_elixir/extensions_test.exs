@@ -1099,6 +1099,8 @@ defmodule CymphonyElixir.ExtensionsTest do
 
       # Header controls render with the providers input relabeled.
       assert html =~ ~s(name="agent_kind")
+      assert html =~ ~s(id="agent-default")
+      refute html =~ ~s(id="agent-default-claude")
       assert html =~ "model-suggestions-"
       assert html =~ ">providers</label>"
       refute html =~ "claude command"
@@ -1126,6 +1128,11 @@ defmodule CymphonyElixir.ExtensionsTest do
     end
 
     test "agent picker previews model and effort choices for the selected agent" do
+      tmp = Path.join(System.tmp_dir!(), "cymphony-agent-preview-#{System.unique_integer([:positive])}")
+      File.mkdir_p!(tmp)
+      File.write!(Path.join(tmp, "config.json"), "{\"projects\": [{\"name\": \"default\"}]}")
+      Application.put_env(:cymphony_elixir, :config_dir_override, tmp)
+
       previous_fetcher = Application.fetch_env(:cymphony_elixir, :codex_catalog_fetcher)
 
       catalog =
@@ -1154,6 +1161,8 @@ defmodule CymphonyElixir.ExtensionsTest do
         end
 
         CymphonyElixir.AgentCatalog.clear_cache()
+        Application.delete_env(:cymphony_elixir, :config_dir_override)
+        File.rm_rf!(tmp)
       end)
 
       orchestrator_name = Module.concat(__MODULE__, :AgentPreviewOrchestrator)
@@ -1645,6 +1654,8 @@ defmodule CymphonyElixir.ExtensionsTest do
   end
 
   defp start_test_endpoint(overrides) do
+    isolate_linear_env()
+
     endpoint_config =
       :cymphony_elixir
       |> Application.get_env(CymphonyElixirWeb.Endpoint, [])
@@ -1653,6 +1664,36 @@ defmodule CymphonyElixir.ExtensionsTest do
 
     Application.put_env(:cymphony_elixir, CymphonyElixirWeb.Endpoint, endpoint_config)
     start_supervised!({CymphonyElixirWeb.Endpoint, []})
+  end
+
+  defp isolate_linear_env do
+    previous_key = System.get_env("LINEAR_API_KEY")
+    System.delete_env("LINEAR_API_KEY")
+
+    previous_opts = Application.get_env(:cymphony_elixir, :linear_graphql_opts)
+    Application.delete_env(:cymphony_elixir, :linear_graphql_opts)
+
+    unless is_binary(Application.get_env(:cymphony_elixir, :config_dir_override)) do
+      tmp = Path.join(System.tmp_dir!(), "cymphony-ext-#{System.unique_integer([:positive])}")
+      File.mkdir_p!(tmp)
+      File.write!(Path.join(tmp, "config.json"), ~s({"projects":[{"name":"default"}]}))
+      Application.put_env(:cymphony_elixir, :config_dir_override, tmp)
+
+      on_exit(fn ->
+        Application.delete_env(:cymphony_elixir, :config_dir_override)
+        File.rm_rf(tmp)
+      end)
+    end
+
+    on_exit(fn ->
+      restore_env("LINEAR_API_KEY", previous_key)
+
+      if is_nil(previous_opts) do
+        Application.delete_env(:cymphony_elixir, :linear_graphql_opts)
+      else
+        Application.put_env(:cymphony_elixir, :linear_graphql_opts, previous_opts)
+      end
+    end)
   end
 
   defp static_snapshot do
@@ -1685,6 +1726,9 @@ defmodule CymphonyElixir.ExtensionsTest do
       ],
       token_totals: %{input_tokens: 4, output_tokens: 8, total_tokens: 12, seconds_running: 42.5},
       rate_limits: %{"primary" => %{"remaining" => 11}},
+      agent_kind: "claude",
+      agent_model: nil,
+      agent_effort: nil,
       polling: %{
         next_poll_in_ms: 5_000,
         poll_interval_ms: 30_000,

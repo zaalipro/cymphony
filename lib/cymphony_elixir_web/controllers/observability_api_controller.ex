@@ -23,6 +23,85 @@ defmodule CymphonyElixirWeb.ObservabilityApiController do
     json(conn, %{projects: Presenter.projects_payload()})
   end
 
+  @spec create_project(Conn.t(), map()) :: Conn.t()
+  def create_project(conn, params) do
+    case Control.add_project(project_attrs(params)) do
+      {:ok, project} ->
+        conn
+        |> put_status(202)
+        |> json(%{
+          name: project["name"],
+          linear_project_slug: project["linear_project_slug"],
+          started: true
+        })
+
+      {:error, :not_connected} ->
+        error_response(conn, 422, "not_connected", "Connect Linear to add a project")
+
+      {:error, :invalid_project} ->
+        error_response(conn, 422, "invalid_project", "Project name and Linear slug are required")
+
+      {:error, :duplicate_name} ->
+        error_response(conn, 422, "duplicate_project_name", "A project with that name already exists")
+
+      {:error, :duplicate_slug} ->
+        error_response(conn, 422, "duplicate_project_slug", "A project with that Linear slug already exists")
+
+      {:error, {:project_start_failed, _reason}} ->
+        error_response(conn, 422, "project_start_failed", "Project was saved but failed to start")
+
+      {:error, _reason} ->
+        error_response(conn, 422, "invalid_project", "Could not add project")
+    end
+  end
+
+  @spec linear(Conn.t(), map()) :: Conn.t()
+  def linear(conn, _params) do
+    json(conn, Control.linear_status())
+  end
+
+  @spec connect_linear(Conn.t(), map()) :: Conn.t()
+  def connect_linear(conn, params) do
+    case Control.connect_linear(linear_api_key_param(params)) do
+      {:ok, status} ->
+        conn
+        |> put_status(202)
+        |> json(status)
+
+      {:error, :empty} ->
+        error_response(conn, 422, "empty_api_key", "API key cannot be empty")
+
+      {:error, :unauthorized} ->
+        error_response(conn, 422, "linear_unauthorized", "Linear rejected that API key")
+
+      {:error, :invalid} ->
+        error_response(conn, 422, "invalid_api_key", "Linear rejected that API key")
+
+      {:error, _reason} ->
+        error_response(conn, 422, "linear_error", "Could not reach Linear")
+    end
+  end
+
+  @spec linear_projects(Conn.t(), map()) :: Conn.t()
+  def linear_projects(conn, _params) do
+    case Control.list_linear_projects() do
+      {:ok, projects} ->
+        json(conn, %{projects: Enum.map(projects, &linear_project_payload/1)})
+
+      {:error, :not_connected} ->
+        error_response(conn, 422, "linear_not_connected", "Connect Linear to list projects")
+
+      {:error, :empty} ->
+        error_response(conn, 422, "linear_not_connected", "Connect Linear to list projects")
+
+      {:error, :unauthorized} ->
+        error_response(conn, 422, "linear_unauthorized", "Linear rejected that API key")
+
+      {:error, _reason} ->
+        error_response(conn, 422, "linear_error", "Could not reach Linear")
+    end
+  end
+
   @spec issue(Conn.t(), map()) :: Conn.t()
   def issue(conn, %{"issue_identifier" => issue_identifier}) do
     project = conn.query_params["project"]
@@ -213,6 +292,40 @@ defmodule CymphonyElixirWeb.ObservabilityApiController do
     conn
     |> put_status(status)
     |> json(%{error: %{code: code, message: message}})
+  end
+
+  defp linear_api_key_param(params) when is_map(params) do
+    case Map.get(params, "api_key") do
+      key when is_binary(key) -> key
+      _ -> ""
+    end
+  end
+
+  defp project_attrs(params) when is_map(params) do
+    [
+      "name",
+      "linear_project_slug",
+      "github_repo_url",
+      "workspace_root",
+      "agent",
+      "model",
+      "effort",
+      "provider"
+    ]
+    |> Enum.reduce(%{}, fn key, acc ->
+      case Map.get(params, key) do
+        value when is_binary(value) -> Map.put(acc, key, String.trim(value))
+        _ -> acc
+      end
+    end)
+  end
+
+  defp linear_project_payload(project) when is_map(project) do
+    %{
+      id: project[:id] || project["id"],
+      name: project[:name] || project["name"],
+      slug_id: project[:slug_id] || project["slug_id"]
+    }
   end
 
   defp orchestrator do

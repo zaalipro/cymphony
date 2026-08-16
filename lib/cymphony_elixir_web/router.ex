@@ -36,6 +36,8 @@ defmodule CymphonyElixirWeb.Router do
     pipe_through(:api)
 
     get("/api/v1/projects", ObservabilityApiController, :projects)
+    post("/api/v1/projects", ObservabilityApiController, :create_project)
+    match(:*, "/api/v1/projects", ObservabilityApiController, :method_not_allowed)
     get("/api/v1/state", ObservabilityApiController, :state)
 
     match(:*, "/", ObservabilityApiController, :method_not_allowed)
@@ -54,6 +56,11 @@ defmodule CymphonyElixirWeb.Router do
     match(:*, "/api/v1/providers", ObservabilityApiController, :method_not_allowed)
     post("/api/v1/agent", ObservabilityApiController, :agent)
     match(:*, "/api/v1/agent", ObservabilityApiController, :method_not_allowed)
+    get("/api/v1/linear/projects", ObservabilityApiController, :linear_projects)
+    match(:*, "/api/v1/linear/projects", ObservabilityApiController, :method_not_allowed)
+    get("/api/v1/linear", ObservabilityApiController, :linear)
+    post("/api/v1/linear", ObservabilityApiController, :connect_linear)
+    match(:*, "/api/v1/linear", ObservabilityApiController, :method_not_allowed)
     get("/api/v1/:issue_identifier/harness", ObservabilityApiController, :harness)
     match(:*, "/api/v1/:issue_identifier/harness", ObservabilityApiController, :method_not_allowed)
     get("/api/v1/:issue_identifier", ObservabilityApiController, :issue)

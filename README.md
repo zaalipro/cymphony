@@ -26,7 +26,7 @@ If you've used [openai/symphony](https://github.com/openai/symphony), the core i
 | Claude command | one binary | **Custom Claude command per project** — point one project at the official `claude` CLI, another at a wrapper that swaps in z.ai / Kimi / OpenRouter credentials, etc. |
 | Providers | one API endpoint | **Rotate across multiple Claude-compatible backends** — list two or more providers and Cymphony spreads new sessions across them randomly. Avoids hitting any single backend's rate limit. |
 | Live UI | terminal-only | **Phoenix LiveView dashboard** with kill / retry / pause / set-provider per running session |
-| HTTP API | — | `/api/v1/*` for state, pause, concurrency, providers, refresh |
+| HTTP API | — | `/api/v1/*` for state, pause, concurrency, providers, refresh, Linear connect, add-project |
 | Workspace lifecycle | clone-on-create | **after_create / before_run / after_run / before_remove hooks**, optional retention sweep |
 | Setup | edit a YAML file | `cymphony setup` wizard, all config in `~/.cymphony/config.json` |
 | Hot reload | restart | edit `WORKFLOW.md`, picked up next tick |
@@ -154,7 +154,7 @@ A personal API key that lets Cymphony read issues and post comments on your beha
 4. Click **Create key**, give it a label like "Cymphony", and copy the value (starts with `lin_api_...`)
 5. Paste it into the wizard
 
-> The key is stored in plain text in `~/.cymphony/config.json`. If you'd rather not have it on disk, set `LINEAR_API_KEY` in your environment instead — the wizard offers it as a default when set.
+> The key is stored in plain text in `~/.cymphony/config.json` as top-level `linear_api_key` (and stamped onto every project). If you'd rather not have it on disk, set `LINEAR_API_KEY` in your environment instead — that env var is a **fallback only** when the file has no key, and the wizard offers it as a default when set. You can also paste the key later in the dashboard Settings drawer (Linear → Connect) without re-running the wizard.
 
 ### Step 5 — Workspace root  *(optional, has a default)*
 
@@ -371,6 +371,7 @@ If you'd rather keep everything in one file and skip shell-function gymnastics, 
 
 ```json
 {
+  "linear_api_key": "lin_api_...",
   "projects": [
     {
       "name": "MyApp",
@@ -440,6 +441,8 @@ cymphony add        # interactive — same wizard as setup, just for one new pro
 cymphony list       # show what's configured
 ```
 
+Or add from the dashboard Settings drawer (Linear must be connected): pick a Linear project, name it, click **Add project**. The new project is written to `config.json`, a temp `WORKFLOW.md` is generated, and the orchestrator starts immediately — no daemon restart. CLI `setup` / `add` are unchanged.
+
 Or run a single project on demand:
 
 ```bash
@@ -458,12 +461,22 @@ The dashboard opens in **Simple** mode: plain-language autonomy status, the acti
 The dashboard shows:
 
 - **Command bar (top)** — autonomy state plus working / waiting / usage / runtime counters in Simple mode; throughput, polling cadence, and rate limits in Advanced mode
-- **Per-project sections** — one card per project with the project name, running count, "tasks at once", and Pause/Resume. Advanced mode adds `agent` (`claude` / `codex` / `antigravity`), `model`, `effort`, and `providers` controls
+- **Per-project sections** — one card per project with the project name, running count, "tasks at once", and Pause/Resume. Advanced mode adds `agent` (`claude` / `codex` / `antigravity`), `model`, `effort`, and `providers` controls. The agent select keeps a stable id (`#agent-<project>`); changing the kind persists immediately (kind only). **Set** still saves kind + model + effort together. Both paths rewrite the project's generated `WORKFLOW.md` and overlay `config.json` so the select stays on the new kind after the next refresh.
 - **Compact session rows** — Linear ID, title, state, runtime, and Stop. Advanced mode adds provider, host, token, workspace, log, and restart details. Expanding a row shows a **Harness** pane (live CLI stdout, Follow/Paused) and a restart form that can pin `agent_kind` / provider / model / effort for that session
 - **Retry queue** — inline at the bottom of each project section
 - **Recent completions** — global ring buffer of the last 100 finished sessions, collapsed by default in Simple mode
+- **Settings drawer (⚙)** — Experience mode, then **Linear** + **Projects**, then Automation / Display. See below.
 
 Live updates are pushed via Phoenix Channels — no manual refresh.
+
+### Settings drawer — Linear and add project
+
+Open **⚙ Settings**. After Experience and before Automation (visible in Simple and Advanced):
+
+1. **Linear** — paste a personal API key into the password field (`#linear-api-key`) and click **Connect** (`phx-submit="connect_linear"`, also `POST /api/v1/linear`). Status becomes **Connected** and shows a last-4 mask (`••••xxxx`). The key is stored in `~/.cymphony/config.json` as `linear_api_key` (file mode `0600`) and stamped onto every project. `LINEAR_API_KEY` is only a fallback when the file has no key. The raw key is never shown again in the UI, flashes, or API responses.
+2. **Projects** — once connected, pick a Linear project from `#add-project-slug`, enter a Cymphony name, optionally a GitHub repo URL, and click **Add project** (`phx-submit="add_project"`, also `POST /api/v1/projects`). The project is appended to `config.json`, a temp `WORKFLOW.md` is written, and the orchestrator starts immediately — no daemon restart. Duplicate name or Linear slug is rejected with a visible error.
+
+CLI `cymphony setup` and `cymphony add` still work the same way.
 
 ### Auth (optional)
 
@@ -483,7 +496,11 @@ All under `/api/v1/`:
 | Method | Path | Description |
 |---|---|---|
 | `GET` | `/state` | full snapshot JSON |
-| `GET` | `/projects` | one-line summary per project |
+| `GET` | `/linear` | Linear connect status: `connected`, `masked_key`, `source` (never the raw key) |
+| `POST` | `/linear` | body `{"api_key":"..."}` — validate + persist `linear_api_key`; `202` status or `422` |
+| `GET` | `/linear/projects` | accessible Linear projects `{id,name,slug_id}` (`422` if not connected) |
+| `GET` | `/projects` | one-line summary per project (running/retrying counts) |
+| `POST` | `/projects` | add + start a project (no daemon restart); `202` `{name,linear_project_slug,started}` |
 | `GET` | `/<issue_identifier>` | one running session's details |
 | `GET` | `/<issue_identifier>/harness` | live CLI stdout ring (`HarnessStream` snapshot) |
 | `POST` | `/refresh` | force a Linear poll right now |
@@ -491,7 +508,10 @@ All under `/api/v1/`:
 | `POST` | `/resume` `?project=Name` | resume |
 | `POST` | `/concurrency` `?project=Name` | body `{"value": 5}` |
 | `POST` | `/providers` `?project=Name` | body `{"value": "cv1,cz"}` |
+| `POST` | `/agent` `?project=Name` | body `{"kind","model","effort"}` — persist + rewrite project `WORKFLOW.md` so `agent_kind` survives refresh |
 | `GET` | `/completed` `?limit=N` | recent completions ring buffer |
+
+`/linear`, `/linear/projects`, and `POST /projects` are declared before `/<issue_identifier>`. Unsupported methods on those routes return `405`. `POST /linear` never echoes `api_key`.
 
 ---
 

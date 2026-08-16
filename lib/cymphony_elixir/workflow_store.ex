@@ -57,6 +57,14 @@ defmodule CymphonyElixir.WorkflowStore do
     GenServer.call(server, :force_reload)
   end
 
+  @doc """
+  Returns the workflow path this store is bound to.
+  """
+  @spec path(GenServer.server()) :: String.t()
+  def path(server) do
+    GenServer.call(server, :path)
+  end
+
   @impl true
   def init(opts) do
     fixed_path = Keyword.get(opts, :workflow_path)
@@ -73,6 +81,10 @@ defmodule CymphonyElixir.WorkflowStore do
   end
 
   @impl true
+  def handle_call(:path, _from, %State{} = state) do
+    {:reply, state.path, state}
+  end
+
   def handle_call(:current, _from, %State{} = state) do
     case reload_state(state) do
       {:ok, new_state} ->

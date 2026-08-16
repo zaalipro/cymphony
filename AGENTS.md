@@ -12,8 +12,11 @@ The Elixir agent orchestration service that polls Linear, creates per-issue work
 ## Codebase-Specific Conventions
 
 - Runtime config is loaded from `WORKFLOW.md` front matter via `CymphonyElixir.Workflow` and `CymphonyElixir.Config`.
-- Agent kinds are the closed set from `CymphonyElixir.Agent.known_kinds/0` (`claude`, `codex`, `antigravity`). Select at run time with `cymphony agent antigravity`, a Linear label `agent:antigravity`, or a description directive `cymphony: agent=antigravity`. Antigravity provider env prefixes are `ANTIGRAVITY_` / `GOOGLE_` / `GEMINI_` (plus `API_TIMEOUT`; fallback keys `GOOGLE_API_KEY` / `GEMINI_API_KEY`).
+- Agent kinds are the closed set from `CymphonyElixir.Agent.known_kinds/0` (`claude`, `codex`, `antigravity`). Select at run time with `cymphony agent antigravity`, a Linear label `agent:antigravity`, or a description directive `cymphony: agent=antigravity`. Antigravity provider env prefixes are `ANTIGRAVITY_` / `GOOGLE_` / `GEMINI_` (plus `API_TIMEOUT`; fallback keys `GOOGLE_API_KEY` / `GEMINI_API_KEY`). Provider prefixes are unchanged by dashboard Linear connect / add-project / agent persist.
 - The dashboard expanded session row has a live Harness stdout pane (`HarnessStream`) and a per-session agent-kind select on `set_issue_run_spec`.
+- Settings drawer (after Experience, before Automation; simple and advanced): Linear connect (`phx-submit="connect_linear"`, `#linear-api-key`) persists `linear_api_key` to `~/.cymphony/config.json` (chmod 0600; never log or flash the raw key) and add-project (`phx-submit="add_project"`) starts the new project without a daemon restart. `LINEAR_API_KEY` is `Schema.finalize_settings/1` fallback only.
+- HTTP: `GET`/`POST /api/v1/linear`, `GET /api/v1/linear/projects`, `POST /api/v1/projects` (declare before `/api/v1/:issue_identifier`).
+- Project-header agent `<select id="agent-<name>">` and effort `<select id="effort-<name>">` are stable (never embed kind/effort). Changing a known kind persists immediately (kind only). Header Set and `POST /api/v1/agent` rewrite the project `WORKFLOW.md` and overlay `config.json` so `snapshot.agent_kind` survives refresh.
 - Keep the implementation aligned with [`SPEC.md`](SPEC.md) where practical.
   - The implementation may be a superset of the spec.
   - The implementation must not conflict with the spec.
@@ -64,4 +67,4 @@ If behavior/config changes, update docs in the same PR:
 - `README.md` for project concept and goals.
 - `README.md` for Elixir implementation and run instructions.
 - `WORKFLOW.md` for workflow/config contract changes.
-- `CLAUDE.md` / `AGENTS.md` for CLI, labels, dashboard Harness pane, and provider prefixes.
+- `CLAUDE.md` / `AGENTS.md` for CLI, labels, dashboard Harness pane, Linear connect / add-project, agent-select persist, and provider prefixes.

@@ -10,6 +10,8 @@ defmodule CymphonyElixir.ProjectSupervisor do
   use Supervisor
 
   alias CymphonyElixir.{Orchestrator, WorkflowStore}
+  alias CymphonyElixir.Cymphony.Config, as: CymphonyConfig
+  alias CymphonyElixir.Cymphony.WorkflowGenerator
 
   @type project_spec :: [
           {:name, String.t()}
@@ -52,8 +54,11 @@ defmodule CymphonyElixir.ProjectSupervisor do
   @spec lookup(String.t(), atom()) :: pid() | nil
   def lookup(project_name, role) do
     case Registry.lookup(CymphonyElixir.ProjectRegistry, {project_name, role}) do
-      [{pid, _}] -> pid
-      [] -> nil
+      [{pid, _}] ->
+        if Process.alive?(pid), do: pid, else: nil
+
+      [] ->
+        nil
     end
   end
 
@@ -87,5 +92,85 @@ defmodule CymphonyElixir.ProjectSupervisor do
     end)
   rescue
     _ -> []
+  end
+
+  @doc """
+  Starts a project supervisor under `ProjectDynamicSupervisor`.
+
+  `{:already_started, _}` is treated as success so a second start of the
+  same project is a no-op. Other start errors are returned.
+  """
+  @spec start_project(String.t(), String.t()) :: :ok | {:error, term()}
+  def start_project(project_name, workflow_path)
+      when is_binary(project_name) and is_binary(workflow_path) do
+    spec = {__MODULE__, project_name: project_name, workflow_path: workflow_path}
+
+    case DynamicSupervisor.start_child(CymphonyElixir.ProjectDynamicSupervisor, spec) do
+      {:ok, _pid} -> :ok
+      {:error, {:already_started, _pid}} -> :ok
+      {:error, reason} -> {:error, reason}
+    end
+  end
+
+  @doc """
+  Stops the named project's supervisor if it is running under
+  `ProjectDynamicSupervisor`.
+  """
+  @spec stop_project(String.t()) :: :ok | {:error, :not_found | term()}
+  def stop_project(project_name) when is_binary(project_name) do
+    case lookup(project_name, :supervisor) do
+      nil ->
+        {:error, :not_found}
+
+      pid ->
+        case DynamicSupervisor.terminate_child(CymphonyElixir.ProjectDynamicSupervisor, pid) do
+          :ok ->
+            await_unregistered(project_name)
+            :ok
+
+          other ->
+            other
+        end
+    end
+  end
+
+  @doc """
+  Regenerates the project's temp `WORKFLOW.md` from `config.json` and
+  reloads the running `WorkflowStore`.
+  """
+  @spec rewrite_workflow(String.t()) :: :ok | {:error, :not_found | term()}
+  def rewrite_workflow(project_name) when is_binary(project_name) do
+    case lookup(project_name, :workflow_store) do
+      nil ->
+        {:error, :not_found}
+
+      store ->
+        with {:ok, config} <- CymphonyConfig.load(),
+             {:ok, project} <- CymphonyConfig.find_project(config, project_name) do
+          File.write!(WorkflowStore.path(store), WorkflowGenerator.generate(project))
+          WorkflowStore.force_reload(store)
+        end
+    end
+  end
+
+  # Registry drops names from its monitor :DOWN, which can still be in-flight
+  # after terminate_child/2 returns. Wait so callers see a clean lookup.
+  defp await_unregistered(project_name, remaining_ms \\ 1_000) do
+    still_registered? =
+      Enum.any?([:supervisor, :workflow_store, :orchestrator], fn role ->
+        match?([_ | _], Registry.lookup(CymphonyElixir.ProjectRegistry, {project_name, role}))
+      end)
+
+    cond do
+      not still_registered? ->
+        :ok
+
+      remaining_ms <= 0 ->
+        :ok
+
+      true ->
+        Process.sleep(5)
+        await_unregistered(project_name, remaining_ms - 5)
+    end
   end
 end

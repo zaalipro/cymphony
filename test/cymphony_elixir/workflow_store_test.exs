@@ -137,6 +137,18 @@ defmodule CymphonyElixir.WorkflowStoreTest do
              WorkflowStore.init(workflow_path: missing)
   end
 
+  test "path/1 returns the store's fixed workflow path" do
+    {store, path} = start_named_store!(prompt: "Path prompt")
+    assert WorkflowStore.path(store) == path
+
+    {:ok, workflow} = Workflow.load(path)
+    {:ok, stamp} = file_stamp(path)
+    state = %State{path: path, stamp: stamp, workflow: workflow, fixed_path?: true}
+
+    assert {:reply, ^path, ^state} =
+             WorkflowStore.handle_call(:path, {self(), make_ref()}, state)
+  end
+
   test "start_link/0 uses the global workflow path" do
     stop_named_workflow_store()
     write_workflow_file!(Workflow.workflow_file_path(), prompt: "Default name")

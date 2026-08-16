@@ -7,6 +7,9 @@ defmodule CymphonyElixir.Linear.Client do
   alias CymphonyElixir.{Config, Linear.Issue}
 
   @issue_page_size 50
+  @project_page_size 50
+  @max_project_pages 10
+  @default_linear_graphql_endpoint "https://api.linear.app/graphql"
   @max_error_body_log_bytes 1_000
 
   @query """
@@ -99,6 +102,15 @@ defmodule CymphonyElixir.Linear.Client do
   query CymphonyLinearViewer {
     viewer {
       id
+    }
+  }
+  """
+
+  @projects_query """
+  query CymphonyLinearProjects($first: Int!, $after: String) {
+    projects(first: $first, after: $after) {
+      nodes { id name slugId }
+      pageInfo { hasNextPage endCursor }
     }
   }
   """
@@ -239,6 +251,64 @@ defmodule CymphonyElixir.Linear.Client do
       {:error, reason} ->
         Logger.error("Linear GraphQL request failed: #{inspect(reason)}")
         {:error, {:linear_api_request, reason}}
+    end
+  end
+
+  @doc """
+  Build `graphql/3` opts that authorize with `api_key` and do not read `Config.settings!/0`.
+  """
+  @spec graphql_opts_for_api_key(String.t(), keyword()) :: keyword()
+  def graphql_opts_for_api_key(api_key, opts \\ []) when is_binary(api_key) and is_list(opts) do
+    endpoint = resolve_linear_graphql_endpoint(opts)
+
+    built_opts = [
+      endpoint: endpoint,
+      graphql_headers_fun: fn ->
+        {:ok,
+         [
+           {"Authorization", api_key},
+           {"Content-Type", "application/json"}
+         ]}
+      end,
+      request_fun: fn payload, headers ->
+        post_graphql_request_to(endpoint, payload, headers)
+      end
+    ]
+
+    app_opts = Application.get_env(:cymphony_elixir, :linear_graphql_opts, [])
+    app_opts = if Keyword.keyword?(app_opts), do: app_opts, else: []
+
+    built_opts
+    |> Keyword.merge(app_opts)
+    |> Keyword.merge(Keyword.delete(opts, :endpoint))
+    |> Keyword.put(:endpoint, endpoint)
+  end
+
+  @doc """
+  Validate a pasted Linear API key via `CymphonyLinearViewer`.
+  """
+  @spec validate_api_key(String.t(), keyword()) ::
+          {:ok, %{id: String.t()}} | {:error, :empty | :unauthorized | :invalid | term()}
+  def validate_api_key(api_key, opts \\ []) when is_binary(api_key) and is_list(opts) do
+    with {:ok, key} <- normalize_pasted_api_key(api_key) do
+      case graphql(@viewer_query, %{}, graphql_opts_for_api_key(key, opts)) do
+        {:ok, body} ->
+          decode_viewer_validation(body)
+
+        {:error, reason} ->
+          map_linear_key_request_error(reason)
+      end
+    end
+  end
+
+  @doc """
+  List Linear projects accessible to `api_key` (`slugId` -> `slug_id`).
+  """
+  @spec list_accessible_projects(String.t(), keyword()) ::
+          {:ok, [map()]} | {:error, :empty | :unauthorized | term()}
+  def list_accessible_projects(api_key, opts \\ []) when is_binary(api_key) and is_list(opts) do
+    with {:ok, key} <- normalize_pasted_api_key(api_key) do
+      fetch_accessible_projects(graphql_opts_for_api_key(key, opts), nil, [], 1)
     end
   end
 
@@ -492,6 +562,14 @@ defmodule CymphonyElixir.Linear.Client do
     )
   end
 
+  defp post_graphql_request_to(endpoint, payload, headers) do
+    Req.post(endpoint,
+      headers: headers,
+      json: payload,
+      connect_options: [timeout: 30_000]
+    )
+  end
+
   @doc false
   @spec graphql_opts_for_config(term()) :: keyword()
   def graphql_opts_for_config(nil), do: []
@@ -506,6 +584,175 @@ defmodule CymphonyElixir.Linear.Client do
   defp config_graphql_fun(config) do
     fn query, variables -> graphql(query, variables, graphql_opts_for_config(config)) end
   end
+
+  defp normalize_pasted_api_key(api_key) when is_binary(api_key) do
+    case String.trim(api_key) do
+      "" -> {:error, :empty}
+      key -> {:ok, key}
+    end
+  end
+
+  defp resolve_linear_graphql_endpoint(opts) when is_list(opts) do
+    cond do
+      usable_linear_endpoint?(Keyword.get(opts, :endpoint)) ->
+        String.trim(Keyword.get(opts, :endpoint))
+
+      usable_linear_endpoint?(System.get_env("LINEAR_ENDPOINT")) ->
+        String.trim(System.get_env("LINEAR_ENDPOINT"))
+
+      true ->
+        @default_linear_graphql_endpoint
+    end
+  end
+
+  defp usable_linear_endpoint?(value) when is_binary(value), do: String.trim(value) != ""
+  defp usable_linear_endpoint?(_value), do: false
+
+  defp map_linear_key_request_error({:linear_api_status, status}) when status in [401, 403] do
+    {:error, :unauthorized}
+  end
+
+  defp map_linear_key_request_error(reason), do: {:error, reason}
+
+  defp decode_viewer_validation(body) when is_map(body) do
+    cond do
+      linear_graphql_auth_error?(body) ->
+        {:error, :unauthorized}
+
+      viewer_id = viewer_id_from_body(body) ->
+        {:ok, %{id: viewer_id}}
+
+      true ->
+        {:error, :invalid}
+    end
+  end
+
+  defp decode_viewer_validation(_body), do: {:error, :invalid}
+
+  defp viewer_id_from_body(%{"data" => %{"viewer" => %{"id" => id}}}) when is_binary(id) do
+    case String.trim(id) do
+      "" -> nil
+      trimmed -> trimmed
+    end
+  end
+
+  defp viewer_id_from_body(_body), do: nil
+
+  defp fetch_accessible_projects(_opts, _after_cursor, acc, page) when page > @max_project_pages do
+    {:ok, Enum.reverse(acc)}
+  end
+
+  defp fetch_accessible_projects(opts, after_cursor, acc, page) do
+    variables = %{first: @project_page_size, after: after_cursor}
+
+    case graphql(@projects_query, variables, opts) do
+      {:ok, body} ->
+        with {:ok, projects, page_info} <- decode_projects_page(body) do
+          updated_acc = Enum.reverse(projects, acc)
+
+          case next_project_page_cursor(page_info) do
+            {:ok, next_cursor} ->
+              fetch_accessible_projects(opts, next_cursor, updated_acc, page + 1)
+
+            :done ->
+              {:ok, Enum.reverse(updated_acc)}
+
+            {:error, reason} ->
+              {:error, reason}
+          end
+        end
+
+      {:error, reason} ->
+        map_linear_key_request_error(reason)
+    end
+  end
+
+  defp decode_projects_page(body) when is_map(body) do
+    cond do
+      linear_graphql_auth_error?(body) ->
+        {:error, :unauthorized}
+
+      linear_graphql_errors?(body) ->
+        {:error, {:linear_graphql_errors, body["errors"]}}
+
+      match?(%{"data" => %{"projects" => %{"nodes" => nodes}}} when is_list(nodes), body) ->
+        nodes = get_in(body, ["data", "projects", "nodes"])
+        page_info = get_in(body, ["data", "projects", "pageInfo"])
+        {:ok, Enum.flat_map(nodes, &normalize_linear_project/1), page_info}
+
+      true ->
+        {:error, :linear_unknown_payload}
+    end
+  end
+
+  defp decode_projects_page(_body), do: {:error, :linear_unknown_payload}
+
+  defp normalize_linear_project(%{"id" => id, "name" => name, "slugId" => slug_id})
+       when is_binary(id) and is_binary(name) and is_binary(slug_id) do
+    case String.trim(slug_id) do
+      "" ->
+        []
+
+      trimmed_slug ->
+        [%{id: id, name: name, slug_id: trimmed_slug}]
+    end
+  end
+
+  defp normalize_linear_project(_node), do: []
+
+  defp next_project_page_cursor(%{"hasNextPage" => true, "endCursor" => end_cursor})
+       when is_binary(end_cursor) and byte_size(end_cursor) > 0 do
+    {:ok, end_cursor}
+  end
+
+  defp next_project_page_cursor(%{has_next_page: true, end_cursor: end_cursor})
+       when is_binary(end_cursor) and byte_size(end_cursor) > 0 do
+    {:ok, end_cursor}
+  end
+
+  defp next_project_page_cursor(%{"hasNextPage" => true}), do: {:error, :linear_missing_end_cursor}
+  defp next_project_page_cursor(%{has_next_page: true}), do: {:error, :linear_missing_end_cursor}
+  defp next_project_page_cursor(_page_info), do: :done
+
+  defp linear_graphql_errors?(%{"errors" => errors}) when is_list(errors) and errors != [], do: true
+  defp linear_graphql_errors?(_body), do: false
+
+  defp linear_graphql_auth_error?(%{"errors" => errors}) when is_list(errors) and errors != [] do
+    Enum.any?(errors, &linear_auth_error_entry?/1)
+  end
+
+  defp linear_graphql_auth_error?(_body), do: false
+
+  defp linear_auth_error_entry?(error) when is_map(error) do
+    linear_auth_error_code?(linear_error_extension_code(error)) or
+      linear_auth_error_message?(error["message"])
+  end
+
+  defp linear_auth_error_entry?(_error), do: false
+
+  defp linear_error_extension_code(%{"extensions" => %{"code" => code}}) when is_binary(code), do: code
+  defp linear_error_extension_code(_error), do: nil
+
+  defp linear_auth_error_code?(code) when is_binary(code) do
+    case String.upcase(String.trim(code)) do
+      "AUTHENTICATION_ERROR" -> true
+      "UNAUTHENTICATED" -> true
+      "UNAUTHORIZED" -> true
+      "FORBIDDEN" -> true
+      _ -> false
+    end
+  end
+
+  defp linear_auth_error_code?(_code), do: false
+
+  defp linear_auth_error_message?(message) when is_binary(message) do
+    Regex.match?(
+      Regex.compile!("(?i)(authentication|unauthenticated|unauthorized|forbidden)"),
+      message
+    )
+  end
+
+  defp linear_auth_error_message?(_message), do: false
 
   defp decode_linear_response(%{"data" => %{"issues" => %{"nodes" => nodes}}}, assignee_filter) do
     issues =
