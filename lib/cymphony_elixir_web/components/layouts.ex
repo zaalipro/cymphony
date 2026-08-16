@@ -93,6 +93,89 @@ defmodule CymphonyElixirWeb.Layouts do
                     }
                   }
                 },
+                // Advances every [data-clock] span locally so the server never has to
+                // re-render time strings on a timer. Anchors are remaining/elapsed
+                // amounts (never absolute wall times), so client clock skew cannot
+                // accumulate: each tick compares the span's current data attributes
+                // against the snapshot cached on the node and re-anchors when the
+                // server patched them. Formatting mirrors dashboard_live.ex byte for
+                // byte; a span with missing or unparseable data is left untouched, so
+                // the server-rendered text stays as the no-JS fallback.
+                LiveClock: {
+                  mounted() {
+                    this._onClockTick = this.tick.bind(this);
+                    this.tick();
+                    this._clockTimer = window.setInterval(this._onClockTick, 1000);
+                  },
+                  // Every LiveView patch re-serializes this container from the server's
+                  // cached tree and morphdom writes each span's textContent back to what
+                  // the server rendered at the last payload load. Without repainting here
+                  // the clocks would rewind on every patch (a streaming harness pane
+                  // patches ~12x/sec) and stay wrong until the next 1s interval.
+                  updated() {
+                    this.tick();
+                  },
+                  destroyed() {
+                    if (this._clockTimer) {
+                      window.clearInterval(this._clockTimer);
+                      this._clockTimer = null;
+                    }
+                  },
+                  tick() {
+                    var nodes = this.el.querySelectorAll('[data-clock]');
+                    var now = Date.now();
+                    for (var i = 0; i < nodes.length; i++) {
+                      this.paint(nodes[i], now);
+                    }
+                  },
+                  paint(el, now) {
+                    var kind = el.getAttribute('data-clock');
+                    var remaining = el.getAttribute('data-remaining-ms');
+                    var base = el.getAttribute('data-base-seconds');
+                    var rate = el.getAttribute('data-rate');
+                    var snapshot = kind + '|' + remaining + '|' + base + '|' + rate;
+                    if (el._clockSnapshot !== snapshot) {
+                      el._clockSnapshot = snapshot;
+                      el._clockAnchoredAt = now;
+                    }
+                    var elapsedMs = now - el._clockAnchoredAt;
+                    if (!(elapsedMs > 0)) elapsedMs = 0;
+                    var text = null;
+                    if (kind === 'countdown' || kind === 'due') {
+                      var left = parseFloat(remaining);
+                      if (!isFinite(left)) return;
+                      left = left - elapsedMs;
+                      text = kind === 'due' ? this.formatDue(left) : this.formatCountdown(left);
+                    } else if (kind === 'elapsed') {
+                      var seconds = parseFloat(base);
+                      if (!isFinite(seconds)) return;
+                      var perSecond = parseFloat(rate);
+                      if (!isFinite(perSecond)) perSecond = 1;
+                      text = this.formatElapsed(seconds + perSecond * (elapsedMs / 1000));
+                    } else {
+                      return;
+                    }
+                    if (el.textContent !== text) el.textContent = text;
+                  },
+                  // format_runtime_seconds/1
+                  formatElapsed(seconds) {
+                    var whole = Math.trunc(seconds);
+                    if (!(whole > 0)) whole = 0;
+                    var mins = Math.trunc(whole / 60);
+                    return mins + 'm ' + (whole - mins * 60) + 's';
+                  },
+                  // format_poll_countdown/1
+                  formatCountdown(ms) {
+                    var seconds = Math.trunc(ms / 1000);
+                    if (!(seconds > 0)) seconds = 0;
+                    return seconds + 's';
+                  },
+                  // format_retry_countdown/2
+                  formatDue(ms) {
+                    if (!(ms > 0)) return 'now';
+                    return this.formatElapsed(Math.trunc(ms / 1000));
+                  }
+                },
                 Combobox: {
                   mounted() {
                     this._onSearchInput = this.onSearchInput.bind(this);
