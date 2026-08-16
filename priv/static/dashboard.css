@@ -2371,7 +2371,30 @@ select:focus {
   z-index: var(--z-combobox);
 }
 
-.combobox--menu::after {
+.combobox-trigger {
+  position: relative;
+  display: flex;
+  align-items: center;
+  width: 100%;
+  min-width: 0;
+  min-height: 34px;
+  margin: 0;
+  padding: 6px 28px 6px 10px;
+  border: 1px solid var(--line);
+  border-radius: 10px;
+  background: var(--surface);
+  color: var(--ink);
+  font: inherit;
+  font-size: var(--text-body-sm);
+  font-family: var(--font-mono);
+  font-weight: 500;
+  letter-spacing: 0;
+  text-align: left;
+  line-height: 1.3;
+  cursor: pointer;
+}
+
+.combobox-trigger::after {
   content: "";
   position: absolute;
   top: 50%;
@@ -2384,19 +2407,71 @@ select:focus {
   pointer-events: none;
 }
 
-.combobox--menu.combobox--open::after {
+.combobox--open .combobox-trigger::after {
   transform: translateY(-20%) rotate(225deg);
 }
 
-.combobox-input {
+.combobox-trigger:focus,
+.combobox-trigger:focus-visible {
+  outline: none;
+  border-color: var(--accent);
+  box-shadow: 0 0 0 1px var(--accent);
+}
+
+.combobox-trigger-label {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.combobox-trigger--empty .combobox-trigger-label {
+  color: var(--ink-mute);
+}
+
+.combobox-input,
+.combobox-search {
   width: 100%;
   min-width: 0;
   color: var(--ink);
   caret-color: var(--ink);
 }
 
-.combobox--menu .combobox-input {
-  padding-right: 28px;
+.combobox-panel {
+  position: absolute;
+  top: calc(100% + 6px);
+  left: 0;
+  right: 0;
+  z-index: var(--z-combobox);
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  padding: 8px;
+  background: var(--surface);
+  border: 1px solid var(--line-strong);
+  border-radius: 14px;
+  box-shadow:
+    0 0 0 1px rgba(254, 252, 251, 0.04),
+    0 18px 40px rgba(0, 0, 0, 0.42);
+}
+
+.combobox-panel[hidden] {
+  display: none;
+}
+
+.combobox-search {
+  border: 1px solid var(--line-strong);
+  background: var(--surface-deep);
+  border-radius: 10px;
+  padding: 7px 10px;
+  font: inherit;
+  font-size: var(--text-body-sm);
+  font-family: var(--font-mono);
+  outline: none;
+}
+
+.combobox-search:focus {
+  border-color: var(--accent);
+  box-shadow: 0 0 0 1px var(--accent);
 }
 
 .inline-form .combobox,
@@ -2441,41 +2516,28 @@ select:focus {
   box-shadow: 0 0 0 1px var(--accent);
 }
 
-.settings-drawer .combobox-input,
-.settings-drawer .combobox-input.settings-field {
+.settings-drawer .combobox-trigger,
+.settings-drawer .combobox-trigger.settings-field {
   background: var(--surface-deep);
   border: 1px solid var(--line-strong);
-  padding: 8px 10px;
-  border-radius: 8px;
-  color: var(--ink);
-  caret-color: var(--ink);
-}
-
-.settings-drawer .combobox-input:focus,
-.settings-drawer .combobox-input.settings-field:focus {
-  border-color: var(--accent);
-  box-shadow: 0 0 0 1px var(--accent);
+  min-height: 30px;
+  padding: 4px 28px 4px 8px;
+  border-radius: 7px;
 }
 
 .combobox-list {
-  position: absolute;
-  top: calc(100% + 6px);
-  left: 0;
-  right: 0;
-  z-index: var(--z-combobox);
-  max-height: min(360px, 50vh);
+  position: static;
+  z-index: auto;
+  max-height: min(280px, 46vh);
   overflow: auto;
   margin: 0;
-  padding: 6px;
+  padding: 0;
   list-style: none;
-  background: var(--surface);
-  border: 1px solid var(--line-strong);
-  border-radius: 14px;
-  box-shadow:
-    0 0 0 1px rgba(254, 252, 251, 0.04),
-    0 18px 40px rgba(0, 0, 0, 0.42);
+  background: transparent;
+  border: none;
+  border-radius: 0;
+  box-shadow: none;
   color: var(--ink);
-  backdrop-filter: blur(16px);
 }
 
 .combobox-list[hidden],
@@ -2499,27 +2561,15 @@ select:focus {
   color: var(--ink);
 }
 
-.queue-card-edit .combobox,
-.queue-card-edit .combobox-input {
+.queue-card-edit .combobox {
   min-width: 0;
   width: 100%;
   flex: 0 0 auto;
 }
 
-.queue-card-edit .combobox-input {
-  border: 1px solid var(--line-strong);
+.queue-card-edit .combobox-trigger {
   background: var(--surface-deep);
-  border-radius: 10px;
-  padding: 8px 28px 8px 10px;
-  font: inherit;
-  font-size: var(--text-body-sm);
-  font-family: var(--font-mono);
-  outline: none;
-}
-
-.queue-card-edit .combobox-input:focus {
-  border-color: var(--accent);
-  box-shadow: 0 0 0 1px var(--accent);
+  border-color: var(--line-strong);
 }
 
 .session-row-detail .combobox-list {
@@ -2556,8 +2606,4 @@ select:focus {
     overflow: visible;
   }
 
-  .combobox-list {
-    position: absolute;
-    z-index: var(--z-combobox);
-  }
 }

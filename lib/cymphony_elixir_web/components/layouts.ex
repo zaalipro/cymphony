@@ -95,11 +95,12 @@ defmodule CymphonyElixirWeb.Layouts do
                 },
                 Combobox: {
                   mounted() {
-                    this._onInput = this.onInput.bind(this);
-                    this._onKeydown = this.onKeydown.bind(this);
+                    this._onSearchInput = this.onSearchInput.bind(this);
+                    this._onSearchKeydown = this.onSearchKeydown.bind(this);
+                    this._onTriggerClick = this.onTriggerClick.bind(this);
+                    this._onTriggerKeydown = this.onTriggerKeydown.bind(this);
                     this._onPointer = this.onPointer.bind(this);
                     this._onDocPointer = this.onDocPointer.bind(this);
-                    this._onFocus = this.onFocus.bind(this);
                     this.open = false;
                     this.activeIndex = -1;
                     this.options = [];
@@ -107,44 +108,54 @@ defmodule CymphonyElixirWeb.Layouts do
                     this.bind();
                     this.cacheOptions();
                     this.close();
+                    this.syncTrigger();
                   },
                   updated() {
+                    var keep = this.el.contains(document.activeElement);
                     this.bind();
                     this.cacheOptions();
-                    if (this.el.contains(document.activeElement)) {
-                      this.filter(this.input ? this.input.value : '');
-                    } else {
-                      this.close();
-                    }
+                    this.syncTrigger();
+                    if (keep && this.open) this.filter(this.search ? this.search.value : '');
+                    else this.close();
                   },
                   destroyed() {
                     if (this.setChrome) this.setChrome(false);
                     this.unbind();
                   },
+                  allowCustom() {
+                    return this.el.getAttribute('data-allow-custom') === 'true';
+                  },
                   queryParts() {
-                    this.input = this.el.querySelector('.combobox-input');
+                    this.trigger = this.el.querySelector('.combobox-trigger');
+                    this.search = this.el.querySelector('.combobox-search, .combobox-input');
                     this.hidden = this.el.querySelector('input[type="hidden"]');
+                    this.panel = this.el.querySelector('.combobox-panel');
                     this.list = this.el.querySelector('ul[role="listbox"]');
+                    this.triggerLabel = this.el.querySelector('.combobox-trigger-label');
                   },
                   bind() {
                     this.unbind();
                     this.queryParts();
-                    if (this.input) {
-                      this.input.addEventListener('input', this._onInput);
-                      this.input.addEventListener('keydown', this._onKeydown);
-                      this.input.addEventListener('focus', this._onFocus);
-                      this.input.addEventListener('click', this._onFocus);
+                    if (this.trigger) {
+                      this.trigger.addEventListener('click', this._onTriggerClick);
+                      this.trigger.addEventListener('keydown', this._onTriggerKeydown);
+                    }
+                    if (this.search) {
+                      this.search.addEventListener('input', this._onSearchInput);
+                      this.search.addEventListener('keydown', this._onSearchKeydown);
                     }
                     this.el.addEventListener('mousedown', this._onPointer);
                     this.el.addEventListener('click', this._onPointer);
                     document.addEventListener('mousedown', this._onDocPointer);
                   },
                   unbind() {
-                    if (this.input) {
-                      this.input.removeEventListener('input', this._onInput);
-                      this.input.removeEventListener('keydown', this._onKeydown);
-                      this.input.removeEventListener('focus', this._onFocus);
-                      this.input.removeEventListener('click', this._onFocus);
+                    if (this.trigger) {
+                      this.trigger.removeEventListener('click', this._onTriggerClick);
+                      this.trigger.removeEventListener('keydown', this._onTriggerKeydown);
+                    }
+                    if (this.search) {
+                      this.search.removeEventListener('input', this._onSearchInput);
+                      this.search.removeEventListener('keydown', this._onSearchKeydown);
                     }
                     this.el.removeEventListener('mousedown', this._onPointer);
                     this.el.removeEventListener('click', this._onPointer);
@@ -167,10 +178,34 @@ defmodule CymphonyElixirWeb.Layouts do
                     return (opt.textContent || '').trim();
                   },
                   optionText(opt) {
-                    return opt ? (opt.textContent || '') : '';
+                    if (!opt) return '';
+                    var label = opt.getAttribute('data-label');
+                    if (label) return label;
+                    return (opt.textContent || '').trim();
                   },
-                  syncHidden() {
-                    if (this.hidden && this.input) this.hidden.value = this.input.value;
+                  currentValue() {
+                    return this.hidden ? (this.hidden.value || '') : '';
+                  },
+                  placeholder() {
+                    return this.el.getAttribute('data-placeholder') || '';
+                  },
+                  syncTrigger() {
+                    if (!this.triggerLabel) return;
+                    var value = this.currentValue();
+                    var label = this.placeholder();
+                    var i, opt;
+                    if (value !== '') {
+                      label = value;
+                      for (i = 0; i < (this.options || []).length; i++) {
+                        opt = this.options[i];
+                        if (this.optionValue(opt) === value) {
+                          label = this.optionText(opt);
+                          break;
+                        }
+                      }
+                    }
+                    this.triggerLabel.textContent = label;
+                    if (this.trigger) this.trigger.classList.toggle('combobox-trigger--empty', value === '');
                   },
                   notifyHidden() {
                     if (!this.hidden) return;
@@ -189,15 +224,24 @@ defmodule CymphonyElixirWeb.Layouts do
                   },
                   setOpen(open) {
                     this.open = !!open;
-                    if (this.list) this.list.hidden = !this.open;
+                    if (this.panel) this.panel.hidden = !this.open;
                     this.setChrome(this.open);
-                    if (this.input) {
-                      this.input.setAttribute('aria-expanded', this.open ? 'true' : 'false');
-                      if (!this.open) this.input.removeAttribute('aria-activedescendant');
+                    if (this.trigger) this.trigger.setAttribute('aria-expanded', this.open ? 'true' : 'false');
+                    if (this.search) {
+                      this.search.setAttribute('aria-expanded', this.open ? 'true' : 'false');
+                      if (!this.open) this.search.removeAttribute('aria-activedescendant');
                     }
                     if (!this.open) this.clearActive();
                   },
+                  openPanel() {
+                    if (this.search) this.search.value = '';
+                    this.filter('');
+                    this.setOpen(true);
+                    var search = this.search;
+                    if (search) window.setTimeout(function() { search.focus(); }, 0);
+                  },
                   close() {
+                    if (this.search) this.search.value = '';
                     this.setOpen(false);
                   },
                   clearActive() {
@@ -205,7 +249,7 @@ defmodule CymphonyElixirWeb.Layouts do
                     (this.options || []).forEach(function(opt) {
                       opt.setAttribute('aria-selected', 'false');
                     });
-                    if (this.input) this.input.removeAttribute('aria-activedescendant');
+                    if (this.search) this.search.removeAttribute('aria-activedescendant');
                   },
                   setActive(index) {
                     var vis = this.visibleOptions || [];
@@ -220,9 +264,9 @@ defmodule CymphonyElixirWeb.Layouts do
                     vis.forEach(function(opt, i) {
                       opt.setAttribute('aria-selected', i === index ? 'true' : 'false');
                     });
-                    if (this.input) {
-                      if (active && active.id) this.input.setAttribute('aria-activedescendant', active.id);
-                      else this.input.removeAttribute('aria-activedescendant');
+                    if (this.search) {
+                      if (active && active.id) this.search.setAttribute('aria-activedescendant', active.id);
+                      else this.search.removeAttribute('aria-activedescendant');
                     }
                     if (active && active.scrollIntoView) active.scrollIntoView({block: 'nearest'});
                   },
@@ -238,10 +282,9 @@ defmodule CymphonyElixirWeb.Layouts do
                     }, this);
                     this.visibleOptions = visible;
                     this.clearActive();
-                    this.setOpen(true);
                   },
                   moveActive(delta) {
-                    if (!this.open) this.filter(this.input ? this.input.value : '');
+                    if (!this.open) this.openPanel();
                     var vis = this.visibleOptions || [];
                     if (!vis.length) return;
                     var next;
@@ -249,12 +292,21 @@ defmodule CymphonyElixirWeb.Layouts do
                     else next = this.activeIndex + delta;
                     this.setActive(next);
                   },
-                  onInput() {
-                    this.syncHidden();
-                    this.filter(this.input ? this.input.value : '');
+                  onSearchInput() {
+                    this.filter(this.search ? this.search.value : '');
+                    if (!this.open) this.setOpen(true);
                   },
-                  onFocus() {
-                    this.filter(this.input ? this.input.value : '');
+                  onTriggerClick(e) {
+                    e.preventDefault();
+                    if (this.open) this.close();
+                    else this.openPanel();
+                  },
+                  onTriggerKeydown(e) {
+                    var key = e.key;
+                    if (key === 'ArrowDown' || key === 'Enter' || key === ' ') {
+                      e.preventDefault();
+                      this.openPanel();
+                    }
                   },
                   onPointer(e) {
                     var opt = e.target.closest ? e.target.closest('[role="option"]') : null;
@@ -265,18 +317,25 @@ defmodule CymphonyElixirWeb.Layouts do
                   onDocPointer(e) {
                     if (!this.el.contains(e.target)) this.close();
                   },
-                  commitOption(opt) {
-                    var value = this.optionValue(opt);
-                    if (this.input) this.input.value = value;
+                  commitValue(value, label) {
                     if (this.hidden) this.hidden.value = value;
+                    if (this.triggerLabel) this.triggerLabel.textContent = label || value || this.placeholder();
+                    if (this.trigger) this.trigger.classList.toggle('combobox-trigger--empty', !value);
                     this.notifyHidden();
                     this.close();
                   },
-                  commitText() {
-                    this.syncHidden();
-                    this.close();
+                  commitOption(opt) {
+                    this.commitValue(this.optionValue(opt), this.optionText(opt));
                   },
-                  onKeydown(e) {
+                  commitSearchText() {
+                    if (!this.allowCustom()) {
+                      this.close();
+                      return;
+                    }
+                    var text = this.search ? this.search.value.trim() : '';
+                    this.commitValue(text, text || this.placeholder());
+                  },
+                  onSearchKeydown(e) {
                     var key = e.key;
                     if (key === 'ArrowDown') {
                       e.preventDefault();
@@ -306,16 +365,16 @@ defmodule CymphonyElixirWeb.Layouts do
                       e.preventDefault();
                       var vis = this.visibleOptions || [];
                       if (this.activeIndex >= 0 && vis[this.activeIndex]) this.commitOption(vis[this.activeIndex]);
-                      else this.commitText();
+                      else this.commitSearchText();
                       return;
                     }
                     if (key === 'Escape') {
-                      if (!this.open) return;
                       e.preventDefault();
                       this.close();
+                      if (this.trigger) this.trigger.focus();
                       return;
                     }
-                    if (key === 'Tab') this.commitText();
+                    if (key === 'Tab') this.close();
                   }
                 },
                 QueueBoard: {
@@ -847,7 +906,7 @@ defmodule CymphonyElixirWeb.Layouts do
                     if (!t || !t.closest) return;
                     if (this.el.contains(t)) return;
                     if (t.closest('.queue-card-edit-toggle')) return;
-                    if (t.closest('.combobox-list')) return;
+                    if (t.closest('.combobox-list') || t.closest('.combobox-panel')) return;
                     document.documentElement.removeAttribute('data-drawer');
                     this.pushEvent('dismiss_overlays', {});
                   },
@@ -883,6 +942,7 @@ defmodule CymphonyElixirWeb.Layouts do
                     if (target.closest('.settings-drawer')) return true;
                     if (target.closest('.queue-card-edit')) return true;
                     if (target.closest('.combobox-list')) return true;
+                    if (target.closest('.combobox-panel')) return true;
                     if (target.closest('.combobox.combobox--open')) return true;
                     return false;
                   },
