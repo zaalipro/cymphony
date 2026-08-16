@@ -142,6 +142,30 @@ defmodule CymphonyElixirWeb.ObservabilityApiController do
     end
   end
 
+  @doc """
+  Persists the dashboard payload refresh interval. Distinct from `refresh/2`
+  (Linear poll). Ignores `?project=`.
+  """
+  @spec refresh_interval(Conn.t(), map()) :: Conn.t()
+  def refresh_interval(conn, params) do
+    case Control.parse_concurrency(params["value"]) do
+      {:ok, n} ->
+        Control.set_dashboard_refresh_seconds(n)
+
+        conn
+        |> put_status(202)
+        |> json(%{dashboard_refresh_seconds: n})
+
+      :error ->
+        error_response(
+          conn,
+          422,
+          "invalid_refresh_interval",
+          "refresh interval 'value' must be a positive integer"
+        )
+    end
+  end
+
   @spec completed(Conn.t(), map()) :: Conn.t()
   def completed(conn, params) do
     project_filter = normalize_project(params["project"])

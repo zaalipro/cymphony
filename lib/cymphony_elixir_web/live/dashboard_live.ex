@@ -11,7 +11,6 @@ defmodule CymphonyElixirWeb.DashboardLive do
 
   @version Mix.Project.config()[:version]
   @runtime_tick_ms 1_000
-  @payload_refresh_ms 3_000
   @harness_tail_cap 400
   @default_payload %{
     counts: %{running: 0, retrying: 0, by_state: %{}, by_kind: %{}},
@@ -31,6 +30,8 @@ defmodule CymphonyElixirWeb.DashboardLive do
     last_refresh =
       if connected?, do: System.monotonic_time(:millisecond), else: nil
 
+    refresh_seconds = CymphonyConfig.dashboard_refresh_seconds()
+
     socket =
       socket
       |> assign(:payload, initial_payload)
@@ -43,10 +44,16 @@ defmodule CymphonyElixirWeb.DashboardLive do
       |> assign(:token_samples, update_token_samples([], initial_payload))
       |> assign(:version, @version)
       |> assign(:last_payload_refresh, last_refresh)
+      |> assign(:payload_refresh_seconds, refresh_seconds)
+      |> assign(:payload_refresh_ms, refresh_seconds * 1000)
       |> assign(:linear_status, Control.linear_status())
       |> assign(:linear_projects, [])
       |> assign(:linear_error, nil)
       |> assign(:add_project_error, nil)
+      |> assign(:add_project_kind, "")
+      |> assign(:add_project_model, "")
+      |> assign(:add_project_effort, "")
+      |> assign(:add_project_provider, "")
       |> assign(:payload_seq, 0)
 
     if connected? do
@@ -138,6 +145,27 @@ defmodule CymphonyElixirWeb.DashboardLive do
 
       :error ->
         {:noreply, put_flash(socket, :error, "Concurrency must be a positive integer")}
+    end
+  end
+
+  @impl true
+  def handle_event("set_refresh_interval", %{"value" => raw_value}, socket) do
+    case Control.parse_concurrency(raw_value) do
+      {:ok, n} ->
+        case Control.set_dashboard_refresh_seconds(n) do
+          :ok ->
+            {:noreply,
+             socket
+             |> assign(:payload_refresh_seconds, n)
+             |> assign(:payload_refresh_ms, n * 1000)
+             |> put_flash(:info, "Dashboard refresh set to #{n}s; persisted to ~/.cymphony/config.json")}
+
+          {:error, _reason} ->
+            {:noreply, put_flash(socket, :error, "Could not persist dashboard refresh interval")}
+        end
+
+      :error ->
+        {:noreply, put_flash(socket, :error, "Refresh interval must be a positive integer")}
     end
   end
 
@@ -279,6 +307,18 @@ defmodule CymphonyElixirWeb.DashboardLive do
   end
 
   @impl true
+  def handle_event("preview_add_project", params, socket) do
+    kind = draft_add_project_field(params, "agent", socket, :add_project_kind)
+
+    {:noreply,
+     socket
+     |> assign(:add_project_kind, kind)
+     |> assign(:add_project_model, draft_add_project_field(params, "model", socket, :add_project_model))
+     |> assign(:add_project_effort, draft_add_project_field(params, "effort", socket, :add_project_effort))
+     |> assign(:add_project_provider, draft_add_project_field(params, "provider", socket, :add_project_provider))}
+  end
+
+  @impl true
   def handle_event("toggle_project_pause", %{"project" => project_name}, socket) do
     case toggle_project_pause(socket.assigns.payload, project_name) do
       :ok ->
@@ -340,9 +380,10 @@ defmodule CymphonyElixirWeb.DashboardLive do
 
     now = System.monotonic_time(:millisecond)
     last = socket.assigns[:last_payload_refresh] || 0
+    refresh_ms = socket.assigns[:payload_refresh_ms] || 3_000
 
     socket =
-      if now - last >= @payload_refresh_ms do
+      if now - last >= refresh_ms do
         socket
         |> spawn_payload_load()
         |> assign(:last_payload_refresh, now)
@@ -612,7 +653,8 @@ defmodule CymphonyElixirWeb.DashboardLive do
               name="api_key"
               id="linear-api-key"
               autocomplete="off"
-              class="inline-input"
+              class="settings-field"
+              placeholder="lin_api_…"
               value=""
             />
             <button type="submit" class="subtle-button">Connect</button>
@@ -625,33 +667,56 @@ defmodule CymphonyElixirWeb.DashboardLive do
         <section class="settings-group settings-group--projects">
           <h3 class="settings-group-title">Projects</h3>
           <%= if @linear_status.connected do %>
-            <form id="add-project-form" phx-submit="add_project" class="inline-form">
-              <label class="inline-label" for="add-project-slug">Linear project</label>
-              <select id="add-project-slug" name="linear_project_slug" class="inline-input">
-                <%= for project <- @linear_projects do %>
-                  <option value={linear_project_slug(project)}>
-                    <%= linear_project_name(project) %> (<%= linear_project_slug(project) %>)
-                  </option>
-                <% end %>
-              </select>
+            <form
+              id="add-project-form"
+              phx-change="preview_add_project"
+              phx-submit="add_project"
+              class="inline-form"
+            >
+              <label class="inline-label" for="add-project-slug-input">Linear project</label>
+              <.model_combobox
+                id="add-project-slug"
+                name="linear_project_slug"
+                value=""
+                list_id="linear-project-slugs"
+                options={Enum.map(@linear_projects, &linear_project_option/1)}
+                placeholder="slug or ailogic-ced4159f70c4"
+                class="settings-field"
+              />
               <label class="inline-label" for="add-project-name">name</label>
-              <input id="add-project-name" type="text" name="name" class="inline-input" />
+              <input id="add-project-name" type="text" name="name" class="settings-field" />
               <label class="inline-label" for="add-project-github">github</label>
-              <input id="add-project-github" type="text" name="github_repo_url" class="inline-input" />
+              <input id="add-project-github" type="text" name="github_repo_url" class="settings-field" />
               <div class="advanced-only add-project-advanced">
                 <label class="inline-label" for="add-project-agent">agent</label>
-                <select id="add-project-agent" name="agent" class="inline-input">
-                  <option value="">default</option>
+                <select id="add-project-agent" name="agent" class="settings-field">
+                  <option value="" selected={@add_project_kind == ""}>default</option>
                   <%= for k <- Agent.known_kinds() do %>
-                    <option value={k}><%= k %></option>
+                    <option value={k} selected={@add_project_kind == k}><%= k %></option>
                   <% end %>
                 </select>
-                <label class="inline-label" for="add-project-model">model</label>
-                <input id="add-project-model" type="text" name="model" class="inline-input" />
+                <div class="model-switcher">
+                  <label class="inline-label" for="add-project-model-input">model</label>
+                  <.model_combobox
+                    id="add-project-model"
+                    name="model"
+                    value={@add_project_model}
+                    list_id="model-suggestions-add-project"
+                    options={model_suggestions(@add_project_kind)}
+                    class="settings-field"
+                  />
+                </div>
                 <label class="inline-label" for="add-project-effort">effort</label>
-                <input id="add-project-effort" type="text" name="effort" class="inline-input" />
-                <label class="inline-label" for="add-project-provider">provider</label>
-                <input id="add-project-provider" type="text" name="provider" class="inline-input" />
+                <select id="add-project-effort" name="effort" class="settings-field">
+                  <option value="" selected={@add_project_effort in [nil, ""]}>default</option>
+                  <%= for level <- effort_levels(@add_project_kind) do %>
+                    <option value={level} selected={@add_project_effort == level}><%= level %></option>
+                  <% end %>
+                </select>
+                <%= if @add_project_kind == "claude" do %>
+                  <label class="inline-label" for="add-project-provider">provider</label>
+                  <input id="add-project-provider" type="text" name="provider" value={@add_project_provider} class="settings-field" />
+                <% end %>
               </div>
               <button type="submit" class="subtle-button">Add project</button>
             </form>
@@ -676,12 +741,28 @@ defmodule CymphonyElixirWeb.DashboardLive do
             <% end %>
           <% end %>
 
-          <form phx-submit="set_concurrency" class="inline-form">
+          <form phx-submit="set_concurrency" class="settings-form">
             <label class="inline-label" for="drawer-global-concurrency">
               <span class="simple-only">tasks at once</span>
               <span class="advanced-only">global concurrency</span>
             </label>
-            <input id="drawer-global-concurrency" type="number" name="value" min="1" class="inline-input inline-input--narrow" />
+            <input id="drawer-global-concurrency" type="number" name="value" min="1" class="settings-field" />
+            <button type="submit" class="subtle-button">Set</button>
+          </form>
+
+          <form phx-submit="set_refresh_interval" class="settings-form">
+            <label class="inline-label" for="drawer-refresh-interval">
+              <span class="simple-only">status refresh (s)</span>
+              <span class="advanced-only">dashboard refresh (s)</span>
+            </label>
+            <input
+              id="drawer-refresh-interval"
+              type="number"
+              name="value"
+              min="1"
+              value={@payload_refresh_seconds}
+              class="settings-field"
+            />
             <button type="submit" class="subtle-button">Set</button>
           </form>
         </section>
@@ -798,69 +879,70 @@ defmodule CymphonyElixirWeb.DashboardLive do
                 <form
                   phx-change="preview_project_agent"
                   phx-submit="set_project_agent"
-                  class="inline-form inline-form--agent advanced-only"
+                  class="project-agent-form advanced-only"
                 >
                   <input type="hidden" name="project" value={project.name} />
-                  <label class="inline-label" for={"agent-#{project.name}"}>agent</label>
-                  <select
-                    id={"agent-#{project.name}"}
-                    name="agent_kind"
-                    class="inline-input inline-input--narrow"
-                  >
-                    <%= for k <- Agent.known_kinds() do %>
-                      <option value={k} selected={agent_settings.kind == k}><%= k %></option>
-                    <% end %>
-                  </select>
+                  <div class="agent-switcher">
+                    <label class="inline-label" for={"agent-#{project.name}"}>agent</label>
+                    <select
+                      id={"agent-#{project.name}"}
+                      name="agent_kind"
+                      class="inline-input inline-input--narrow"
+                    >
+                      <%= for k <- Agent.known_kinds() do %>
+                        <option value={k} selected={agent_settings.kind == k}><%= k %></option>
+                      <% end %>
+                    </select>
+                  </div>
 
-                  <label class="inline-label" for={"model-#{project.name}"}>model</label>
-                  <input
-                    id={"model-#{project.name}"}
-                    type="text"
-                    name="model"
-                    value={agent_settings.model}
-                    placeholder="default"
-                    list={"model-suggestions-#{project.name}"}
-                    class="inline-input inline-input--model"
-                    phx-debounce="blur"
-                    title="Model override passed to the agent CLI (cli alias: model)"
-                  />
-                  <datalist id={"model-suggestions-#{project.name}"}>
-                    <%= for m <- model_suggestions(agent_settings.kind) do %>
-                      <option value={m}></option>
-                    <% end %>
-                  </datalist>
+                  <div class="model-switcher">
+                    <label class="inline-label" for={"model-#{project.name}-input"}>model</label>
+                    <.model_combobox
+                      id={"model-#{project.name}"}
+                      name="model"
+                      value={agent_settings.model}
+                      list_id={"model-suggestions-#{project.name}"}
+                      options={model_suggestions(agent_settings.kind)}
+                      placeholder="default"
+                      title="Model override passed to the agent CLI (cli alias: model)"
+                    />
+                  </div>
 
-                  <label class="inline-label" for={"effort-#{project.name}"}>
-                    effort
-                  </label>
-                  <select
-                    id={"effort-#{project.name}"}
-                    name="effort"
-                    class="inline-input inline-input--narrow"
-                  >
-                    <option value="" selected={agent_settings.effort == ""}>default</option>
-                    <%= for level <- effort_levels(agent_settings.kind) do %>
-                      <option value={level} selected={agent_settings.effort == level}><%= level %></option>
-                    <% end %>
-                  </select>
+                  <div class="effort-switcher">
+                    <label class="inline-label" for={"effort-#{project.name}"}>
+                      effort
+                    </label>
+                    <select
+                      id={"effort-#{project.name}"}
+                      name="effort"
+                      class="inline-input inline-input--narrow"
+                    >
+                      <option value="" selected={agent_settings.effort == ""}>default</option>
+                      <%= for level <- effort_levels(agent_settings.kind) do %>
+                        <option value={level} selected={agent_settings.effort == level}><%= level %></option>
+                      <% end %>
+                    </select>
+                  </div>
 
                   <button type="submit" class="subtle-button">Set</button>
                 </form>
 
-                <form phx-submit="set_project_providers" class="inline-form inline-form--wide advanced-only">
-                  <input type="hidden" name="project" value={project.name} />
-                  <label class="inline-label" for={"providers-#{project.name}"}>providers</label>
-                  <input
-                    id={"providers-#{project.name}"}
-                    type="text"
-                    name="value"
-                    value={Enum.join(Map.get(project, :providers, []), ",")}
-                    placeholder="cv1,cz2,ck1"
-                    class="inline-input"
-                    title="Comma-separated provider aliases (cli alias: c)"
-                  />
-                  <button type="submit" class="subtle-button">Save</button>
-                </form>
+                <%= if agent_settings.kind == "claude" do %>
+                  <form phx-submit="set_project_providers" class="inline-form inline-form--wide advanced-only">
+                    <input type="hidden" name="project" value={project.name} />
+                    <label class="inline-label" for={"providers-#{project.name}"}>providers</label>
+                    <input
+                      id={"providers-#{project.name}"}
+                      type="text"
+                      name="value"
+                      value={Enum.join(Map.get(project, :providers, []), ",")}
+                      placeholder="cv1,cz2,ck1"
+                      class="inline-input"
+                      title="Comma-separated provider aliases (cli alias: c)"
+                    />
+                    <button type="submit" class="subtle-button">Save</button>
+                  </form>
+                <% end %>
 
                 <button
                   type="button"
@@ -1022,45 +1104,77 @@ defmodule CymphonyElixirWeb.DashboardLive do
                               <% end %>
                             </span>
                           </div>
-                          <div class="session-stat session-stat--wide advanced-only">
+                          <div class="session-stat session-stat--wide restart-with advanced-only">
                             <span class="session-stat-label">Restart with</span>
                             <% session_spec = session_run_spec_settings(@issue_run_spec_drafts, entry) %>
-                            <form phx-change="preview_issue_run_spec" phx-submit="set_issue_run_spec" class="inline-form">
+                            <form
+                              phx-change="preview_issue_run_spec"
+                              phx-submit="set_issue_run_spec"
+                              class="restart-form"
+                            >
                               <input type="hidden" name="issue" value={entry.issue_identifier} />
-                              <select name="agent_kind" class="inline-input inline-input--narrow" title="Harness (empty = keep)">
-                                <option value="" selected={session_spec.kind in [nil, ""]}>keep</option>
-                                <%= for k <- Agent.known_kinds() do %>
-                                  <option value={k} selected={session_spec.kind == k}><%= k %></option>
-                                <% end %>
-                              </select>
-                              <input
-                                type="text"
-                                name="provider"
-                                value={session_spec.provider}
-                                placeholder="provider"
-                                class="inline-input inline-input--model"
-                                title="Provider auth alias (empty = keep resolved)"
-                              />
-                              <input
-                                type="text"
-                                name="model"
-                                value={session_spec.model}
-                                placeholder="model"
-                                list={"model-suggestions-session-#{entry.issue_identifier}"}
-                                class="inline-input inline-input--model"
-                                title="Model passed to the agent CLI (empty = keep resolved)"
-                              />
-                              <datalist id={"model-suggestions-session-#{entry.issue_identifier}"}>
-                                <%= for m <- model_suggestions(session_spec.suggestion_kind) do %>
-                                  <option value={m}></option>
-                                <% end %>
-                              </datalist>
-                              <select name="effort" class="inline-input inline-input--narrow" title="Reasoning effort (keep = unchanged)">
-                                <option value="" selected={session_spec.effort in [nil, ""]}>keep</option>
-                                <%= for level <- effort_levels(session_spec.suggestion_kind) do %>
-                                  <option value={level} selected={session_spec.effort == level}><%= level %></option>
-                                <% end %>
-                              </select>
+                              <div class="agent-switcher">
+                                <label class="inline-label" for={"restart-agent-#{entry.issue_identifier}"}>
+                                  Harness
+                                </label>
+                                <select
+                                  id={"restart-agent-#{entry.issue_identifier}"}
+                                  name="agent_kind"
+                                  class="inline-input inline-input--narrow"
+                                  title="Harness"
+                                >
+                                  <option value="" selected={session_spec.kind in [nil, ""]}>keep</option>
+                                  <%= for k <- Agent.known_kinds() do %>
+                                    <option value={k} selected={session_spec.kind == k}><%= k %></option>
+                                  <% end %>
+                                </select>
+                              </div>
+                              <%= if session_spec.suggestion_kind == "claude" do %>
+                                <div class="provider-switcher">
+                                  <label class="inline-label" for={"restart-provider-#{entry.issue_identifier}"}>
+                                    Provider
+                                  </label>
+                                  <input
+                                    id={"restart-provider-#{entry.issue_identifier}"}
+                                    type="text"
+                                    name="provider"
+                                    value={session_spec.provider}
+                                    placeholder="provider"
+                                    class="inline-input inline-input--model"
+                                    title="Provider auth alias (empty = keep resolved)"
+                                  />
+                                </div>
+                              <% end %>
+                              <div class="model-switcher">
+                                <label class="inline-label" for={"restart-model-#{entry.issue_identifier}-input"}>
+                                  Model
+                                </label>
+                                <.model_combobox
+                                  id={"restart-model-#{entry.issue_identifier}"}
+                                  name="model"
+                                  value={session_spec.model}
+                                  list_id={"model-suggestions-session-#{entry.issue_identifier}"}
+                                  options={model_suggestions(session_spec.suggestion_kind)}
+                                  placeholder="model"
+                                  title="Model passed to the agent CLI (empty = keep resolved)"
+                                />
+                              </div>
+                              <div class="effort-switcher">
+                                <label class="inline-label" for={"restart-effort-#{entry.issue_identifier}"}>
+                                  Effort
+                                </label>
+                                <select
+                                  id={"restart-effort-#{entry.issue_identifier}"}
+                                  name="effort"
+                                  class="inline-input inline-input--narrow"
+                                  title="Reasoning effort (keep = unchanged)"
+                                >
+                                  <option value="" selected={session_spec.effort in [nil, ""]}>keep</option>
+                                  <%= for level <- effort_levels(session_spec.suggestion_kind) do %>
+                                    <option value={level} selected={session_spec.effort == level}><%= level %></option>
+                                  <% end %>
+                                </select>
+                              </div>
                               <button type="submit" class="subtle-button" title="Kill this session and restart it immediately with these overrides">Restart</button>
                             </form>
                             <span class="muted small">Restart kills the session and redispatches with these overrides.</span>
@@ -1294,12 +1408,92 @@ defmodule CymphonyElixirWeb.DashboardLive do
   # from the live `codex debug models` catalog (cached); claude from its
   # stable alias vocabulary.
   defp model_suggestions(kind) do
-    kind
-    |> CymphonyElixir.AgentCatalog.models()
-    |> Enum.map(& &1.value)
+    CymphonyElixir.AgentCatalog.models(kind)
+  catch
+    :exit, _reason -> []
   end
 
-  defp effort_levels(kind), do: CymphonyElixir.AgentCatalog.efforts(kind, nil)
+  defp effort_levels(kind) do
+    CymphonyElixir.AgentCatalog.efforts(kind, nil)
+  catch
+    :exit, _reason -> []
+  end
+
+  defp model_combobox(assigns) do
+    assigns =
+      assigns
+      |> assign_new(:value, fn -> "" end)
+      |> assign_new(:placeholder, fn -> "" end)
+      |> assign_new(:title, fn -> nil end)
+      |> assign_new(:class, fn -> nil end)
+      |> assign_new(:options, fn -> [] end)
+
+    ~H"""
+    <div id={"combobox-#{@id}"} class="combobox" phx-hook="Combobox">
+      <input
+        id={"#{@id}-input"}
+        type="text"
+        class={["combobox-input", @class]}
+        role="combobox"
+        aria-autocomplete="list"
+        aria-expanded="false"
+        aria-controls={@list_id}
+        aria-activedescendant=""
+        autocomplete="off"
+        value={@value}
+        placeholder={@placeholder}
+        title={@title}
+      />
+      <input type="hidden" name={@name} id={@id} value={@value} class={@class} />
+      <ul id={@list_id} class="combobox-list" role="listbox" hidden>
+        <%= for option <- @options do %>
+          <% value = combobox_option_value(option) %>
+          <li id={combobox_option_dom_id(@list_id, value)} role="option" data-value={value}>
+            <%= combobox_option_label(option) %>
+          </li>
+        <% end %>
+      </ul>
+    </div>
+    """
+  end
+
+  defp combobox_option_value(%{value: value}) when is_binary(value), do: value
+  defp combobox_option_value(%{slug_id: slug}) when is_binary(slug), do: slug
+  defp combobox_option_value(%{"slug_id" => slug}) when is_binary(slug), do: slug
+  defp combobox_option_value(%{"value" => value}) when is_binary(value), do: value
+  defp combobox_option_value(value) when is_binary(value), do: value
+  defp combobox_option_value(value), do: to_string(value)
+
+  defp combobox_option_label(%{label: label}) when is_binary(label) and label != "", do: label
+
+  defp combobox_option_label(%{name: name} = option) when is_binary(name) and name != "" do
+    case combobox_option_value(option) do
+      "" -> name
+      slug -> "#{name} (#{slug})"
+    end
+  end
+
+  defp combobox_option_label(%{"name" => name} = option) when is_binary(name) and name != "" do
+    case combobox_option_value(option) do
+      "" -> name
+      slug -> "#{name} (#{slug})"
+    end
+  end
+
+  defp combobox_option_label(option), do: combobox_option_value(option)
+
+  defp combobox_option_dom_id(list_id, value) do
+    slug =
+      value
+      |> to_string()
+      |> String.replace(non_id_char_regex(), "-")
+      |> String.trim("-")
+
+    slug = if slug == "", do: "empty", else: slug
+    "#{list_id}-#{slug}"
+  end
+
+  defp non_id_char_regex, do: Regex.compile!("[^A-Za-z0-9_-]+")
 
   defp orchestrator do
     Endpoint.config(:orchestrator) || CymphonyElixir.Orchestrator
@@ -1907,6 +2101,20 @@ defmodule CymphonyElixirWeb.DashboardLive do
     :ok
   end
 
+  defp draft_add_project_field(params, "agent", socket, assign_key) do
+    case params["agent"] || params["value"] do
+      value when is_binary(value) -> value
+      _ -> socket.assigns[assign_key] || ""
+    end
+  end
+
+  defp draft_add_project_field(params, key, socket, assign_key) do
+    case Map.get(params, key) do
+      value when is_binary(value) -> value
+      _ -> socket.assigns[assign_key] || ""
+    end
+  end
+
   defp add_project_attrs(params) when is_map(params) do
     required = Map.take(params, ["name", "linear_project_slug"])
 
@@ -1931,6 +2139,20 @@ defmodule CymphonyElixirWeb.DashboardLive do
     Map.get(map, key) || Map.get(map, String.to_existing_atom(key))
   rescue
     ArgumentError -> Map.get(map, key)
+  end
+
+  defp linear_project_option(project) do
+    slug = linear_project_slug(project)
+    name = linear_project_name(project)
+
+    label =
+      cond do
+        name != "" and slug != "" -> "#{name} (#{slug})"
+        slug != "" -> slug
+        true -> name
+      end
+
+    %{value: slug, label: label}
   end
 
   defp linear_project_name(project) do

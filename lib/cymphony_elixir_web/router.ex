@@ -46,6 +46,8 @@ defmodule CymphonyElixirWeb.Router do
     match(:*, "/api/v1/completed", ObservabilityApiController, :method_not_allowed)
     post("/api/v1/refresh", ObservabilityApiController, :refresh)
     match(:*, "/api/v1/refresh", ObservabilityApiController, :method_not_allowed)
+    post("/api/v1/refresh-interval", ObservabilityApiController, :refresh_interval)
+    match(:*, "/api/v1/refresh-interval", ObservabilityApiController, :method_not_allowed)
     post("/api/v1/pause", ObservabilityApiController, :pause)
     match(:*, "/api/v1/pause", ObservabilityApiController, :method_not_allowed)
     post("/api/v1/resume", ObservabilityApiController, :resume)

@@ -217,4 +217,25 @@ defmodule CymphonyElixir.AgentCatalogTest do
 
     assert Enum.any?(AgentCatalog.models("codex"), &(&1.value == "gpt-5.2-codex"))
   end
+
+  test "a crashing catalog command does not take down the caller" do
+    use_default_fetcher()
+
+    Application.put_env(:cymphony_elixir, :codex_catalog_cmd, fn _, _, _ ->
+      :erlang.error(:enoent)
+    end)
+
+    parent = self()
+
+    {:ok, pid} =
+      Task.start(fn ->
+        send(parent, {:models, AgentCatalog.models("codex")})
+      end)
+
+    ref = Process.monitor(pid)
+
+    assert_receive {:models, models}, 1_000
+    assert Enum.any?(models, &(&1.value == "gpt-5.2-codex"))
+    assert_receive {:DOWN, ^ref, :process, ^pid, :normal}, 1_000
+  end
 end

@@ -122,6 +122,80 @@ defmodule CymphonyElixir.Cymphony.ConfigPersistenceTest do
     end
   end
 
+  describe "dashboard_refresh_seconds/0, /1 and update_dashboard_refresh_seconds/1" do
+    test "reads a named top-level value and defaults to 3", %{path: path} do
+      write_config!(path, %{
+        "dashboard_refresh_seconds" => 7,
+        "projects" => [%{"name" => "alpha", "dashboard_refresh_seconds" => 99}]
+      })
+
+      assert CymphonyConfig.dashboard_refresh_seconds() == 7
+      assert CymphonyConfig.dashboard_refresh_seconds(%{"dashboard_refresh_seconds" => 7}) == 7
+      assert CymphonyConfig.dashboard_refresh_seconds(7) == 7
+      assert CymphonyConfig.dashboard_refresh_seconds(%{"projects" => [%{"name" => "alpha"}]}) == 3
+      assert CymphonyConfig.dashboard_refresh_seconds(0) == 3
+      assert CymphonyConfig.dashboard_refresh_seconds(-1) == 3
+      assert CymphonyConfig.dashboard_refresh_seconds("5") == 3
+      assert CymphonyConfig.dashboard_refresh_seconds(nil) == 3
+    end
+
+    test "dashboard_refresh_seconds/0 defaults to 3 when the file is missing or unreadable", %{path: path} do
+      refute File.exists?(path)
+      assert CymphonyConfig.dashboard_refresh_seconds() == 3
+
+      File.write!(path, "{not json")
+      assert CymphonyConfig.dashboard_refresh_seconds() == 3
+    end
+
+    test "update writes a top-level key without mutating named project maps", %{path: path} do
+      write_config!(path, %{"projects" => [%{"name" => "alpha"}, %{"name" => "beta"}]})
+
+      assert {:ok, updated} = CymphonyConfig.update_dashboard_refresh_seconds(9)
+      assert updated["dashboard_refresh_seconds"] == 9
+      assert updated["projects"] == [%{"name" => "alpha"}, %{"name" => "beta"}]
+      refute Enum.any?(updated["projects"], &Map.has_key?(&1, "dashboard_refresh_seconds"))
+
+      {:ok, reloaded} = CymphonyConfig.load()
+      assert reloaded == updated
+      assert CymphonyConfig.dashboard_refresh_seconds() == 9
+    end
+
+    test "returns the load error when the file is missing" do
+      assert {:error, msg} = CymphonyConfig.update_dashboard_refresh_seconds(5)
+      assert msg =~ "Failed to read"
+    end
+
+    test "rejects a non-positive interval" do
+      assert {:error, :invalid_refresh_interval} = CymphonyConfig.update_dashboard_refresh_seconds(0)
+      assert {:error, :invalid_refresh_interval} = CymphonyConfig.update_dashboard_refresh_seconds(-2)
+      assert {:error, :invalid_refresh_interval} = CymphonyConfig.update_dashboard_refresh_seconds("5")
+      assert {:error, :invalid_refresh_interval} = CymphonyConfig.update_dashboard_refresh_seconds(nil)
+    end
+
+    test "writes top-level after normalizing a legacy flat file", %{path: path} do
+      write_config!(path, %{"linear_project_slug" => "farm", "linear_api_key" => "k"})
+
+      assert {:ok, updated} = CymphonyConfig.update_dashboard_refresh_seconds(4)
+      assert updated["dashboard_refresh_seconds"] == 4
+      assert [%{"name" => "farm"} = project] = updated["projects"]
+      refute Map.has_key?(project, "dashboard_refresh_seconds")
+      refute Map.has_key?(updated, "polling_interval_ms")
+
+      raw = Jason.decode!(File.read!(path))
+      assert raw["dashboard_refresh_seconds"] == 4
+      refute Map.has_key?(hd(raw["projects"]), "dashboard_refresh_seconds")
+    end
+
+    test "writes at the top level when projects is not a list", %{path: path} do
+      write_config!(path, %{"projects" => "legacy", "name" => "flat"})
+
+      assert {:ok, updated} = CymphonyConfig.update_dashboard_refresh_seconds(6)
+      assert updated["dashboard_refresh_seconds"] == 6
+      assert updated["projects"] == "legacy"
+      assert updated["name"] == "flat"
+    end
+  end
+
   describe "update_providers/2" do
     test "updates only the named project", %{path: path} do
       write_config!(path, %{"projects" => [%{"name" => "alpha"}, %{"name" => "beta"}]})

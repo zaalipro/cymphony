@@ -1662,12 +1662,27 @@ Enablement (extension):
     logs, or API responses — flash the last-4 mask only (for example `Linear connected · ••••xxxx`).
   - **Projects** (`section.settings-group.settings-group--projects`): when disconnected,
     help text "Connect Linear to add a project". When connected, form `#add-project-form`
-    (`phx-submit="add_project"`) with `<select id="add-project-slug" name="linear_project_slug">`
-    (options from the operator's accessible Linear projects: label `name (slug_id)`, value
-    `slug_id`), name input `#add-project-name`, optional GitHub URL `#add-project-github`,
-    and advanced-only agent/model/effort/provider fields. Submit appends the project to
-    `config.json`, writes a temp `WORKFLOW.md`, and starts the project supervisor
-    immediately — no daemon restart. Duplicate name/slug is an operator-visible error.
+    (`phx-submit="add_project"`) with a searchable Combobox on `#add-project-slug`
+    (`name=linear_project_slug`; **not** a native `<select>`). Options come from the
+    operator's accessible Linear projects (label `name (slug_id)`, value `slug_id`) and
+    type-to-filter. Also: name input `#add-project-name`, optional GitHub URL
+    `#add-project-github`, and advanced-only agent / `.model-switcher` Combobox / native
+    effort `<select>` / provider fields. `preview_add_project` drafts those advanced
+    fields. Submit appends the project to `config.json`, writes a temp `WORKFLOW.md`,
+    and starts the project supervisor immediately — no daemon restart. Duplicate
+    name/slug is an operator-visible error.
+  - Drawer fields only (`#linear-api-key`, add-project slug/name/github/agent/model/effort/provider,
+    `#drawer-global-concurrency`, `#drawer-refresh-interval`) use class `settings-field`
+    (filled control chrome). Do not restyle header/session `.inline-form` pills as naked
+    labels.
+  - Automation / Orchestrator (after global concurrency) includes
+    `#drawer-refresh-interval` (`type=number`, `name=value`, `min=1`, default `3`,
+    `phx-submit="set_refresh_interval"`). Persist the value as top-level
+    `~/.cymphony/config.json` `dashboard_refresh_seconds` (positive integer, minimum 1;
+    default `3` when missing/unreadable). This is the dashboard payload refresh cadence
+    only — it is **not** `polling.interval_ms`, must not rewrite `WORKFLOW.md` for Linear
+    refresh, and must not change orchestrator poll timing. Open dashboards keep their
+    current interval until remount or a successful `set_refresh_interval`.
 - Per-project header agent `<select>` uses a stable id `agent-<project>` (never embed the
   current kind or effort). Changing to a known kind persists immediately (kind only;
   model/effort wait for header **Set**). Header **Set** and `POST /api/v1/agent` persist
@@ -1675,6 +1690,25 @@ Enablement (extension):
   `config.json` so `snapshot.agent_kind` survives the next refresh. Dashboard payload
   reloads are generation-tokened so an in-flight stale snapshot cannot revert the select
   after persist.
+- Header and expanded-session **model** controls are a labeled `.model-switcher` Combobox
+  (type-to-filter suggestions; not `<datalist>`). Header wrapping form remains
+  `form.project-agent-form` (`phx-change="preview_project_agent"`,
+  `phx-submit="set_project_agent"`) so **Set** still sends kind+model+effort. Inner pills:
+  `.agent-switcher` (`#agent-<project>` native select), `.model-switcher` (Combobox),
+  `.effort-switcher` (native `#effort-<project>` select), and **Set**. Effort stays a
+  native `<select>`. Session restart is `form.restart-form` (`phx-change="preview_issue_run_spec"`,
+  `phx-submit="set_issue_run_spec"`) with labeled Harness / Provider / Model Combobox /
+  Effort pills — not one cramped pill. Harness stdout `section#harness-tail-<id>` is
+  unchanged.
+- Provider pills/fields (`form[phx-submit=set_project_providers]`, `#add-project-provider`,
+  restart `name=provider`) are visible only when the selected agent kind is `claude`.
+  Hide them for `codex`, `antigravity`, empty/default, and unknown kinds. Header uses
+  `agent_settings.kind` (draft or `project.agent_kind`); restart uses
+  `session_spec.suggestion_kind` (draft known kind else `entry.agent_kind`); add-project
+  uses assign `:add_project_kind` (default `""` hides provider). Switching agent must
+  hide/show on the next render via `preview_project_agent` / `preview_issue_run_spec` /
+  `preview_add_project`. Do not delete persisted providers when the field is hidden.
+  Session provider chips and the read-only Provider stat stay visible for every kind.
 
 #### 13.7.2 JSON REST API (`/api/v1/*`)
 
@@ -1827,6 +1861,7 @@ Minimum endpoints:
 - `POST /api/v1/refresh`
   - Queues an immediate tracker poll + reconciliation cycle (best-effort trigger; implementations
     may coalesce repeated requests).
+  - This is **not** `POST /api/v1/refresh-interval` (dashboard payload cadence).
   - Suggested request body: empty body or `{}`.
   - Suggested response (`202 Accepted`) shape:
 
@@ -1838,6 +1873,18 @@ Minimum endpoints:
       "operations": ["poll", "reconcile"]
     }
     ```
+
+- `POST /api/v1/refresh-interval`
+  - Must be declared **before** the `GET /api/v1/<issue_identifier>` catch-all (and
+    `match :*` on this path). Unsupported methods return `405`.
+  - This is **not** `POST /api/v1/refresh` (Linear poll + reconcile). It does not
+    write `polling.interval_ms`, rewrite `WORKFLOW.md` for tracker refresh, or change
+    orchestrator poll timing. It does not take `?project=`.
+  - Body `{"value": N}` where `N` is a positive integer ≥ 1.
+  - Persists only the top-level `~/.cymphony/config.json` key
+    `dashboard_refresh_seconds` (beside `projects`, never inside a project map).
+  - `202` `{"dashboard_refresh_seconds": N}`.
+  - `422` `{"error":{"code":"invalid_refresh_interval","message":"..."}}`.
 
 Optional operational-control endpoints (extension; all return `202 Accepted` and accept an
 optional `?project=<name>` scope):
@@ -1857,6 +1904,8 @@ optional `?project=<name>` scope):
   the same rewrite + overlay path. Applies to subsequent dispatches. Error when
   none of those keys are present or `kind` is not a known kind:
   `"body must include at least one of kind/model/effort; kind must be one of: claude, codex, antigravity"`.
+- `POST /api/v1/refresh-interval` is documented with the minimum endpoints above
+  (not `?project=`-scoped; not `POST /refresh`).
 - Dashboard `set_issue_run_spec` (LiveView / orchestrator) accepts optional
   `:provider`, `:model`, `:effort`, and `:agent_kind` overrides and kills +
   redispatches the session. Empty / `"keep"` skips a field.
@@ -1872,7 +1921,8 @@ API design notes:
 - The JSON shapes above are the recommended baseline for interoperability and debugging ergonomics.
 - Implementations may add fields, but should avoid breaking existing fields within a version.
 - Endpoints should be read-only except for operational triggers like `/refresh`,
-  `/linear`, `POST /projects`, and the operational-control endpoints above.
+  `/refresh-interval`, `/linear`, `POST /projects`, and the operational-control
+  endpoints above.
 - Unsupported methods on defined routes should return `405 Method Not Allowed`.
 - API errors should use a JSON envelope such as `{"error":{"code":"...","message":"..."}}`.
 - If the dashboard is a client-side app, it should consume this API rather than duplicating state

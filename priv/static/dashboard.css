@@ -912,9 +912,11 @@ select.inline-input--narrow {
 }
 
 .inline-input--model {
-  width: 110px;
-  flex: 0 0 auto;
+  min-width: 160px;
+  width: auto;
+  flex: 1 1 160px;
   text-align: left;
+  white-space: normal;
 }
 
 .inline-input::placeholder {
@@ -972,6 +974,8 @@ select.inline-input--narrow {
 .session-row--completed { opacity: 0.6; }
 
 .session-row-summary {
+  position: relative;
+  z-index: 2;
   display: grid;
   grid-template-columns: auto auto minmax(0, 1.4fr) auto auto auto auto;
   gap: 10px;
@@ -981,6 +985,8 @@ select.inline-input--narrow {
 }
 
 .session-row-disclosure {
+  position: relative;
+  z-index: 3;
   appearance: none;
   background: transparent;
   border: none;
@@ -1055,6 +1061,9 @@ select.inline-input--narrow {
 }
 
 .session-row-detail {
+  position: relative;
+  z-index: 1;
+  overflow: visible;
   border-top: 1px dashed var(--line);
   padding: 14px 16px 16px;
   display: flex;
@@ -1072,6 +1081,7 @@ select.inline-input--narrow {
   display: grid;
   grid-template-columns: repeat(auto-fit, minmax(180px, 1fr));
   gap: 12px 18px;
+  overflow: visible;
 }
 
 .session-stat {
@@ -1099,7 +1109,12 @@ select.inline-input--narrow {
   gap: 6px;
 }
 
-.session-stat--wide { grid-column: span 2; }
+.session-stat--wide,
+.restart-with,
+.restart-with.session-stat--wide {
+  grid-column: 1 / -1;
+  overflow: visible;
+}
 
 .workspace-path {
   font-size: var(--text-caption);
@@ -1399,6 +1414,16 @@ select.inline-input--narrow {
   .project-section-controls {
     margin-left: 0;
   }
+
+  .project-agent-form,
+  .restart-form {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: center;
+    gap: 10px;
+    column-gap: 10px;
+    row-gap: 10px;
+  }
 }
 
 @media (max-width: 720px) {
@@ -1523,17 +1548,26 @@ html[data-drawer="open"] .settings-drawer {
   font-size: var(--text-body-sm);
 }
 
-#linear-connect-form,
-#add-project-form {
+.settings-drawer #linear-connect-form,
+.settings-drawer #add-project-form,
+.settings-drawer .settings-form {
   display: flex;
-  flex-wrap: wrap;
-  align-items: center;
+  flex-direction: column;
+  flex-wrap: nowrap;
+  align-items: stretch;
   gap: 8px;
+  padding: 0;
+  background: transparent;
+  border: none;
+  border-radius: 0;
+  box-shadow: none;
 }
 
-#add-project-form {
-  flex-direction: column;
-  align-items: stretch;
+.settings-drawer #linear-connect-form:focus-within,
+.settings-drawer #add-project-form:focus-within,
+.settings-drawer .settings-form:focus-within {
+  border: none;
+  box-shadow: none;
 }
 
 .mode-option-list {
@@ -1706,17 +1740,28 @@ html[data-ui-mode="simple"] .session-row-activity {
     max-width: 100%;
   }
 
+  html[data-ui-mode="advanced"] .project-agent-form,
+  html[data-ui-mode="advanced"] .restart-form,
   html[data-ui-mode="advanced"] .inline-form--agent,
   html[data-ui-mode="advanced"] .session-stat--wide .inline-form {
     width: 100%;
     flex-wrap: wrap;
+    gap: 10px;
+    column-gap: 10px;
+    row-gap: 10px;
+  }
+
+  html[data-ui-mode="advanced"] .inline-form--agent,
+  html[data-ui-mode="advanced"] .session-stat--wide .inline-form:not(.restart-form):not(.project-agent-form) {
     border-radius: 10px;
   }
 
   html[data-ui-mode="advanced"] .inline-form--agent .inline-input--model,
-  html[data-ui-mode="advanced"] .session-stat--wide .inline-input--model {
+  html[data-ui-mode="advanced"] .session-stat--wide .inline-input--model,
+  html[data-ui-mode="advanced"] .model-switcher {
+    min-width: 160px;
     width: auto;
-    flex: 1 1 110px;
+    flex: 1 1 160px;
   }
 
   html[data-ui-mode="advanced"] .inline-form--wide {
@@ -1746,4 +1791,300 @@ html[data-ui-mode="simple"] .session-row-activity {
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
+}
+
+/* ============================================================
+   HEADER / SESSION AGENT CONTROLS (wrapping, not one tall pill)
+   ============================================================ */
+.project-agent-form,
+.restart-form {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 10px;
+  column-gap: 10px;
+  row-gap: 10px;
+  background: none;
+  border: none;
+  padding: 0;
+  box-shadow: none;
+  min-width: 0;
+  max-width: 100%;
+}
+
+.project-agent-form:focus-within,
+.restart-form:focus-within {
+  border: none;
+  box-shadow: none;
+}
+
+.project-agent-form.inline-form,
+.restart-form.inline-form,
+form.project-agent-form.inline-form--agent {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 10px;
+  column-gap: 10px;
+  row-gap: 10px;
+  background: none;
+  border: none;
+  border-radius: 0;
+  padding: 0;
+  box-shadow: none;
+}
+
+.project-agent-form > .inline-form,
+.restart-form > .inline-form,
+.agent-switcher,
+.model-switcher,
+.effort-switcher {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.model-switcher {
+  min-width: 160px;
+  flex: 1 1 160px;
+  white-space: normal;
+}
+
+.agent-switcher,
+.effort-switcher {
+  flex: 0 1 auto;
+}
+
+.model-switcher + .effort-switcher,
+.effort-switcher {
+  margin-inline-start: 0;
+}
+
+/* ============================================================
+   SETTINGS FIELD CHROME (drawer only; not header/session pills)
+   ============================================================ */
+.settings-field,
+.settings-drawer input.settings-field,
+.settings-drawer select.settings-field,
+.settings-drawer #linear-api-key,
+.settings-drawer #add-project-slug:not([type="hidden"]),
+.settings-drawer #add-project-slug-input,
+.settings-drawer #add-project-name,
+.settings-drawer #add-project-github,
+.settings-drawer #add-project-agent,
+.settings-drawer #add-project-model:not([type="hidden"]),
+.settings-drawer #add-project-model-input,
+.settings-drawer #add-project-effort,
+.settings-drawer #add-project-provider,
+.settings-drawer #drawer-global-concurrency,
+.settings-drawer #drawer-refresh-interval {
+  appearance: none;
+  display: block;
+  width: 100%;
+  min-width: 0;
+  background: var(--surface-deep);
+  border: 1px solid var(--line-strong);
+  padding: 8px 10px;
+  border-radius: 8px;
+  color: var(--ink);
+  caret-color: var(--ink);
+  font: inherit;
+  font-size: var(--text-body-sm);
+  font-family: var(--font-mono);
+  outline: none;
+  flex: 1 1 auto;
+}
+
+.settings-drawer select.settings-field,
+.settings-drawer #add-project-agent,
+.settings-drawer #add-project-effort {
+  appearance: auto;
+  cursor: pointer;
+}
+
+.settings-field:focus,
+.settings-field:focus-visible,
+.settings-drawer input.settings-field:focus,
+.settings-drawer select.settings-field:focus,
+.settings-drawer #linear-api-key:focus,
+.settings-drawer #add-project-slug-input:focus,
+.settings-drawer #add-project-name:focus,
+.settings-drawer #add-project-github:focus,
+.settings-drawer #add-project-agent:focus,
+.settings-drawer #add-project-model-input:focus,
+.settings-drawer #add-project-effort:focus,
+.settings-drawer #add-project-provider:focus,
+.settings-drawer #drawer-global-concurrency:focus,
+.settings-drawer #drawer-refresh-interval:focus {
+  border-color: var(--accent);
+  box-shadow: 0 0 0 1px var(--accent), 0 0 14px rgba(233, 179, 242, 0.25);
+}
+
+.settings-drawer .settings-field.inline-input,
+.settings-drawer .settings-field.inline-input--narrow,
+.settings-drawer #drawer-global-concurrency.inline-input--narrow,
+.settings-drawer #drawer-refresh-interval {
+  width: 100%;
+  flex: 1 1 auto;
+  text-align: left;
+  border: 1px solid var(--line-strong);
+  background: var(--surface-deep);
+  padding: 8px 10px;
+  border-radius: 8px;
+}
+
+.settings-drawer .inline-label {
+  color: var(--ink-soft);
+}
+
+.settings-drawer .add-project-advanced {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.project-section-controls .settings-field,
+.project-section-controls input.settings-field,
+.project-section-controls select.settings-field,
+.project-agent-form .settings-field,
+.restart-form .settings-field {
+  appearance: auto;
+  display: inline;
+  width: auto;
+  background: transparent;
+  border: none;
+  padding: 2px 4px;
+  border-radius: 0;
+  box-shadow: none;
+  caret-color: var(--ink);
+}
+
+/* ============================================================
+   COMBOBOX (custom listbox — Midnight Slate, not OS datalist)
+   ============================================================ */
+.combobox {
+  position: relative;
+  display: block;
+  min-width: 160px;
+  width: 100%;
+  flex: 1 1 160px;
+}
+
+.combobox-input {
+  width: 100%;
+  min-width: 0;
+  color: var(--ink);
+  caret-color: var(--ink);
+}
+
+.inline-form .combobox,
+.model-switcher .combobox {
+  flex: 1 1 160px;
+  min-width: 160px;
+}
+
+.inline-form .combobox-input,
+.model-switcher .combobox-input,
+.agent-switcher .combobox-input {
+  border: none;
+  background: transparent;
+  color: var(--ink);
+  font: inherit;
+  font-size: var(--text-body-sm);
+  font-family: var(--font-mono);
+  padding: 2px 4px;
+  outline: none;
+}
+
+.settings-drawer .combobox-input,
+.settings-drawer .combobox-input.settings-field {
+  background: var(--surface-deep);
+  border: 1px solid var(--line-strong);
+  padding: 8px 10px;
+  border-radius: 8px;
+  color: var(--ink);
+  caret-color: var(--ink);
+}
+
+.settings-drawer .combobox-input:focus,
+.settings-drawer .combobox-input.settings-field:focus {
+  border-color: var(--accent);
+  box-shadow: 0 0 0 1px var(--accent), 0 0 14px rgba(233, 179, 242, 0.25);
+}
+
+.combobox-list {
+  position: absolute;
+  top: calc(100% + 4px);
+  left: 0;
+  right: 0;
+  z-index: 20;
+  max-height: 240px;
+  overflow: auto;
+  margin: 0;
+  padding: 4px 0;
+  list-style: none;
+  background: var(--surface-deep);
+  border: 1px solid var(--line-strong);
+  border-radius: 8px;
+  box-shadow: var(--glow-soft);
+  color: var(--ink);
+}
+
+.combobox-list[hidden],
+.combobox-list [role="option"][hidden] {
+  display: none;
+}
+
+.combobox-list [role="option"] {
+  padding: 6px 10px;
+  cursor: pointer;
+  color: var(--ink);
+  font-size: var(--text-body-sm);
+  font-family: var(--font-mono);
+  line-height: 1.4;
+}
+
+.combobox-list [role="option"]:hover,
+.combobox-list [role="option"][aria-selected="true"] {
+  background: var(--accent-soft);
+}
+
+.session-row-detail .combobox-list {
+  z-index: 20;
+}
+
+@media (min-width: 960px) {
+  .project-agent-form,
+  .restart-form {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: center;
+    gap: 10px;
+    column-gap: 10px;
+    row-gap: 10px;
+    background: none;
+    border: none;
+    padding: 0;
+  }
+
+  .model-switcher {
+    min-width: 160px;
+    flex: 1 1 160px;
+  }
+
+  .effort-switcher {
+    margin-inline-start: 0;
+  }
+
+  .restart-with,
+  .restart-with.session-stat--wide,
+  .session-stat--wide {
+    grid-column: 1 / -1;
+    overflow: visible;
+  }
+
+  .combobox-list {
+    position: absolute;
+    z-index: 20;
+  }
 }

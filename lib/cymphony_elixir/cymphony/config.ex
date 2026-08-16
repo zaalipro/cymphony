@@ -6,6 +6,7 @@ defmodule CymphonyElixir.Cymphony.Config do
 
   @config_dir "~/.cymphony"
   @config_file "config.json"
+  @default_dashboard_refresh_seconds 3
 
   @spec config_dir() :: String.t()
   def config_dir do
@@ -332,6 +333,58 @@ defmodule CymphonyElixir.Cymphony.Config do
   defp apply_concurrency(config, _project_name, n) when is_map(config) do
     {:ok, Map.put(config, "max_concurrent_agents", n)}
   end
+
+  @doc """
+  Dashboard payload refresh interval in seconds.
+
+  Loads `config.json` and returns a positive integer. Missing or unreadable
+  files, and any non-positive stored value, fall back to `3`.
+  """
+  @spec dashboard_refresh_seconds() :: pos_integer()
+  def dashboard_refresh_seconds do
+    case load() do
+      {:ok, config} -> dashboard_refresh_seconds(config)
+      _ -> @default_dashboard_refresh_seconds
+    end
+  end
+
+  @doc """
+  Normalizes a stored or in-memory refresh interval.
+
+  A positive integer is returned as-is. A config map uses its top-level
+  `dashboard_refresh_seconds` key. Anything else (including `0`, negatives,
+  strings, and a missing key) is `3`.
+  """
+  @spec dashboard_refresh_seconds(term()) :: pos_integer()
+  def dashboard_refresh_seconds(n) when is_integer(n) and n > 0, do: n
+
+  def dashboard_refresh_seconds(config) when is_map(config) do
+    dashboard_refresh_seconds(Map.get(config, "dashboard_refresh_seconds"))
+  end
+
+  def dashboard_refresh_seconds(_value), do: @default_dashboard_refresh_seconds
+
+  @doc """
+  Persists the daemon-wide dashboard payload refresh interval as a top-level
+  `config.json` key (beside `projects`, never inside a project map).
+
+  Requires an existing readable file, same as the other `update_*` helpers.
+  Rejects non-positive values. Does not write `polling_interval_ms` or
+  rewrite `WORKFLOW.md`.
+  """
+  @spec update_dashboard_refresh_seconds(term()) :: {:ok, map()} | {:error, term()}
+  def update_dashboard_refresh_seconds(n) when is_integer(n) and n > 0 do
+    with {:ok, config} <- load() do
+      updated = Map.put(config, "dashboard_refresh_seconds", n)
+
+      case save(updated) do
+        :ok -> {:ok, updated}
+        {:error, _} = error -> error
+      end
+    end
+  end
+
+  def update_dashboard_refresh_seconds(_n), do: {:error, :invalid_refresh_interval}
 
   @doc """
   Updates `provider` (head) and `providers` (full list) for the named project

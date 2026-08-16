@@ -60,9 +60,13 @@ defmodule CymphonyElixir.AgentCatalog do
   @doc "Model choices for an agent kind, best first. Never empty."
   @spec models(String.t()) :: [model_choice()]
   def models("codex") do
-    case codex_catalog() do
-      {:ok, models} -> models
-      :error -> @codex_fallback_models
+    try do
+      case codex_catalog() do
+        {:ok, models} -> models
+        :error -> @codex_fallback_models
+      end
+    catch
+      :exit, _reason -> @codex_fallback_models
     end
   end
 
@@ -79,15 +83,19 @@ defmodule CymphonyElixir.AgentCatalog do
   """
   @spec efforts(String.t(), String.t() | nil) :: [String.t()]
   def efforts("codex", model) do
-    case codex_catalog() do
-      {:ok, models} ->
-        case Enum.find(models, &(&1.value == model)) do
-          %{efforts: efforts} when is_list(efforts) and efforts != [] -> efforts
-          _ -> effort_union(models)
-        end
+    try do
+      case codex_catalog() do
+        {:ok, models} ->
+          case Enum.find(models, &(&1.value == model)) do
+            %{efforts: efforts} when is_list(efforts) and efforts != [] -> efforts
+            _ -> effort_union(models)
+          end
 
-      :error ->
-        @codex_fallback_efforts
+        :error ->
+          @codex_fallback_efforts
+      end
+    catch
+      :exit, _reason -> @codex_fallback_efforts
     end
   end
 
@@ -161,24 +169,50 @@ defmodule CymphonyElixir.AgentCatalog do
     Application.get_env(:cymphony_elixir, :codex_catalog_fetcher, &default_fetcher/0)
   end
 
-  # Shells out to `codex debug models` (measured ~60ms). The task wrapper
-  # bounds the wait so a hung binary can't stall the wizard or dashboard.
+  # Shells out to `codex debug models` (measured ~60ms). The worker is
+  # *unlinked* (`spawn_monitor`, not `Task.async`) so a missing binary
+  # (`:enoent`) or a crashing `System.cmd/3` cannot take down the LiveView
+  # that asked for suggestions.
   defp default_fetcher do
     fun = catalog_cmd()
     timeout = fetch_timeout_ms()
+    parent = self()
 
-    task =
-      Task.async(fn ->
-        fun.("codex", ["debug", "models"], stderr_to_stdout: false)
+    {pid, ref} =
+      spawn_monitor(fn ->
+        send(parent, {:codex_catalog, self(), catalog_cmd_result(fun)})
       end)
 
-    case Task.yield(task, timeout) || Task.shutdown(task, :brutal_kill) do
-      {:ok, {output, 0}} -> {:ok, output}
-      {:ok, {_output, code}} -> {:error, {:exit, code}}
-      _ -> {:error, :timeout}
+    receive do
+      {:codex_catalog, ^pid, {:ok, output}} ->
+        Process.demonitor(ref, [:flush])
+        {:ok, output}
+
+      {:codex_catalog, ^pid, {:error, reason}} ->
+        Process.demonitor(ref, [:flush])
+        {:error, reason}
+
+      {:DOWN, ^ref, :process, ^pid, reason} ->
+        {:error, {:exit, reason}}
+    after
+      timeout ->
+        Process.exit(pid, :kill)
+        Process.demonitor(ref, [:flush])
+        {:error, :timeout}
     end
   rescue
     error -> {:error, error}
+  end
+
+  defp catalog_cmd_result(fun) do
+    case fun.("codex", ["debug", "models"], stderr_to_stdout: false) do
+      {output, 0} -> {:ok, output}
+      {_output, code} -> {:error, {:exit, code}}
+    end
+  rescue
+    error -> {:error, error}
+  catch
+    kind, reason -> {:error, {kind, reason}}
   end
 
   defp catalog_cmd do

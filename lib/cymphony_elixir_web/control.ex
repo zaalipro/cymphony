@@ -1,10 +1,10 @@
 defmodule CymphonyElixirWeb.Control do
   @moduledoc """
   Shared dispatch-control operations used by both the LiveView dashboard and the
-  JSON API: Linear connect, add-project, pause/resume, and concurrency /
-  provider / agent updates. Encapsulates the
-  `ProjectSupervisor → Orchestrator → CymphonyConfig` orchestration so the two
-  web surfaces don't each reimplement it.
+  JSON API: Linear connect, add-project, pause/resume, concurrency / provider /
+  agent updates, and the daemon-wide dashboard payload refresh interval.
+  Encapsulates the `ProjectSupervisor → Orchestrator → CymphonyConfig`
+  orchestration so the two web surfaces don't each reimplement it.
 
   A `scope` is either `:all` (every registered project, or the single legacy
   orchestrator when none are registered) or `{:project, name}` (one named
@@ -44,6 +44,20 @@ defmodule CymphonyElixirWeb.Control do
       &Orchestrator.set_concurrency(&1, n),
       fn project -> CymphonyConfig.update_concurrency(project, n) end
     )
+  end
+
+  @doc """
+  Persists the daemon-wide dashboard payload refresh interval (seconds).
+
+  Reuses `parse_concurrency/1`. Writes only `config.json`; does not fan out to
+  orchestrators, rewrite `WORKFLOW.md`, or change Linear poll timing.
+  """
+  @spec set_dashboard_refresh_seconds(term()) :: :ok | {:error, term()}
+  def set_dashboard_refresh_seconds(value) do
+    case parse_concurrency(value) do
+      {:ok, n} -> persist_result(CymphonyConfig.update_dashboard_refresh_seconds(n))
+      :error -> {:error, :invalid_refresh_interval}
+    end
   end
 
   @spec set_providers(scope(), [String.t()]) :: :ok | {:error, :not_found}

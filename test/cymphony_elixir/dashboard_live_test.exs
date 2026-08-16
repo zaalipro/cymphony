@@ -103,15 +103,13 @@ defmodule CymphonyElixir.DashboardLiveTest do
     |> element(~s|button[phx-click="toggle_logs"][phx-value-issue="MT-HTTP"]|)
     |> render_click()
 
-    view
-    |> form(~s|form[phx-submit="set_issue_run_spec"]|, %{
-      issue: "MT-HTTP",
-      agent_kind: "antigravity",
-      provider: "cv2",
-      model: "opus",
-      effort: ""
+    render_submit(view, "set_issue_run_spec", %{
+      "issue" => "MT-HTTP",
+      "agent_kind" => "antigravity",
+      "provider" => "cv2",
+      "model" => "opus",
+      "effort" => ""
     })
-    |> render_submit()
 
     assert_receive {:orchestrator_call, {:set_issue_run_spec, "issue-http", overrides}}, 1_000
     assert overrides.agent_kind == "antigravity"
@@ -359,16 +357,18 @@ defmodule CymphonyElixir.DashboardLiveTest do
 
     assert :ok = CymphonyElixir.Cymphony.Config.save(seeded)
 
-    view
-    |> form("#add-project-form", %{name: "Farm", linear_project_slug: "ailogic-ced4159f70c4"})
-    |> render_submit()
+    render_submit(view, "add_project", %{
+      "name" => "Farm",
+      "linear_project_slug" => "ailogic-ced4159f70c4"
+    })
 
     assert has_element?(view, "p.settings-error", "A project with that name already exists")
     assert render(view) =~ "A project with that name already exists"
 
-    view
-    |> form("#add-project-form", %{name: "Different", linear_project_slug: "ailogic-ced4159f70c4"})
-    |> render_submit()
+    render_submit(view, "add_project", %{
+      "name" => "Different",
+      "linear_project_slug" => "ailogic-ced4159f70c4"
+    })
 
     assert render(view) =~ "A project with that Linear slug already exists"
 
@@ -406,12 +406,10 @@ defmodule CymphonyElixir.DashboardLiveTest do
       if Process.alive?(dummy_supervisor), do: Process.exit(dummy_supervisor, :kill)
     end)
 
-    view
-    |> form("#add-project-form", %{
-      name: "AddedFarm",
-      linear_project_slug: "other-slug-aaaaaaaa"
+    render_submit(view, "add_project", %{
+      "name" => "AddedFarm",
+      "linear_project_slug" => "other-slug-aaaaaaaa"
     })
-    |> render_submit()
 
     html = render(view)
     assert html =~ "AddedFarm added and started"
@@ -457,13 +455,12 @@ defmodule CymphonyElixir.DashboardLiveTest do
 
     seq_before = view_assigns(view).payload_seq
 
-    view
-    |> form(~s|form[phx-submit="set_project_agent"]|, %{
-      agent_kind: "codex",
-      model: "gpt-5.2-codex",
-      effort: "high"
+    render_submit(view, "set_project_agent", %{
+      "project" => preview_project.name,
+      "agent_kind" => "codex",
+      "model" => "gpt-5.2-codex",
+      "effort" => "high"
     })
-    |> render_submit()
 
     assert has_element?(view, ~s|form[phx-submit="set_project_agent"] option[value="codex"][selected]|)
     seq_after = view_assigns(view).payload_seq
@@ -501,6 +498,156 @@ defmodule CymphonyElixir.DashboardLiveTest do
 
     assert has_element?(view, ~s|form[phx-submit="set_project_agent"] option[value="codex"][selected]|)
     refute Map.has_key?(view_assigns(view).agent_setting_drafts, project.name)
+  end
+
+  test "header model lives under model-switcher combobox without datalist" do
+    start_dashboard()
+    {:ok, view, html} = live(build_conn(), "/")
+
+    assert has_element?(view, ~s|form.project-agent-form.advanced-only[phx-change="preview_project_agent"][phx-submit="set_project_agent"]|)
+    assert has_element?(view, ".model-switcher #model-default")
+    assert has_element?(view, ~s|#model-default[name="model"]|)
+    assert has_element?(view, "#model-default-input")
+    assert has_element?(view, ~s|#model-suggestions-default[role="listbox"]|)
+    assert has_element?(view, ~s|.model-switcher li[role="option"][data-value="sonnet"]|)
+    assert has_element?(view, "#agent-default")
+    assert has_element?(view, "#effort-default")
+    refute html =~ "<datalist"
+    refute html =~ ~s(list="model-suggestions)
+    refute html =~ ~s(id="agent-default-claude")
+  end
+
+  test "preview_project_agent hides providers for non-claude kinds and restores them for claude" do
+    start_dashboard()
+    {:ok, view, _html} = live(build_conn(), "/")
+
+    assert has_element?(view, ~s|form[phx-submit="set_project_providers"] #providers-default|)
+
+    view
+    |> form(~s|form[phx-change="preview_project_agent"]|, %{agent_kind: "codex"})
+    |> render_change()
+
+    refute has_element?(view, "#providers-default")
+    assert has_element?(view, ~s|form[phx-submit="set_project_agent"] option[value="codex"][selected]|)
+
+    view
+    |> form(~s|form[phx-change="preview_project_agent"]|, %{agent_kind: "antigravity"})
+    |> render_change()
+
+    refute has_element?(view, "#providers-default")
+    assert has_element?(view, ~s|form[phx-submit="set_project_agent"] option[value="antigravity"][selected]|)
+
+    view
+    |> form(~s|form[phx-change="preview_project_agent"]|, %{agent_kind: "claude"})
+    |> render_change()
+
+    assert has_element?(view, "#providers-default")
+    assert has_element?(view, ~s|form[phx-submit="set_project_agent"] option[value="claude"][selected]|)
+  end
+
+  test "restart form has Harness label and hides provider when previewed to antigravity" do
+    start_dashboard()
+    {:ok, view, _html} = live(build_conn(), "/")
+
+    view
+    |> element(~s|button[phx-click="toggle_logs"][phx-value-issue="MT-HTTP"]|)
+    |> render_click()
+
+    assert has_element?(view, ~s|form.restart-form[phx-change="preview_issue_run_spec"][phx-submit="set_issue_run_spec"]|)
+    assert has_element?(view, ~s|label[for="restart-agent-MT-HTTP"]|, "Harness")
+    assert has_element?(view, "#restart-agent-MT-HTTP")
+    assert has_element?(view, ".model-switcher #restart-model-MT-HTTP")
+    assert has_element?(view, ~s|#restart-model-MT-HTTP[name="model"]|)
+    assert has_element?(view, "#restart-model-MT-HTTP-input")
+    assert has_element?(view, "#model-suggestions-session-MT-HTTP")
+    assert has_element?(view, "#restart-effort-MT-HTTP")
+    assert has_element?(view, ~s|#harness-tail-MT-HTTP[phx-hook="HarnessTail"]|)
+
+    view
+    |> form(~s|form[phx-change="preview_issue_run_spec"]|, %{agent_kind: "claude"})
+    |> render_change()
+
+    assert has_element?(view, "#restart-provider-MT-HTTP")
+
+    view
+    |> form(~s|form[phx-change="preview_issue_run_spec"]|, %{agent_kind: "antigravity"})
+    |> render_change()
+
+    refute has_element?(view, "#restart-provider-MT-HTTP")
+    assert has_element?(view, "#restart-agent-MT-HTTP")
+    assert has_element?(view, ~s|form[phx-submit="set_issue_run_spec"] option[value="antigravity"][selected]|)
+  end
+
+  test "preview_add_project shows provider only for claude" do
+    start_dashboard()
+    {:ok, config} = CymphonyElixir.Cymphony.Config.load()
+    assert :ok = CymphonyElixir.Cymphony.Config.save(Map.put(config, "linear_api_key", "lin_api_fake"))
+
+    {:ok, view, _html} = live(build_conn(), "/")
+
+    assert has_element?(view, "#add-project-form")
+    assert has_element?(view, "#add-project-slug")
+    assert has_element?(view, "#add-project-slug-input")
+    assert has_element?(view, "#linear-project-slugs")
+    assert has_element?(view, "#add-project-model")
+    assert has_element?(view, "#add-project-model-input")
+    assert has_element?(view, ".model-switcher #add-project-model")
+    assert has_element?(view, ~s|#add-project-effort[name="effort"]|)
+    refute has_element?(view, ~s|#add-project-effort[type="text"]|)
+    refute has_element?(view, "#add-project-provider")
+    assert view_assigns(view).add_project_kind == ""
+
+    view
+    |> form("#add-project-form", %{agent: "claude"})
+    |> render_change()
+
+    assert view_assigns(view).add_project_kind == "claude"
+    assert has_element?(view, "#add-project-provider")
+
+    view
+    |> form("#add-project-form", %{agent: "codex"})
+    |> render_change()
+
+    assert view_assigns(view).add_project_kind == "codex"
+    refute has_element?(view, "#add-project-provider")
+  end
+
+  test "refresh interval defaults to 3 and set_refresh_interval updates assign and config.json" do
+    start_dashboard()
+    {:ok, view, html} = live(build_conn(), "/")
+
+    assert html =~ ~s(id="drawer-refresh-interval")
+    assert has_element?(view, ~s|#drawer-refresh-interval[type="number"][min="1"][name="value"]|)
+    assert has_element?(view, ~s|#drawer-refresh-interval.settings-field|)
+    assert has_element?(view, ~s|#linear-api-key.settings-field|)
+    assert has_element?(view, ~s|#drawer-global-concurrency.settings-field|)
+    assert has_element?(view, ~s|form.settings-form[phx-submit="set_refresh_interval"]|)
+    assert has_element?(view, ~s|form.settings-form[phx-submit="set_concurrency"]|)
+    assert view_assigns(view).payload_refresh_seconds == 3
+    assert view_assigns(view).payload_refresh_ms == 3_000
+    assert has_element?(view, ~s|#drawer-refresh-interval[value="3"]|)
+
+    {:ok, initial_config} = CymphonyElixir.Cymphony.Config.load()
+    refute Map.get(initial_config, "dashboard_refresh_seconds")
+
+    view
+    |> form(~s|form[phx-submit="set_refresh_interval"]|, %{value: "7"})
+    |> render_submit()
+
+    assert view_assigns(view).payload_refresh_seconds == 7
+    assert view_assigns(view).payload_refresh_ms == 7_000
+    assert render(view) =~ "Dashboard refresh set to 7s"
+
+    {:ok, updated} = CymphonyElixir.Cymphony.Config.load()
+    assert updated["dashboard_refresh_seconds"] == 7
+    assert is_list(updated["projects"])
+
+    view
+    |> form(~s|form[phx-submit="set_refresh_interval"]|, %{value: "0"})
+    |> render_submit()
+
+    assert view_assigns(view).payload_refresh_seconds == 7
+    assert render(view) =~ "Refresh interval must be a positive integer"
   end
 
   defp start_dashboard(opts \\ []) do

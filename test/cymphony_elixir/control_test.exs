@@ -111,6 +111,36 @@ defmodule CymphonyElixirWeb.ControlTest do
       assert Enum.all?(cfg["projects"], &(&1["max_concurrent_agents"] == 4))
     end
 
+    test "set_dashboard_refresh_seconds persists only and does not message orchestrators", %{tmp: tmp} do
+      start_orch!("alpha")
+      start_orch!("beta")
+
+      assert Control.set_dashboard_refresh_seconds(8) == :ok
+      assert Control.set_dashboard_refresh_seconds(" 6 ") == :ok
+      refute_receive {:orch, _, _}, 100
+
+      {:ok, cfg} = Jason.decode(File.read!(Path.join(tmp, "config.json")))
+      assert cfg["dashboard_refresh_seconds"] == 6
+      refute Enum.any?(cfg["projects"], &Map.has_key?(&1, "dashboard_refresh_seconds"))
+      refute Map.has_key?(cfg, "polling_interval_ms")
+    end
+
+    test "set_dashboard_refresh_seconds rejects invalid values without touching orchestrators" do
+      start_orch!("alpha")
+
+      assert Control.set_dashboard_refresh_seconds(0) == {:error, :invalid_refresh_interval}
+      assert Control.set_dashboard_refresh_seconds("nope") == {:error, :invalid_refresh_interval}
+      refute_receive {:orch, _, _}, 100
+    end
+
+    test "set_dashboard_refresh_seconds surfaces persist errors", %{tmp: tmp} do
+      File.rm!(Path.join(tmp, "config.json"))
+
+      assert {:error, msg} = Control.set_dashboard_refresh_seconds(5)
+      assert is_binary(msg)
+      assert msg =~ "Failed to read"
+    end
+
     test "set_agent_settings fans out to orchestrators and persists", %{tmp: tmp} do
       start_orch!("alpha")
       start_orch!("beta")

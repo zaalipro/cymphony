@@ -405,7 +405,7 @@ When you list multiple providers, Cymphony picks one **at random** for each new 
 
 You can change a project's provider list **at runtime** without restarting:
 
-- **Dashboard**: in each project's section header, edit the `providers` input (e.g. `cv1,cz`) and press Enter. Persisted to `config.json`, applied to the next dispatch.
+- **Dashboard**: in each project's section header, when the selected agent is `claude`, edit the `providers` input (e.g. `cv1,cz`) and press Enter. Persisted to `config.json`, applied to the next dispatch. The field is hidden for `codex` / `antigravity` / empty / unknown kinds; persisted providers are not deleted.
 - **API**: `curl -X POST 'http://localhost:4089/api/v1/providers?project=MyApp' -d '{"value":"cv1,cz"}'`
 - **Per-session live switch**: expand any running session row, type a provider in the per-session form, click **Set** — Cymphony kills that session and immediately re-dispatches it with the new provider.
 
@@ -461,22 +461,23 @@ The dashboard opens in **Simple** mode: plain-language autonomy status, the acti
 The dashboard shows:
 
 - **Command bar (top)** — autonomy state plus working / waiting / usage / runtime counters in Simple mode; throughput, polling cadence, and rate limits in Advanced mode
-- **Per-project sections** — one card per project with the project name, running count, "tasks at once", and Pause/Resume. Advanced mode adds `agent` (`claude` / `codex` / `antigravity`), `model`, `effort`, and `providers` controls. The agent select keeps a stable id (`#agent-<project>`); changing the kind persists immediately (kind only). **Set** still saves kind + model + effort together. Both paths rewrite the project's generated `WORKFLOW.md` and overlay `config.json` so the select stays on the new kind after the next refresh.
-- **Compact session rows** — Linear ID, title, state, runtime, and Stop. Advanced mode adds provider, host, token, workspace, log, and restart details. Expanding a row shows a **Harness** pane (live CLI stdout, Follow/Paused) and a restart form that can pin `agent_kind` / provider / model / effort for that session
+- **Per-project sections** — one card per project with the project name, running count, "tasks at once", and Pause/Resume. Advanced mode extracts labeled controls out of the cramped agent pill: `agent` (native `#agent-<project>` select), a `.model-switcher` Combobox (type-to-filter suggestions), `effort` (native `#effort-<project>` select), and `providers` (visible only when the selected kind is `claude`). Changing the kind persists immediately (kind only) and hides/shows the providers field on the next render. **Set** still saves kind + model + effort together. Both paths rewrite the project's generated `WORKFLOW.md` and overlay `config.json` so the select stays on the new kind after the next refresh.
+- **Compact session rows** — Linear ID, title, state, runtime, and Stop. Advanced mode adds provider, host, token, workspace, log, and restart details. Expanding a row shows a **Harness** pane (live CLI stdout, Follow/Paused) and a restart form that can pin `agent_kind` / provider / model / effort. Restart model is the same type-to-filter Combobox; the Provider field is Claude-only. Session provider chips stay visible for every kind.
 - **Retry queue** — inline at the bottom of each project section
 - **Recent completions** — global ring buffer of the last 100 finished sessions, collapsed by default in Simple mode
-- **Settings drawer (⚙)** — Experience mode, then **Linear** + **Projects**, then Automation / Display. See below.
+- **Settings drawer (⚙)** — Experience mode, then **Linear** + **Projects**, then Automation / Display (including dashboard refresh seconds). See below.
 
 Live updates are pushed via Phoenix Channels — no manual refresh.
 
-### Settings drawer — Linear and add project
+### Settings drawer — Linear, add project, and refresh seconds
 
 Open **⚙ Settings**. After Experience and before Automation (visible in Simple and Advanced):
 
 1. **Linear** — paste a personal API key into the password field (`#linear-api-key`) and click **Connect** (`phx-submit="connect_linear"`, also `POST /api/v1/linear`). Status becomes **Connected** and shows a last-4 mask (`••••xxxx`). The key is stored in `~/.cymphony/config.json` as `linear_api_key` (file mode `0600`) and stamped onto every project. `LINEAR_API_KEY` is only a fallback when the file has no key. The raw key is never shown again in the UI, flashes, or API responses.
-2. **Projects** — once connected, pick a Linear project from `#add-project-slug`, enter a Cymphony name, optionally a GitHub repo URL, and click **Add project** (`phx-submit="add_project"`, also `POST /api/v1/projects`). The project is appended to `config.json`, a temp `WORKFLOW.md` is written, and the orchestrator starts immediately — no daemon restart. Duplicate name or Linear slug is rejected with a visible error.
+2. **Projects** — once connected, type-to-filter a Linear project from the `#add-project-slug` Combobox (not a native select), enter a Cymphony name, optionally a GitHub repo URL, and click **Add project** (`phx-submit="add_project"`, also `POST /api/v1/projects`). Advanced add-project fields include a model Combobox; `#add-project-provider` is visible only when the selected agent is `claude` (`preview_add_project`). The project is appended to `config.json`, a temp `WORKFLOW.md` is written, and the orchestrator starts immediately — no daemon restart. Duplicate name or Linear slug is rejected with a visible error.
+3. **Automation / Orchestrator** — global Pause/Resume, global concurrency, and dashboard payload refresh (`#drawer-refresh-interval`, min 1, default 3 seconds). Submit (`set_refresh_interval`, also `POST /api/v1/refresh-interval`) persists top-level `dashboard_refresh_seconds` in `~/.cymphony/config.json`. This is **not** Linear polling (`polling.interval_ms` / `POST /api/v1/refresh`). Open dashboards keep their current interval until remount or a successful set.
 
-CLI `cymphony setup` and `cymphony add` still work the same way.
+Drawer inputs use class `settings-field`. CLI `cymphony setup` and `cymphony add` still work the same way.
 
 ### Auth (optional)
 
@@ -504,6 +505,7 @@ All under `/api/v1/`:
 | `GET` | `/<issue_identifier>` | one running session's details |
 | `GET` | `/<issue_identifier>/harness` | live CLI stdout ring (`HarnessStream` snapshot) |
 | `POST` | `/refresh` | force a Linear poll right now |
+| `POST` | `/refresh-interval` | body `{"value": N}` — persist `dashboard_refresh_seconds`; `202` or `422` `invalid_refresh_interval`. **Not** `POST /refresh`. Declared before `/<issue_identifier>`. |
 | `POST` | `/pause` `?project=Name` | stop dispatching new issues |
 | `POST` | `/resume` `?project=Name` | resume |
 | `POST` | `/concurrency` `?project=Name` | body `{"value": 5}` |
@@ -511,7 +513,7 @@ All under `/api/v1/`:
 | `POST` | `/agent` `?project=Name` | body `{"kind","model","effort"}` — persist + rewrite project `WORKFLOW.md` so `agent_kind` survives refresh |
 | `GET` | `/completed` `?limit=N` | recent completions ring buffer |
 
-`/linear`, `/linear/projects`, and `POST /projects` are declared before `/<issue_identifier>`. Unsupported methods on those routes return `405`. `POST /linear` never echoes `api_key`.
+`/linear`, `/linear/projects`, `POST /projects`, and `POST /refresh-interval` are declared before `/<issue_identifier>`. Unsupported methods on those routes return `405`. `POST /linear` never echoes `api_key`.
 
 ---
 

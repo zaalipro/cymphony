@@ -549,6 +549,9 @@ defmodule CymphonyElixir.ExtensionsTest do
     assert json_response(get(build_conn(), "/api/v1/refresh"), 405) ==
              %{"error" => %{"code" => "method_not_allowed", "message" => "Method not allowed"}}
 
+    assert json_response(get(build_conn(), "/api/v1/refresh-interval"), 405) ==
+             %{"error" => %{"code" => "method_not_allowed", "message" => "Method not allowed"}}
+
     assert json_response(post(build_conn(), "/", %{}), 405) ==
              %{"error" => %{"code" => "method_not_allowed", "message" => "Method not allowed"}}
 
@@ -867,14 +870,12 @@ defmodule CymphonyElixir.ExtensionsTest do
       # Agent kind is intentionally not offered per running session.
       refute expanded =~ ~s(name="agent_kind" form="set_issue_run_spec")
 
-      view
-      |> form(~s|form[phx-submit="set_issue_run_spec"]|, %{
-        issue: "MT-HTTP",
-        provider: "cv2",
-        model: "opus",
-        effort: ""
+      render_submit(view, "set_issue_run_spec", %{
+        "issue" => "MT-HTTP",
+        "provider" => "cv2",
+        "model" => "opus",
+        "effort" => ""
       })
-      |> render_submit()
 
       assert_receive {:orchestrator_call, {:set_issue_run_spec, "issue-http", %{provider: "cv2", model: "opus"} = overrides}},
                      1_000
@@ -1105,13 +1106,12 @@ defmodule CymphonyElixir.ExtensionsTest do
       assert html =~ ">providers</label>"
       refute html =~ "claude command"
 
-      view
-      |> form(~s|form[phx-submit="set_project_agent"]|, %{
-        agent_kind: "codex",
-        model: "gpt-5.2-codex",
-        effort: "high"
+      render_submit(view, "set_project_agent", %{
+        "project" => "default",
+        "agent_kind" => "codex",
+        "model" => "gpt-5.2-codex",
+        "effort" => "high"
       })
-      |> render_submit()
 
       assert_receive {:orchestrator_call, {:set_agent_settings, %{"agent" => "codex", "model" => "gpt-5.2-codex", "effort" => "high"}}},
                      1_000
@@ -1183,13 +1183,12 @@ defmodule CymphonyElixir.ExtensionsTest do
 
       assert html =~ ~s(phx-change="preview_project_agent")
 
-      view
-      |> form(~s|form[phx-change="preview_project_agent"]|, %{
-        agent_kind: "codex",
-        model: "sonnet",
-        effort: "max"
+      render_change(view, "preview_project_agent", %{
+        "project" => "default",
+        "agent_kind" => "codex",
+        "model" => "sonnet",
+        "effort" => "max"
       })
-      |> render_change()
 
       codex_form = view |> element(~s|form[phx-submit="set_project_agent"]|) |> render()
       assert codex_form =~ ~s(value="gpt-5.6-terra")
@@ -1198,24 +1197,22 @@ defmodule CymphonyElixir.ExtensionsTest do
       refute codex_form =~ ~s(value="sonnet")
       refute codex_form =~ ~s(value="max")
 
-      view
-      |> form(~s|form[phx-change="preview_project_agent"]|, %{
-        agent_kind: "codex",
-        model: "gpt-5.6-terra",
-        effort: "minimal"
+      render_change(view, "preview_project_agent", %{
+        "project" => "default",
+        "agent_kind" => "codex",
+        "model" => "gpt-5.6-terra",
+        "effort" => "minimal"
       })
-      |> render_change()
 
       assert has_element?(view, ~s|form[phx-submit="set_project_agent"] input[name="model"][value="gpt-5.6-terra"]|)
       assert has_element?(view, ~s|form[phx-submit="set_project_agent"] option[value="minimal"][selected]|)
 
-      view
-      |> form(~s|form[phx-change="preview_project_agent"]|, %{
-        agent_kind: "claude",
-        model: "gpt-5.6-terra",
-        effort: "minimal"
+      render_change(view, "preview_project_agent", %{
+        "project" => "default",
+        "agent_kind" => "claude",
+        "model" => "gpt-5.6-terra",
+        "effort" => "minimal"
       })
-      |> render_change()
 
       claude_form = view |> element(~s|form[phx-submit="set_project_agent"]|) |> render()
       assert claude_form =~ ~s(value="sonnet")
@@ -1416,6 +1413,83 @@ defmodule CymphonyElixir.ExtensionsTest do
       {:ok, persisted} = Jason.decode(File.read!(Path.join(tmp, "config.json")))
       [project | _] = persisted["projects"]
       assert project["max_concurrent_agents"] == 4
+    end
+
+    test "POST /api/v1/refresh-interval persists dashboard_refresh_seconds" do
+      tmp = Path.join(System.tmp_dir!(), "cymphony-refresh-api-#{System.unique_integer([:positive])}")
+      File.mkdir_p!(tmp)
+      File.write!(Path.join(tmp, "config.json"), ~s({"projects":[{"name":"default"}]}))
+      Application.put_env(:cymphony_elixir, :config_dir_override, tmp)
+
+      on_exit(fn ->
+        Application.delete_env(:cymphony_elixir, :config_dir_override)
+        File.rm_rf!(tmp)
+      end)
+
+      orchestrator_name = Module.concat(__MODULE__, :RefreshIntervalApiOrchestrator)
+
+      {:ok, _pid} =
+        StaticOrchestrator.start_link(
+          name: orchestrator_name,
+          snapshot: static_snapshot(),
+          recipient: self()
+        )
+
+      start_test_endpoint(orchestrator: orchestrator_name, snapshot_timeout_ms: 50)
+
+      conn = post(build_conn(), "/api/v1/refresh-interval", %{"value" => 8})
+      assert %{status: 202} = conn
+      assert Jason.decode!(conn.resp_body) == %{"dashboard_refresh_seconds" => 8}
+
+      refute_receive {:orchestrator_call, _}, 100
+
+      {:ok, persisted} = Jason.decode(File.read!(Path.join(tmp, "config.json")))
+      assert persisted["dashboard_refresh_seconds"] == 8
+      assert persisted["projects"] == [%{"name" => "default"}]
+      refute Enum.any?(persisted["projects"], &Map.has_key?(&1, "dashboard_refresh_seconds"))
+      refute Map.has_key?(persisted, "polling_interval_ms")
+    end
+
+    test "POST /api/v1/refresh-interval rejects invalid values with 422" do
+      orchestrator_name = Module.concat(__MODULE__, :RefreshIntervalInvalidOrchestrator)
+
+      {:ok, _pid} =
+        StaticOrchestrator.start_link(name: orchestrator_name, snapshot: static_snapshot())
+
+      start_test_endpoint(orchestrator: orchestrator_name, snapshot_timeout_ms: 50)
+
+      assert json_response(post(build_conn(), "/api/v1/refresh-interval", %{"value" => 0}), 422) ==
+               %{
+                 "error" => %{
+                   "code" => "invalid_refresh_interval",
+                   "message" => "refresh interval 'value' must be a positive integer"
+                 }
+               }
+
+      assert json_response(post(build_conn(), "/api/v1/refresh-interval", %{"value" => "nope"}), 422) ==
+               %{
+                 "error" => %{
+                   "code" => "invalid_refresh_interval",
+                   "message" => "refresh interval 'value' must be a positive integer"
+                 }
+               }
+    end
+
+    test "GET /api/v1/refresh-interval is 405 not issue_not_found" do
+      orchestrator_name = Module.concat(__MODULE__, :RefreshIntervalMethodOrchestrator)
+
+      {:ok, _pid} =
+        StaticOrchestrator.start_link(name: orchestrator_name, snapshot: static_snapshot())
+
+      start_test_endpoint(orchestrator: orchestrator_name, snapshot_timeout_ms: 50)
+
+      assert json_response(get(build_conn(), "/api/v1/refresh-interval"), 405) ==
+               %{
+                 "error" => %{
+                   "code" => "method_not_allowed",
+                   "message" => "Method not allowed"
+                 }
+               }
     end
 
     test "presenter surfaces issue title, url, and priority from entry.issue" do

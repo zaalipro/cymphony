@@ -92,6 +92,219 @@ defmodule CymphonyElixirWeb.Layouts do
                       if (body) body.scrollTop = body.scrollHeight;
                     }
                   }
+                },
+                Combobox: {
+                  mounted() {
+                    this._onInput = this.onInput.bind(this);
+                    this._onKeydown = this.onKeydown.bind(this);
+                    this._onPointer = this.onPointer.bind(this);
+                    this._onDocPointer = this.onDocPointer.bind(this);
+                    this._onFocus = this.onFocus.bind(this);
+                    this.open = false;
+                    this.activeIndex = -1;
+                    this.options = [];
+                    this.visibleOptions = [];
+                    this.bind();
+                    this.cacheOptions();
+                    this.close();
+                  },
+                  updated() {
+                    this.bind();
+                    this.cacheOptions();
+                    if (this.el.contains(document.activeElement)) {
+                      this.filter(this.input ? this.input.value : '');
+                    } else {
+                      this.close();
+                    }
+                  },
+                  destroyed() {
+                    this.unbind();
+                  },
+                  queryParts() {
+                    this.input = this.el.querySelector('.combobox-input');
+                    this.hidden = this.el.querySelector('input[type="hidden"]');
+                    this.list = this.el.querySelector('ul[role="listbox"]');
+                  },
+                  bind() {
+                    this.unbind();
+                    this.queryParts();
+                    if (this.input) {
+                      this.input.addEventListener('input', this._onInput);
+                      this.input.addEventListener('keydown', this._onKeydown);
+                      this.input.addEventListener('focus', this._onFocus);
+                      this.input.addEventListener('click', this._onFocus);
+                    }
+                    this.el.addEventListener('mousedown', this._onPointer);
+                    this.el.addEventListener('click', this._onPointer);
+                    document.addEventListener('mousedown', this._onDocPointer);
+                  },
+                  unbind() {
+                    if (this.input) {
+                      this.input.removeEventListener('input', this._onInput);
+                      this.input.removeEventListener('keydown', this._onKeydown);
+                      this.input.removeEventListener('focus', this._onFocus);
+                      this.input.removeEventListener('click', this._onFocus);
+                    }
+                    this.el.removeEventListener('mousedown', this._onPointer);
+                    this.el.removeEventListener('click', this._onPointer);
+                    document.removeEventListener('mousedown', this._onDocPointer);
+                  },
+                  cacheOptions() {
+                    this.queryParts();
+                    this.options = this.list
+                      ? Array.prototype.slice.call(this.list.querySelectorAll('li[role="option"]'))
+                      : [];
+                    var prefix = (this.list && this.list.id) ? this.list.id : 'combobox';
+                    this.options.forEach(function(opt, i) {
+                      if (!opt.id) opt.id = prefix + '-opt-' + i;
+                    });
+                  },
+                  optionValue(opt) {
+                    if (!opt) return '';
+                    var data = opt.getAttribute('data-value');
+                    if (data !== null) return data;
+                    return (opt.textContent || '').trim();
+                  },
+                  optionText(opt) {
+                    return opt ? (opt.textContent || '') : '';
+                  },
+                  syncHidden() {
+                    if (this.hidden && this.input) this.hidden.value = this.input.value;
+                  },
+                  notifyHidden() {
+                    if (!this.hidden) return;
+                    this.hidden.dispatchEvent(new Event('input', {bubbles: true}));
+                    this.hidden.dispatchEvent(new Event('change', {bubbles: true}));
+                  },
+                  setOpen(open) {
+                    this.open = !!open;
+                    if (this.list) this.list.hidden = !this.open;
+                    if (this.input) {
+                      this.input.setAttribute('aria-expanded', this.open ? 'true' : 'false');
+                      if (!this.open) this.input.removeAttribute('aria-activedescendant');
+                    }
+                    if (!this.open) this.clearActive();
+                  },
+                  close() {
+                    this.setOpen(false);
+                  },
+                  clearActive() {
+                    this.activeIndex = -1;
+                    (this.options || []).forEach(function(opt) {
+                      opt.setAttribute('aria-selected', 'false');
+                    });
+                    if (this.input) this.input.removeAttribute('aria-activedescendant');
+                  },
+                  setActive(index) {
+                    var vis = this.visibleOptions || [];
+                    if (!vis.length) {
+                      this.clearActive();
+                      return;
+                    }
+                    if (index < 0) index = 0;
+                    if (index >= vis.length) index = vis.length - 1;
+                    this.activeIndex = index;
+                    var active = vis[index];
+                    vis.forEach(function(opt, i) {
+                      opt.setAttribute('aria-selected', i === index ? 'true' : 'false');
+                    });
+                    if (this.input) {
+                      if (active && active.id) this.input.setAttribute('aria-activedescendant', active.id);
+                      else this.input.removeAttribute('aria-activedescendant');
+                    }
+                    if (active && active.scrollIntoView) active.scrollIntoView({block: 'nearest'});
+                  },
+                  filter(query) {
+                    var q = (query || '').toLowerCase();
+                    var visible = [];
+                    (this.options || []).forEach(function(opt) {
+                      var value = this.optionValue(opt).toLowerCase();
+                      var label = this.optionText(opt).toLowerCase();
+                      var match = !q || value.indexOf(q) !== -1 || label.indexOf(q) !== -1;
+                      opt.hidden = !match;
+                      if (match) visible.push(opt);
+                    }, this);
+                    this.visibleOptions = visible;
+                    this.clearActive();
+                    this.setOpen(true);
+                  },
+                  moveActive(delta) {
+                    if (!this.open) this.filter(this.input ? this.input.value : '');
+                    var vis = this.visibleOptions || [];
+                    if (!vis.length) return;
+                    var next;
+                    if (this.activeIndex < 0) next = delta > 0 ? 0 : vis.length - 1;
+                    else next = this.activeIndex + delta;
+                    this.setActive(next);
+                  },
+                  onInput() {
+                    this.syncHidden();
+                    this.filter(this.input ? this.input.value : '');
+                  },
+                  onFocus() {
+                    this.filter(this.input ? this.input.value : '');
+                  },
+                  onPointer(e) {
+                    var opt = e.target.closest ? e.target.closest('[role="option"]') : null;
+                    if (!opt || !this.list || !this.list.contains(opt)) return;
+                    if (e.type === 'mousedown') e.preventDefault();
+                    this.commitOption(opt);
+                  },
+                  onDocPointer(e) {
+                    if (!this.el.contains(e.target)) this.close();
+                  },
+                  commitOption(opt) {
+                    var value = this.optionValue(opt);
+                    if (this.input) this.input.value = value;
+                    if (this.hidden) this.hidden.value = value;
+                    this.notifyHidden();
+                    this.close();
+                  },
+                  commitText() {
+                    this.syncHidden();
+                    this.close();
+                  },
+                  onKeydown(e) {
+                    var key = e.key;
+                    if (key === 'ArrowDown') {
+                      e.preventDefault();
+                      this.moveActive(1);
+                      return;
+                    }
+                    if (key === 'ArrowUp') {
+                      e.preventDefault();
+                      this.moveActive(-1);
+                      return;
+                    }
+                    if (key === 'Home') {
+                      if (!this.open) return;
+                      e.preventDefault();
+                      if ((this.visibleOptions || []).length) this.setActive(0);
+                      return;
+                    }
+                    if (key === 'End') {
+                      if (!this.open) return;
+                      e.preventDefault();
+                      var last = (this.visibleOptions || []).length - 1;
+                      if (last >= 0) this.setActive(last);
+                      return;
+                    }
+                    if (key === 'Enter') {
+                      if (!this.open) return;
+                      e.preventDefault();
+                      var vis = this.visibleOptions || [];
+                      if (this.activeIndex >= 0 && vis[this.activeIndex]) this.commitOption(vis[this.activeIndex]);
+                      else this.commitText();
+                      return;
+                    }
+                    if (key === 'Escape') {
+                      if (!this.open) return;
+                      e.preventDefault();
+                      this.close();
+                      return;
+                    }
+                    if (key === 'Tab') this.commitText();
+                  }
                 }
               }
             });
