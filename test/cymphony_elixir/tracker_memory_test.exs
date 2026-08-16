@@ -12,6 +12,7 @@ defmodule CymphonyElixir.Tracker.MemoryTest do
 
     on_exit(fn ->
       Application.delete_env(:cymphony_elixir, :memory_tracker_issues)
+      Application.delete_env(:cymphony_elixir, :memory_tracker_error)
       Application.delete_env(:cymphony_elixir, :memory_tracker_recipient)
     end)
 
@@ -21,6 +22,12 @@ defmodule CymphonyElixir.Tracker.MemoryTest do
   test "fetch_candidate_issues/0 and /1 return only Issue structs", %{issue: issue, todo: todo} do
     assert {:ok, [^issue, ^todo]} = Memory.fetch_candidate_issues()
     assert {:ok, [^issue, ^todo]} = Memory.fetch_candidate_issues(:unused_config)
+  end
+
+  test "fetch_candidate_issues returns a configured error" do
+    Application.put_env(:cymphony_elixir, :memory_tracker_error, :linear_unavailable)
+    assert Memory.fetch_candidate_issues() == {:error, :linear_unavailable}
+    assert Memory.fetch_candidate_issues(:unused_config) == {:error, :linear_unavailable}
   end
 
   test "fetch_issues_by_states matches trimmed, case-insensitive names and ignores non-binaries", %{

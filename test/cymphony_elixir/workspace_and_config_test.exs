@@ -91,6 +91,30 @@ defmodule CymphonyElixir.WorkspaceAndConfigTest do
     end
   end
 
+  test "empty leftover workspace re-runs after_create so a failed clone can recover" do
+    workspace_root =
+      Path.join(
+        System.tmp_dir!(),
+        "cymphony-elixir-workspace-rebootstrap-#{System.unique_integer([:positive])}"
+      )
+
+    try do
+      write_workflow_file!(Workflow.workflow_file_path(),
+        workspace_root: workspace_root,
+        hook_after_create: "echo cloned > README.md"
+      )
+
+      leftover = Path.join(workspace_root, "MT-EMPTY")
+      File.mkdir_p!(Path.join(leftover, ".cymphony"))
+
+      assert {:ok, workspace} = Workspace.create_for_issue("MT-EMPTY")
+      assert Path.basename(workspace) == "MT-EMPTY"
+      assert File.read!(Path.join(workspace, "README.md")) == "cloned\n"
+    after
+      File.rm_rf(workspace_root)
+    end
+  end
+
   test "workspace replaces stale non-directory paths" do
     workspace_root =
       Path.join(

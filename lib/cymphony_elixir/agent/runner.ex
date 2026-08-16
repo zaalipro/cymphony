@@ -222,13 +222,17 @@ defmodule CymphonyElixir.Agent.Runner do
     cmd_name = command |> String.split(" ", parts: 2) |> List.first() || ""
 
     """
+    export PATH="$HOME/.local/bin:/usr/local/bin:$PATH"
     if ! command -v #{shell_escape(cmd_name)} >/dev/null 2>&1; then
       for __cymphony_rc in "$HOME/.cld" "$HOME/.zshrc" "$HOME/.bashrc"; do
         [ -f "$__cymphony_rc" ] && . "$__cymphony_rc" 2>/dev/null || true
       done
       unset __cymphony_rc
     fi
-    exec #{command}
+    # Codex exec still opens stdin for "additional input" even when the prompt
+    # is on argv. An inherited open pipe never EOFs, so the turn hangs until
+    # the stall watchdog kills it — no commits, no PR.
+    exec #{command} </dev/null
     """
   end
 

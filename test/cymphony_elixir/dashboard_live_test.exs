@@ -77,6 +77,7 @@ defmodule CymphonyElixir.DashboardLiveTest do
     assert html =~ "unknown 1"
     assert html =~ ~s(data-pref-section="states")
     assert html =~ ~s(data-pref-section="kinds")
+    assert html =~ ~s(data-pref-section="board")
 
     expanded =
       view
@@ -239,10 +240,13 @@ defmodule CymphonyElixir.DashboardLiveTest do
     [entry | rest] = payload.running
     entry = Map.put(entry, :tokens_per_second, 12.34)
 
-    send(
-      view.pid,
-      {:payload_loaded, view_assigns(view).payload_seq, %{payload | running: [entry | rest], projects: patch_running(payload.projects, entry)}}
-    )
+    patched = %{
+      payload
+      | running: [entry | rest],
+        projects: patch_running(payload.projects, entry)
+    }
+
+    send(view.pid, {:payload_loaded, view_assigns(view).payload_seq, patched})
 
     html = render(view)
     assert html =~ "12.3 t/s"
@@ -639,11 +643,13 @@ defmodule CymphonyElixir.DashboardLiveTest do
     [entry | rest] = payload.running
     entry = entry |> Map.put(:provider, "cz2") |> Map.put(:agent_kind, "codex")
 
-    send(
-      view.pid,
-      {:payload_loaded, view_assigns(view).payload_seq,
-       %{payload | running: [entry | rest], projects: patch_running(payload.projects, entry)}}
-    )
+    patched = %{
+      payload
+      | running: [entry | rest],
+        projects: patch_running(payload.projects, entry)
+    }
+
+    send(view.pid, {:payload_loaded, view_assigns(view).payload_seq, patched})
 
     html = render(view)
     assert html =~ ~s(class="chip chip--accent advanced-only")
@@ -739,6 +745,111 @@ defmodule CymphonyElixir.DashboardLiveTest do
     assert render(view) =~ "Refresh interval must be a positive integer"
   end
 
+  test "queue board is hidden when waiting is empty" do
+    start_dashboard()
+    {:ok, view, html} = live(build_conn(), "/")
+
+    assert view_assigns(view).queue_edit_ids == MapSet.new()
+    assert view_assigns(view).queue_run_spec_drafts == %{}
+    refute has_element?(view, "section.queue-board")
+    refute has_element?(view, ".queue-board-list")
+    refute html =~ ~s(id="queue-board-default")
+    assert has_element?(view, ~s|[data-pref-section="board"]|)
+    assert html =~ ~s(class="metric-pill metric-pill--queue section--queue advanced-only")
+  end
+
+  test "queue board shows title, identifier, and Edit when waiting is present" do
+    start_dashboard(
+      snapshot:
+        static_snapshot()
+        |> Map.put(:waiting, [
+          waiting_snapshot_entry(%{identifier: "LLM-51", title: "Pin the queue"}),
+          waiting_snapshot_entry(%{identifier: "LLM-12", title: "Later card", priority: 4})
+        ])
+    )
+
+    {:ok, view, html} = live(build_conn(), "/")
+
+    assert has_element?(view, "section.queue-board.section--board")
+    assert has_element?(view, "#queue-board-default.queue-board-list")
+    assert has_element?(view, ~s|#queue-card-default-LLM-51[data-issue="LLM-51"][data-rank="0"]|)
+    assert has_element?(view, ~s|a.session-row-link.queue-card-link|, "LLM-51")
+    assert html =~ "Pin the queue"
+    assert has_element?(view, "button.queue-card-edit-toggle", "Edit")
+    assert html =~ "queued"
+
+    card = view |> element("#queue-card-default-LLM-51") |> render()
+    refute card =~ "chip"
+    refute card =~ "Urgent"
+    refute card =~ "High"
+    refute card =~ "Todo"
+    refute card =~ "In Progress"
+  end
+
+  test "empty-state is absent when waiting is nonempty" do
+    start_dashboard(
+      snapshot:
+        static_snapshot()
+        |> Map.put(:running, [])
+        |> Map.put(:retrying, [])
+        |> Map.put(:waiting, [waiting_snapshot_entry(%{identifier: "LLM-51", title: "Ready next"})])
+    )
+
+    {:ok, view, html} = live(build_conn(), "/")
+
+    assert has_element?(view, "section.queue-board.section--board")
+    assert html =~ "Ready next"
+    refute html =~ "No active sessions."
+    refute html =~ "Nothing is running right now."
+    refute has_element?(view, "p.empty-state")
+  end
+
+  test "preview_queue_run_spec drafts kind and clears model and effort when kind changes" do
+    start_dashboard(
+      snapshot:
+        static_snapshot()
+        |> Map.put(:waiting, [
+          waiting_snapshot_entry(%{
+            identifier: "LLM-51",
+            title: "Ready next",
+            agent_kind: "claude",
+            model: "sonnet",
+            effort: "high"
+          })
+        ])
+    )
+
+    {:ok, view, _html} = live(build_conn(), "/")
+
+    view
+    |> element(~s|button.queue-card-edit-toggle[phx-value-issue="LLM-51"]|)
+    |> render_click()
+
+    render_change(view, "preview_queue_run_spec", %{
+      "project" => "default",
+      "issue" => "LLM-51",
+      "agent_kind" => "codex",
+      "model" => "sonnet",
+      "effort" => "high"
+    })
+
+    draft = view_assigns(view).queue_run_spec_drafts[{"default", "LLM-51"}]
+    assert draft.kind == "codex"
+    assert draft.model == ""
+    assert draft.effort == ""
+    refute has_element?(view, ~s|form.queue-edit-form input[name="provider"]|)
+  end
+
+  test "empty-state is shown when running, retrying, and waiting are empty" do
+    start_dashboard(snapshot: static_snapshot() |> Map.put(:running, []) |> Map.put(:retrying, []) |> Map.put(:waiting, []))
+
+    {:ok, view, html} = live(build_conn(), "/")
+
+    refute has_element?(view, "section.queue-board")
+    assert html =~ "No active sessions."
+    assert has_element?(view, "p.empty-state")
+  end
+
   defp start_dashboard(opts \\ []) do
     isolate_cymphony_home()
     stub_linear_graphql(fn _payload, _headers -> {:error, :stub_unused} end)
@@ -758,7 +869,9 @@ defmodule CymphonyElixir.DashboardLiveTest do
 
     orchestrator_name = Module.concat(__MODULE__, :"Orch#{System.unique_integer([:positive])}")
 
-    start_supervised!({StaticOrchestrator, [name: orchestrator_name, snapshot: static_snapshot(), recipient: Keyword.get(opts, :recipient)]})
+    snapshot = Keyword.get(opts, :snapshot, static_snapshot())
+
+    start_supervised!({StaticOrchestrator, [name: orchestrator_name, snapshot: snapshot, recipient: Keyword.get(opts, :recipient)]})
 
     start_test_endpoint(orchestrator: orchestrator_name, snapshot_timeout_ms: 50)
     ensure_harness_stream_started()
@@ -897,6 +1010,7 @@ defmodule CymphonyElixir.DashboardLiveTest do
           error: "boom"
         }
       ],
+      waiting: [],
       token_totals: %{input_tokens: 4, output_tokens: 8, total_tokens: 12, seconds_running: 42.5},
       rate_limits: %{"primary" => %{"remaining" => 11}},
       agent_kind: "claude",
@@ -928,5 +1042,29 @@ defmodule CymphonyElixir.DashboardLiveTest do
     Enum.map(running, fn current ->
       if current.issue_identifier == entry.issue_identifier, do: entry, else: current
     end)
+  end
+
+  defp waiting_snapshot_entry(overrides) do
+    identifier = Map.get(overrides, :identifier, "LLM-51")
+    title = Map.get(overrides, :title, "Queue card title")
+    priority = Map.get(overrides, :priority, 2)
+    created_at = Map.get(overrides, :created_at, ~U[2026-03-01 12:00:00Z])
+
+    %{
+      issue_id: Map.get(overrides, :issue_id, "issue-#{identifier}"),
+      identifier: identifier,
+      issue: %{
+        title: title,
+        url: Map.get(overrides, :url, "https://linear.app/test/issue/#{identifier}"),
+        priority: priority,
+        created_at: created_at
+      },
+      priority: priority,
+      state: Map.get(overrides, :state, "Todo"),
+      created_at: created_at,
+      agent_kind: Map.get(overrides, :agent_kind),
+      model: Map.get(overrides, :model),
+      effort: Map.get(overrides, :effort)
+    }
   end
 end

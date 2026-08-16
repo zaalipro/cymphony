@@ -114,9 +114,13 @@ defmodule CymphonyElixir.PresenterMetricsTest do
       assert payload.counts == %{
                running: 2,
                retrying: 1,
+               waiting: 0,
                by_state: %{"In Progress" => 1, "Todo" => 1},
                by_kind: %{"claude" => 1, "unknown" => 1}
              }
+
+      assert hd(payload.projects).waiting == []
+      assert hd(payload.projects).waiting_count == 0
 
       assert payload.token_totals == %{
                input_tokens: 10,
@@ -198,6 +202,7 @@ defmodule CymphonyElixir.PresenterMetricsTest do
 
       assert payload.counts.running == 3
       assert payload.counts.retrying == 1
+      assert payload.counts.waiting == 0
       assert payload.counts.by_state == %{"In Progress" => 2, "Blocked" => 1}
       assert payload.counts.by_kind == %{"codex" => 1, "antigravity" => 1, "claude" => 1}
 
@@ -227,7 +232,7 @@ defmodule CymphonyElixir.PresenterMetricsTest do
 
       payload = Presenter.state_payload(orchestrator, 50)
 
-      assert payload.counts == %{running: 0, retrying: 0, by_state: %{}, by_kind: %{}}
+      assert payload.counts == %{running: 0, retrying: 0, waiting: 0, by_state: %{}, by_kind: %{}}
 
       assert payload.token_totals == %{
                input_tokens: 0,
@@ -261,6 +266,100 @@ defmodule CymphonyElixir.PresenterMetricsTest do
 
       assert_session_tps(entry.tokens_per_second, 40, started_at)
       assert payload.token_totals.tokens_per_second == 40.0
+    end
+
+    test "projects include waiting rows and waiting_count; counts.waiting sums them" do
+      first_name = unique_name("WaitA")
+      second_name = unique_name("WaitB")
+      created_at = ~U[2026-01-02 03:04:05Z]
+
+      start_supervised!(
+        {StaticOrchestrator,
+         name: first_name,
+         project_name: "WaitAlpha",
+         snapshot:
+           snapshot_fixture(
+             waiting: [
+               %{
+                 issue_id: "issue-a-w",
+                 identifier: "A-W",
+                 issue: %{
+                   title: "Wait A",
+                   url: "https://linear.app/test/issue/A-W",
+                   priority: 1,
+                   created_at: created_at
+                 },
+                 priority: 1,
+                 state: "Todo",
+                 created_at: created_at,
+                 agent_kind: "codex",
+                 model: "gpt-5.2-codex",
+                 effort: "high"
+               }
+             ]
+           )}
+      )
+
+      start_supervised!(
+        {StaticOrchestrator,
+         name: second_name,
+         project_name: "WaitBeta",
+         snapshot:
+           snapshot_fixture(
+             waiting: [
+               %{
+                 issue_id: "issue-b-w",
+                 identifier: "B-W",
+                 issue: %{title: "Wait B", url: nil, priority: 3, created_at: created_at},
+                 priority: 3,
+                 state: "In Progress",
+                 created_at: created_at
+               }
+             ]
+           )}
+      )
+
+      payload = Presenter.state_payload(first_name, 50)
+
+      assert payload.counts.waiting == 2
+
+      alpha = Enum.find(payload.projects, &(&1.name == "WaitAlpha"))
+      beta = Enum.find(payload.projects, &(&1.name == "WaitBeta"))
+
+      assert alpha.waiting_count == 1
+      assert beta.waiting_count == 1
+
+      [alpha_row] = alpha.waiting
+      assert alpha_row.issue_identifier == "A-W"
+      assert alpha_row.issue_title == "Wait A"
+      assert alpha_row.issue_url == "https://linear.app/test/issue/A-W"
+      assert alpha_row.issue_id == "issue-a-w"
+      assert alpha_row.priority == 1
+      assert alpha_row.state == "Todo"
+      assert alpha_row.created_at == "2026-01-02T03:04:05Z"
+      assert alpha_row.agent_kind == "codex"
+      assert alpha_row.model == "gpt-5.2-codex"
+      assert alpha_row.effort == "high"
+
+      [beta_row] = beta.waiting
+      assert beta_row.issue_identifier == "B-W"
+      assert beta_row.issue_title == "Wait B"
+      assert beta_row.agent_kind == nil
+      assert beta_row.model == nil
+      assert beta_row.effort == nil
+    end
+
+    test "missing snapshot waiting defaults to an empty list and counts.waiting 0" do
+      orchestrator = unique_name("NoWait")
+
+      snapshot = snapshot_fixture() |> Map.delete(:waiting)
+      start_supervised!({StaticOrchestrator, name: orchestrator, snapshot: snapshot})
+
+      payload = Presenter.state_payload(orchestrator, 50)
+
+      assert payload.counts.waiting == 0
+      assert hd(payload.projects).waiting == []
+      assert hd(payload.projects).waiting_count == 0
     end
   end
 
@@ -313,6 +412,7 @@ defmodule CymphonyElixir.PresenterMetricsTest do
       %{
         running: [],
         retrying: [],
+        waiting: [],
         token_totals: %{input_tokens: 0, output_tokens: 0, total_tokens: 0, seconds_running: 0},
         rate_limits: %{"primary" => %{"remaining" => 11}},
         polling: %{

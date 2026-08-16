@@ -248,6 +248,9 @@ Fields:
 - `timer_handle` (runtime-specific timer reference)
 - `error` (string or null)
 
+Retry/backoff stays its own list (`retry_attempts`), rendered **below** In Progress. Retrying
+issues are not waiting-board members and must not appear on `section.queue-board`.
+
 #### 4.1.8 Orchestrator Runtime State
 
 Single authoritative in-memory state owned by the orchestrator.
@@ -259,9 +262,35 @@ Fields:
 - `running` (map `issue_id -> running entry`)
 - `claimed` (set of issue IDs reserved/running/retrying)
 - `retry_attempts` (map `issue_id -> RetryEntry`)
+- `waiting` (ordered list of dispatch-ready `Issue` values; **name this list `waiting`
+  everywhere** except UI copy `Up next` / `Queue` / header `Q queued`)
+- `queue_order` (list of issue keys — identifier if present else `id`; persisted sticky
+  operator order)
+- `queue_pins` (map `issue_key -> %{agent_kind?, model?, effort?}`; persisted local pins
+  for the next waiting dispatch; no provider)
+- `queue_priority_seen` (map `issue_key -> integer | null`; last seen Linear priority,
+  used only to detect a Linear **raise**)
 - `completed` (set of issue IDs; bookkeeping only, not dispatch gating)
 - `claude_totals` (aggregate tokens + runtime seconds)
 - `claude_rate_limits` (latest rate-limit snapshot from agent events)
+
+`queue_order`, `queue_pins`, and `queue_priority_seen` persist on the matching
+`projects[]` object in `~/.cymphony/config.json` (file mode `0600` via existing
+`save/1`). They are **not** WORKFLOW.md front matter and must not be added to
+`Config.Schema`. `Orchestrator.init` loads them via `CymphonyConfig.load` /
+`find_project`. `CymphonyConfig.update_project_queue/2` merges any of those three
+keys onto the named project (`nil` name = legacy flat/all) and `save/1`. Pin maps
+omit empty keys. Example:
+
+```json
+{
+  "queue_order": ["LLM-51", "LLM-12"],
+  "queue_pins": {
+    "LLM-51": {"agent_kind": "codex", "model": "gpt-5.2-codex", "effort": "high"}
+  },
+  "queue_priority_seen": {"LLM-51": 2, "LLM-12": 3}
+}
+```
 
 ### 4.2 Stable Identifiers and Normalization Rules
 
@@ -850,9 +879,16 @@ Tick sequence:
 
 1. Reconcile running issues.
 2. Run dispatch preflight validation.
-3. Fetch candidate issues from tracker using active states.
-4. Sort issues by dispatch priority.
-5. Dispatch eligible issues while slots remain.
+3. When not paused, fetch candidate issues from the tracker using active states
+   (always fetch, including when `available_slots == 0`). Paused ticks skip fetch
+   and **must keep the last `waiting` list**. Fetch or config errors also keep
+   last `waiting`.
+4. After a successful fetch, filter waiting-eligible issues and run
+   `Queue.reconcile` (sticky operator order). Assign `State.waiting`. Do not
+   claim waiting ids. Do not re-sort via `Dispatch.sort_for_dispatch` once a
+   saved or reconciled order exists.
+5. Dispatch from the **leftmost** waiting card while global slots remain
+   (Section 8.2). Skip a head only when per-state or per-host slots are full.
 6. Notify observability/status consumers of state changes.
 
 If per-tick validation fails, dispatch is skipped for that tick, but reconciliation still happens
@@ -860,36 +896,113 @@ first.
 
 ### 8.2 Candidate Selection Rules
 
-An issue is dispatch-eligible only if all are true:
+Waiting-board membership and dispatch order are **sticky operator order**, not a per-tick
+re-sort. `Dispatch.sort_for_dispatch/1` is **INITIAL ORDER only** (no saved `queue_order`
+yet). Subsequent ticks use `Queue.reconcile`. Do not write Cymphony ranks or queue order
+back to Linear (no Linear GraphQL writes).
 
-- It has `id`, `identifier`, `title`, and `state`.
+Cymphony rank is the left-to-right then wrap (row-major) index on the board: `0` = next
+slot after a running session finishes, larger = later. This rank is **not** Linear
+priority. Linear priority numbers are `1` = Urgent, `2` = High, `3` = Medium, `4` = Low,
+`0` / `nil` = none.
+
+#### Waiting membership
+
+An issue is waiting-eligible (dispatch-ready, not currently running) only if all are true:
+
+- It has `id`, `identifier`, `title`, and `state` (`candidate_issue?`).
 - Its state is in `active_states` and not in `terminal_states`.
 - It is not already in `running`.
 - It is not already in `claimed`.
-- Global concurrency slots are available.
-- Per-state concurrency slots are available.
+- It is not in `retry_attempts` (retry/backoff stays its own list **below** In Progress;
+  Section 8.4).
 - Blocker rule for `Todo` state passes:
-  - If the issue state is `Todo`, do not dispatch when any blocker is non-terminal.
+  - If the issue state is `Todo`, do not include it when any blocker is non-terminal.
 
-Sorting order (stable intent):
+Do not put Backlog, canceled, or blocked issues on the board. Hide the board when
+`waiting` is empty (no empty columns). Do not claim waiting ids.
 
-1. `priority` ascending (1..4 are preferred; null/unknown sorts last)
-2. `created_at` oldest first
-3. `identifier` lexicographic tie-breaker
+Global / per-state / per-host slot checks are **not** membership filters; they apply when
+walking `waiting` to dispatch (below).
+
+#### INITIAL ORDER (no saved order yet)
+
+No saved order means `queue_order` is missing or never written (`nil`). Treat `[]` after a
+prior persist as **empty-saved** (every eligible arrival is NEW).
+
+First reconcile with no saved order:
+
+1. `order = Dispatch.sort_for_dispatch(eligible)`
+   - Linear `priority` ascending (`1..4` preferred; `0` / `nil` / unknown sort last)
+   - then oldest `created_at`
+   - then `identifier` lexicographic tie-breaker
+2. Seed `queue_priority_seen` from current priorities.
+3. Persist that `queue_order`.
+
+`choose_issues` must not re-sort via `Dispatch.sort_for_dispatch` once a saved or
+reconciled order exists.
+
+#### Sticky reconcile (`Queue.reconcile`)
+
+`issue_key` = `identifier` if present else `id`.
+`linear_rank(p)` = `p` when `p` in `1..4`, else `5` (none). Both sides of a raise
+comparison use `linear_rank`, so `0`/`nil` → `2` is a raise.
+
+On subsequent ticks:
+
+1. Drop keys that left the eligible set. Keep saved relative order for remaining keys.
+2. **LINEAR RAISE** — for each remaining key whose
+   `linear_rank(current) < linear_rank(priority_seen[key])`, re-insert **that one card
+   only** (do not reshuffle cards whose Linear priority did not change):
+   - Urgent (`1`) at index `0` (far left)
+   - High (`2`) before the first remaining card with `linear_rank > 2`
+   - Medium (`3`) before the first remaining card with `linear_rank > 3`
+   - Low (`4`) before the first remaining card with `linear_rank > 4`
+3. **LINEAR LOWER** (rank increases or stays equal) never moves the card. A High → Low
+   change after a drag does not move the card.
+4. **NEW** keys (not in saved `queue_order`) append at the right, unless Linear
+   `priority == 1` (Urgent), which inserts at index `0`.
+5. After reconcile, persist `queue_order` + `queue_priority_seen` if either changed.
+
+**DRAG:** the operator permutes the waiting list. Persist the full identifier/id order
+per project. Drag wins until **that** issue's Linear priority changes (a raise re-inserts
+that card only). Persist across daemon restart.
+
+#### Dispatch consumes leftmost waiting
+
+`maybe_dispatch` always fetches when not paused (including `available_slots == 0`). After
+a successful fetch, filter eligible, `Queue.reconcile`, assign `State.waiting`. Then walk
+leftmost:
+
+- If global slots are `0`, stop dispatching (keep remaining `waiting`).
+- If the head fails **only** `state_slots_available?` or `worker_slots_available?`, skip
+  that card (leave it on `waiting`) and try the next.
+- If `should_dispatch`, spawn (claim only then) and drop the card from `waiting`.
+
+Paused ticks skip fetch and **must keep last `waiting`**. Fetch/config errors keep last
+`waiting`. Next free slot starts the leftmost waiting card.
 
 #### Per-issue run spec resolution
 
 At dispatch time, the orchestrator resolves the session's agent kind, model, reasoning effort,
 and (optionally) provider for the issue. Field-level precedence, highest first:
 
-1. **Linear labels** — `agent:<kind>`, `model:<name>`, `effort:<level>`, `provider:<alias>`.
+1. **Queue pin** — persisted `queue_pins[issue_key]` `agent_kind` / `model` / `effort`
+   (no provider). Overlay in orchestrator `dispatch_run_spec/3`; do **not** change
+   `RunSpecResolver`. Pins apply when the issue is dispatched **from the waiting list**.
+   Empty / `"keep"` omits the field. Deleting all three fields removes that pin entry.
+   Unknown `agent_kind` is ignored (same as labels). Card Edit persists the pin and must
+   **not** kill anything (the issue is not running).
+2. **Linear labels** — `agent:<kind>`, `model:<name>`, `effort:<level>`, `provider:<alias>`.
    Labels arrive downcased from the tracker adapter. Duplicate prefixes pick the sorted-first
    value with a warning; empty values are ignored.
-2. **Description directive** — the first line in the issue description of the form
+3. **Description directive** — the first line in the issue description of the form
    `cymphony: key=value key=value …` with keys in `agent|model|effort|provider`. Values match
    `[A-Za-z0-9._/-]+`; `agent`/`effort` values are lowercased. Unknown keys are ignored.
-3. **Project config** — `agent.kind`, `agent.model`, `agent.effort`; provider comes from the
+4. **Project config** — `agent.kind`, `agent.model`, `agent.effort`; provider comes from the
    active kind's rotation (Section 8.3).
+
+Precedence is **pin > labels > directive > config**.
 
 Rules:
 
@@ -897,18 +1010,20 @@ Rules:
   source (never fail dispatch). `model`/`effort`/`provider` are pass-through.
 - The resolved spec is **pinned for the whole run attempt**: multi-turn resume never
   re-resolves, so an agent-kind switch mid-session is impossible.
-- Retries re-resolve from the freshly polled issue, so label edits take effect on the next
-  attempt.
+- Retries re-resolve from the freshly polled issue (plus any still-persisted queue pin),
+  so label edits take effect on the next attempt.
 - An explicit issue-level `provider` bypasses rotation for that issue. When a label switches
   the agent kind away from the project default, the provider falls back to that kind's
-  configured `provider` (rotation lists are per-kind).
-- The dispatch log line records `agent=… model=… effort=… source=labels|directive|config`.
+  configured `provider` (rotation lists are per-kind). Queue pins never set provider.
+- The dispatch log line records `agent=… model=… effort=… source=pin|labels|directive|config`.
 - Known kinds include `claude`, `codex`, and `antigravity`. Labels such as
   `agent:antigravity` and a description directive `cymphony: agent=antigravity`
   are valid once `agent.kind` accepts that union.
 - Dashboard/API `set_issue_run_spec` may pin `:provider`, `:model`, `:effort`,
   and `:agent_kind` (all optional; empty / `"keep"` skips). A restart kills the
-  running session and redispatches with those overrides for the next attempt.
+  running session and redispatches with those overrides for the next attempt. It
+  does **not** write `queue_pins`. When an issue is dispatched from `waiting`, a
+  queue pin wins over Keyword overrides from `set_issue_run_spec`.
 
 ### 8.3 Concurrency Control
 
@@ -930,6 +1045,10 @@ Optional SSH host limit:
 - Hosts at that cap are skipped for new dispatch until capacity frees up.
 
 ### 8.4 Retry and Backoff
+
+Retry/backoff remains a **separate** list below In Progress. Do not put `retry_attempts`
+entries on the waiting board (`section.queue-board`). Board membership excludes
+`retry_attempts` (Section 8.2).
 
 Retry entry creation:
 
@@ -1540,6 +1659,19 @@ should return:
 
 - `running` (list of running session rows)
 - each running row should include `turn_count`
+- `waiting` (ordered compact rows for the sticky waiting board; name this key `waiting`,
+  not `queued`)
+  - `handle_call(:snapshot)` rows: `issue_id`, `identifier`, `issue`, `priority`, `state`,
+    `created_at`, `agent_kind`, `model`, `effort` where `agent_kind` / `model` / `effort`
+    are persisted `queue_pins` only (`null` if unpinned)
+  - Presenter project rows add `waiting` (list) + `waiting_count`. Each payload row:
+    `issue_identifier`, `issue_title`, `issue_url`, `issue_id`, `priority`, `state`,
+    `created_at` (ISO8601), `agent_kind`, `model`, `effort`
+  - Top-level `payload.counts.waiting` is the sum of project waiting lengths
+    (`payload_counts(running, retrying, waiting)`). Default LiveView payload and snapshot
+    fixtures include `waiting: []` and `counts.waiting`
+  - `GET /api/v1/projects` stays running/retrying only. Do not add `waiting` to
+    `StatusDashboard`
 - `retrying` (list of retry queue rows)
 - `claude_totals`
   - `input_tokens`
@@ -1646,8 +1778,9 @@ Enablement (extension):
 #### 13.7.1 Human-Readable Dashboard (`/`)
 
 - Host a human-readable dashboard at `/`.
-- The returned document should depict the current state of the system (for example active sessions,
-  retry delays, token consumption, runtime totals, recent events, and health/error indicators).
+- The returned document should depict the current state of the system (for example the
+  per-project waiting board, active sessions, retry delays, token consumption, runtime
+  totals, recent events, and health/error indicators).
 - It is up to the implementation whether this is server-generated HTML or a client-side app that
   consumes the JSON API below.
 - Settings drawer (`aside.settings-drawer`) includes, after Experience and before Automation,
@@ -1709,6 +1842,47 @@ Enablement (extension):
   hide/show on the next render via `preview_project_agent` / `preview_issue_run_spec` /
   `preview_add_project`. Do not delete persisted providers when the field is hidden.
   Session provider chips and the read-only Provider stat stay visible for every kind.
+- Per-project header counts: `N/M running · Q queued · R retrying`. Advanced metrics add
+  `.metric-pill--queue.section--queue` = `counts.waiting`. The simple Waiting pill stays
+  `counts.retrying`.
+- Theme / settings glyphs are CSS geometry only on `.theme-toggle-button` and
+  `[data-drawer-toggle]` (no ☀ / ☾ / ⌂ / ⚙ text).
+- Display preferences include `{Board, board}`. Hide the board with
+  `html[data-hidden-sections~=board] .section--board { display: none }`.
+- Waiting board (`section.queue-board.section--board`) sits inside
+  `article.project-section` **above** In Progress (`.session-row-list`) and **below** the
+  empty-state. Empty-state is shown iff `running == []` and `retrying == []` **and**
+  `waiting == []`. Hide the board when `waiting == []` (no empty columns). Retry remains
+  its own list **below** In Progress (Section 8.4).
+- Board HEEx: `section.queue-board.section--board` > `header.queue-board-header` (simple
+  `Up next` / advanced `Queue` + `span.queue-board-count.numeric`) >
+  `div#queue-board-<project.name>.queue-board-list` (`phx-hook=QueueBoard`, `data-project`,
+  `data-order`) > `article#queue-card-<project>-<identifier>.queue-card` (`data-issue`,
+  `data-issue-id`, `data-rank`, `tabindex=0`). Card face only: `.queue-card-id` (mono
+  caption; `a.session-row-link.queue-card-link` if url) + `.queue-card-title` (body-sm,
+  2-line clamp) + `button.queue-card-edit-toggle` (text `Edit` or CSS kebab, no emoji).
+  No Linear priority / state / agent chips. Edit is not an alert:
+  `div.queue-card-edit` when `{project, id}` is in assign `:queue_edit_ids`;
+  `form.queue-edit-form` (`phx-change=preview_queue_run_spec`,
+  `phx-submit=set_queue_run_spec`); hidden `project` + `issue`;
+  `select#queue-agent-<id>` `name=agent_kind` keep `''`;
+  `<.model_combobox id=queue-model-<id> list_id=model-suggestions-queue-<id>>`;
+  `select#queue-effort-<id>` keep `''`; submit `Pin`; no provider. Empty / keep skips a
+  field. Pin persists with the queue and does **not** kill anything.
+- LiveView mount assigns `:queue_edit_ids` (`MapSet.new()`) and
+  `:queue_run_spec_drafts` (`%{}`). Events:
+  - `reorder_queue` — params `project` + full identifier `order` list; optimistic
+    client reorder, then `Control.set_queue_order`, reload
+  - `toggle_queue_edit` — `project` + `issue`; toggle `{project, identifier}` in
+    `:queue_edit_ids`
+  - `preview_queue_run_spec` — draft `:queue_run_spec_drafts[{project, id}]` like
+    `preview_issue_run_spec`; kind change clears model/effort; no persist
+  - `set_queue_run_spec` — hidden `project` + `issue`; empty / keep skip;
+    `Control.set_queue_pin`; do not kill
+- `QueueBoard` hook mounts on `div#queue-board-<project.name>.queue-board-list` in
+  `layouts.ex` beside `HarnessTail` / `Combobox` (`mounted` / `updated` / `destroyed`;
+  `pushEvent reorder_queue`). `Combobox.setChrome` also toggles the closest
+  `.queue-card`.
 
 #### 13.7.2 JSON REST API (`/api/v1/*`)
 
@@ -1717,8 +1891,12 @@ Provide a JSON REST API under `/api/v1/*` for current runtime state and operatio
 Minimum endpoints:
 
 - `GET /api/v1/state`
-  - Returns a summary view of the current system state (running sessions, retry queue/delays,
-    aggregate token/runtime totals, latest rate limits, and any additional tracked summary fields).
+  - Returns a summary view of the current system state (running sessions, waiting board,
+    retry queue/delays, aggregate token/runtime totals, latest rate limits, and any
+    additional tracked summary fields).
+  - `counts.waiting` is the sum of per-project `waiting` lengths (`waiting_count`).
+    Each project object includes `waiting` (list) + `waiting_count`. Default payload /
+    fixtures include `waiting: []` and `counts.waiting`.
   - Suggested response shape:
 
     ```json
@@ -1726,7 +1904,8 @@ Minimum endpoints:
       "generated_at": "2026-02-24T20:15:30Z",
       "counts": {
         "running": 2,
-        "retrying": 1
+        "retrying": 1,
+        "waiting": 1
       },
       "running": [
         {
@@ -1753,6 +1932,20 @@ Minimum endpoints:
           "attempt": 3,
           "due_at": "2026-02-24T20:16:00Z",
           "error": "no available orchestrator slots"
+        }
+      ],
+      "waiting": [
+        {
+          "issue_identifier": "MT-651",
+          "issue_title": "Add queue board",
+          "issue_url": "https://linear.app/team/issue/MT-651",
+          "issue_id": "ghi789",
+          "priority": 2,
+          "state": "Todo",
+          "created_at": "2026-02-24T19:00:00Z",
+          "agent_kind": "codex",
+          "model": "gpt-5.2-codex",
+          "effort": "high"
         }
       ],
       "claude_totals": {
@@ -1796,6 +1989,29 @@ Minimum endpoints:
     raw key).
   - `422` codes: `not_connected`, `invalid_project`, `duplicate_project_name`,
     `duplicate_project_slug`, `project_start_failed`.
+
+- `POST /api/v1/queue`
+  - Must be declared (and `match :*` `405`) **before** `/api/v1/:issue_identifier`.
+  - Query `?project=` is **required**. `Control.set_queue_order({:project, name}, order)`
+    applies the orchestrator call first, then persists. `:all` is
+    `{:error, :invalid_scope}`.
+  - Body `{"order":["LLM-51","LLM-12"]}` — full identifier/id order for that project.
+    `parse_queue_order/1` rejects non-lists / blank keys.
+  - `202` `{"order":[...],"project":"Name"}`.
+  - `422` `{"error":{"code":"invalid_queue_order","message":"..."}}`.
+  - Other methods `405`. No Linear writes.
+- `POST /api/v1/queue-pin`
+  - Must be declared (and `match :*` `405`) **before** `/api/v1/:issue_identifier`.
+  - Query `?project=` is **required**. `Control.set_queue_pin({:project, name}, issue_key,
+    pin_map)` applies the orchestrator call first, then persists. `:all` is
+    `{:error, :invalid_scope}`.
+  - Body `{"issue":"LLM-51","kind":"codex","model":"...","effort":"..."}` — each of
+    `kind` / `model` / `effort` optional; empty / `keep` skipped; at least one real
+    field required. `parse_queue_pin/1` rejects blank keys / unknown agent kinds.
+  - `202` `{"issue","agent_kind","model","effort","project"}`.
+  - `422` `{"error":{"code":"invalid_queue_pin","message":"..."}}`.
+  - Other methods `405`. Does not kill a session (the issue is not running). No
+    Linear writes. No provider on queue pins.
 
 - `GET /api/v1/<issue_identifier>/harness`
   - Must be declared **before** the `GET /api/v1/<issue_identifier>` catch-all.
@@ -1913,16 +2129,17 @@ optional `?project=<name>` scope):
   `POST /api/v1/projects`) are documented with the Linear routes above (`202` on
   success, `422` on validation). They do not take `?project=`.
 
-Dashboard display preferences (density, hidden sections, visible columns, list lengths) are
-client-side only (browser localStorage); they are not server state and have no API surface.
+Dashboard display preferences (density, hidden sections including `{Board, board}`,
+visible columns, list lengths) are client-side only (browser localStorage); they are not
+server state and have no API surface.
 
 API design notes:
 
 - The JSON shapes above are the recommended baseline for interoperability and debugging ergonomics.
 - Implementations may add fields, but should avoid breaking existing fields within a version.
 - Endpoints should be read-only except for operational triggers like `/refresh`,
-  `/refresh-interval`, `/linear`, `POST /projects`, and the operational-control
-  endpoints above.
+  `/refresh-interval`, `/linear`, `POST /projects`, `POST /queue`, `POST /queue-pin`,
+  and the operational-control endpoints above.
 - Unsupported methods on defined routes should return `405 Method Not Allowed`.
 - API errors should use a JSON envelope such as `{"error":{"code":"...","message":"..."}}`.
 - If the dashboard is a client-side app, it should consume this API rather than duplicating state
@@ -2099,6 +2316,10 @@ function start_service():
     running: {},
     claimed: set(),
     retry_attempts: {},
+    waiting: [],
+    queue_order: load_project_queue_order(),
+    queue_pins: load_project_queue_pins(),
+    queue_priority_seen: load_project_queue_priority_seen(),
     completed: set(),
     claude_totals: {input_tokens: 0, output_tokens: 0, total_tokens: 0, seconds_running: 0},
     claude_rate_limits: null
@@ -2126,21 +2347,37 @@ on_tick(state):
     log_validation_error(validation)
     notify_observers()
     schedule_tick(state.poll_interval_ms)
-    return state
+    return state  # keep last waiting
+
+  if paused:
+    notify_observers()
+    schedule_tick(state.poll_interval_ms)
+    return state  # skip fetch; keep last waiting
 
   issues = tracker.fetch_candidate_issues()
   if issues failed:
     log_tracker_error()
     notify_observers()
     schedule_tick(state.poll_interval_ms)
-    return state
+    return state  # keep last waiting
 
-  for issue in sort_for_dispatch(issues):
-    if no_available_slots(state):
-      break
+  # always fetch when not paused, including available_slots == 0
+  eligible = filter_waiting_eligible(issues)
+    # candidate_issue? and not todo_blocked and not claimed
+    # and not running and not retry_attempts
+  state = Queue.reconcile(state, eligible)
+    # sets state.waiting; may persist queue_order + queue_priority_seen
+    # do not claim waiting ids
+    # do not re-sort via sort_for_dispatch once a saved/reconciled order exists
 
+  for issue in state.waiting:  # leftmost first
+    if no_global_slots(state):
+      break  # keep remaining waiting
+    if not state_slots_available(issue) or not worker_slots_available(issue):
+      continue  # leave on waiting; try next
     if should_dispatch(issue, state):
-      state = dispatch_issue(issue, state, attempt=null)
+      state = dispatch_issue(issue, state, attempt=null)  # claim only then
+      state.waiting.remove(issue)
 
   notify_observers()
   schedule_tick(state.poll_interval_ms)
@@ -2389,7 +2626,15 @@ Unless otherwise noted, Sections 17.1 through 17.7 are `Core Conformance`. Bulle
 
 ### 17.4 Orchestrator Dispatch, Reconciliation, and Retry
 
-- Dispatch sort order is priority then oldest creation time
+- Dispatch consumes `waiting` order after `Queue.reconcile` (leftmost first).
+  `Dispatch.sort_for_dispatch` is INITIAL ORDER only (no saved `queue_order`).
+  Drag persists full identifier order; Linear raise re-inserts that one card;
+  Linear lower never moves; new issues append unless Urgent (`priority == 1`)
+  which inserts at index `0`. Skip a waiting head only when per-state or
+  per-host slots are full; global slot exhaustion stops the walk and keeps
+  remaining `waiting`. Do not claim waiting ids. No Linear writes.
+- Queue pins overlay `dispatch_run_spec/3` as pin > labels > directive > config
+  when dispatching from `waiting`.
 - `Todo` issue with non-terminal blockers is not eligible
 - `Todo` issue with terminal blockers is eligible
 - Active-state issue refresh updates running entry state
@@ -2402,7 +2647,8 @@ Unless otherwise noted, Sections 17.1 through 17.7 are `Core Conformance`. Bulle
 - Retry queue entries include attempt, due time, identifier, and error
 - Stall detection kills stalled sessions and schedules retry
 - Slot exhaustion requeues retries with explicit error reason
-- If a snapshot API is implemented, it returns running rows, retry rows, token totals, and rate
+- If a snapshot API is implemented, it returns running rows, waiting rows
+  (`waiting` / `waiting_count` / `counts.waiting`), retry rows, token totals, and rate
   limits
 - If a snapshot API is implemented, timeout/unavailable cases are surfaced
 

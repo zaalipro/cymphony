@@ -13,9 +13,10 @@ defmodule CymphonyElixirWeb.DashboardLive do
   @runtime_tick_ms 1_000
   @harness_tail_cap 400
   @default_payload %{
-    counts: %{running: 0, retrying: 0, by_state: %{}, by_kind: %{}},
+    counts: %{running: 0, retrying: 0, waiting: 0, by_state: %{}, by_kind: %{}},
     running: [],
     retrying: [],
+    waiting: [],
     token_totals: %{input_tokens: 0, output_tokens: 0, total_tokens: 0, seconds_running: 0},
     rate_limits: nil,
     polling: nil,
@@ -41,6 +42,8 @@ defmodule CymphonyElixirWeb.DashboardLive do
       |> assign(:harness_tails, %{})
       |> assign(:agent_setting_drafts, %{})
       |> assign(:issue_run_spec_drafts, %{})
+      |> assign(:queue_edit_ids, MapSet.new())
+      |> assign(:queue_run_spec_drafts, %{})
       |> assign(:token_samples, update_token_samples([], initial_payload))
       |> assign(:version, @version)
       |> assign(:last_payload_refresh, last_refresh)
@@ -362,6 +365,86 @@ defmodule CymphonyElixirWeb.DashboardLive do
   end
 
   @impl true
+  def handle_event("reorder_queue", params, socket) do
+    project_name = params["project"]
+    socket = optimistic_reorder_queue(socket, project_name, params["order"])
+
+    case persist_queue_order(project_name, params["order"]) do
+      :ok ->
+        {:noreply, reload_payload_now(socket)}
+
+      {:error, :invalid_scope} ->
+        {:noreply, put_flash(socket, :error, "Queue reorder requires a project")}
+
+      {:error, :not_found} ->
+        {:noreply, put_flash(socket, :error, "Project not found: #{project_name}")}
+
+      {:error, _reason} ->
+        {:noreply, put_flash(socket, :error, "Could not persist queue order")}
+
+      :error ->
+        {:noreply, put_flash(socket, :error, "Invalid queue order")}
+    end
+  end
+
+  @impl true
+  def handle_event("toggle_queue_edit", %{"project" => project_name, "issue" => issue}, socket) do
+    key = {project_name, issue}
+    ids = socket.assigns.queue_edit_ids
+
+    ids =
+      if MapSet.member?(ids, key) do
+        MapSet.delete(ids, key)
+      else
+        MapSet.put(ids, key)
+      end
+
+    {:noreply, assign(socket, :queue_edit_ids, ids)}
+  end
+
+  @impl true
+  def handle_event("preview_queue_run_spec", %{"project" => project_name, "issue" => issue} = params, socket) do
+    case params["value"] || params["agent_kind"] do
+      kind when is_binary(kind) ->
+        {:noreply, put_queue_run_spec_draft(socket, project_name, issue, kind, params)}
+
+      _ ->
+        {:noreply, socket}
+    end
+  end
+
+  @impl true
+  def handle_event("set_queue_run_spec", %{"project" => project_name, "issue" => issue} = params, socket) do
+    pin = queue_pin_from_params(params)
+
+    cond do
+      not is_binary(issue) or String.trim(issue) == "" ->
+        {:noreply, put_flash(socket, :error, "Queue pin needs an issue")}
+
+      map_size(pin) == 0 ->
+        {:noreply, put_flash(socket, :error, "Queue pin needs at least one of agent, model, or effort")}
+
+      true ->
+        case persist_queue_pin(project_name, String.trim(issue), pin) do
+          :ok ->
+            {:noreply, reload_payload_now(put_flash(socket, :info, "#{issue}: queue pin saved"))}
+
+          {:error, :invalid_scope} ->
+            {:noreply, put_flash(socket, :error, "Queue pin requires a project")}
+
+          {:error, :not_found} ->
+            {:noreply, put_flash(socket, :error, "Project not found: #{project_name}")}
+
+          {:error, _reason} ->
+            {:noreply, put_flash(socket, :error, "Could not persist queue pin")}
+
+          :error ->
+            {:noreply, put_flash(socket, :error, "Invalid queue pin")}
+        end
+    end
+  end
+
+  @impl true
   def handle_info(:observability_updated, socket) do
     {:noreply,
      socket
@@ -477,12 +560,12 @@ defmodule CymphonyElixirWeb.DashboardLive do
             </div>
 
             <div class="theme-toggle" role="group" aria-label="Theme">
-              <button type="button" class="theme-toggle-button" data-theme-set="light" title="Light theme" aria-label="Light theme">☀</button>
-              <button type="button" class="theme-toggle-button" data-theme-set="dark" title="Dark theme" aria-label="Dark theme">☾</button>
-              <button type="button" class="theme-toggle-button" data-theme-set="system" title="Follow system" aria-label="Follow system">⌂</button>
+              <button type="button" class="theme-toggle-button" data-theme-set="light" title="Light theme" aria-label="Light theme"></button>
+              <button type="button" class="theme-toggle-button" data-theme-set="dark" title="Dark theme" aria-label="Dark theme"></button>
+              <button type="button" class="theme-toggle-button" data-theme-set="system" title="Follow system" aria-label="Follow system"></button>
             </div>
 
-            <button type="button" class="subtle-button" data-drawer-toggle aria-label="Settings" title="Settings">⚙</button>
+            <button type="button" class="subtle-button" data-drawer-toggle aria-label="Settings" title="Settings"></button>
             <button type="button" class="subtle-button" phx-click="refresh_now">Refresh</button>
           </div>
         </div>
@@ -529,6 +612,10 @@ defmodule CymphonyElixirWeb.DashboardLive do
               <span class="metric-pill-label simple-only">Waiting</span>
               <span class="metric-pill-label advanced-only">Retry</span>
               <span class="metric-pill-value numeric"><%= @payload.counts.retrying %></span>
+            </div>
+            <div class="metric-pill metric-pill--queue section--queue advanced-only">
+              <span class="metric-pill-label">Queue</span>
+              <span class="metric-pill-value numeric"><%= Map.get(@payload.counts, :waiting, 0) %></span>
             </div>
             <div class="metric-pill">
               <span class="metric-pill-label simple-only">Usage</span>
@@ -620,34 +707,29 @@ defmodule CymphonyElixirWeb.DashboardLive do
 
       <aside class="settings-drawer" aria-label="Dashboard settings">
         <div class="settings-drawer-header">
-          <h2 class="section-title">Settings</h2>
+          <h2 class="settings-drawer-title">Settings</h2>
           <button type="button" class="subtle-button" data-drawer-toggle aria-label="Close settings">Close</button>
         </div>
 
         <section class="settings-group settings-group--mode" data-prefs>
           <h3 class="settings-group-title">Experience</h3>
-          <p class="settings-help">Choose how much operational detail you want to see. This only changes this browser.</p>
-          <div class="mode-option-list" role="group" aria-label="Choose dashboard mode">
-            <button type="button" class="mode-option" data-mode-set="simple" aria-pressed="true">
-              <span class="mode-option-title">Simple</span>
-              <span class="mode-option-copy">Clear status and safe controls for everyday use.</span>
-            </button>
-            <button type="button" class="mode-option" data-mode-set="advanced" aria-pressed="false">
-              <span class="mode-option-title">Advanced</span>
-              <span class="mode-option-copy">Models, providers, usage, logs, and restart overrides.</span>
-            </button>
+          <div class="mode-switch settings-mode-switch" role="group" aria-label="Choose dashboard mode">
+            <button type="button" class="mode-switch-button" data-mode-set="simple" aria-pressed="true">Simple</button>
+            <button type="button" class="mode-switch-button" data-mode-set="advanced" aria-pressed="false">Advanced</button>
           </div>
         </section>
 
         <section class="settings-group settings-group--linear">
-          <h3 class="settings-group-title">Linear</h3>
-          <span class={"linear-status " <> if(@linear_status.connected, do: "linear-status--connected", else: "linear-status--disconnected")}>
-            <%= if @linear_status.connected, do: "Connected", else: "Disconnected" %>
-          </span>
-          <%= if @linear_status.connected && @linear_status.masked_key do %>
-            <span class="linear-key-mask"><%= @linear_status.masked_key %></span>
-          <% end %>
-          <form id="linear-connect-form" phx-submit="connect_linear" class="inline-form">
+          <h3 class="settings-group-title">
+            Linear
+            <span class={"linear-status " <> if(@linear_status.connected, do: "linear-status--connected", else: "linear-status--disconnected")}>
+              <%= if @linear_status.connected, do: "Connected", else: "Disconnected" %>
+            </span>
+            <%= if @linear_status.connected && @linear_status.masked_key do %>
+              <span class="linear-key-mask"><%= @linear_status.masked_key %></span>
+            <% end %>
+          </h3>
+          <form id="linear-connect-form" phx-submit="connect_linear" class="settings-inline">
             <input
               type="password"
               name="api_key"
@@ -671,31 +753,41 @@ defmodule CymphonyElixirWeb.DashboardLive do
               id="add-project-form"
               phx-change="preview_add_project"
               phx-submit="add_project"
-              class="inline-form"
+              class="settings-stack"
             >
-              <label class="inline-label" for="add-project-slug-input">Linear project</label>
-              <.model_combobox
-                id="add-project-slug"
-                name="linear_project_slug"
-                value=""
-                list_id="linear-project-slugs"
-                options={Enum.map(@linear_projects, &linear_project_option/1)}
-                placeholder="slug or ailogic-ced4159f70c4"
-                class="settings-field"
-              />
-              <label class="inline-label" for="add-project-name">name</label>
-              <input id="add-project-name" type="text" name="name" class="settings-field" />
-              <label class="inline-label" for="add-project-github">github</label>
-              <input id="add-project-github" type="text" name="github_repo_url" class="settings-field" />
+              <label class="settings-field-row" for="add-project-slug-input">
+                <span class="inline-label">Linear project</span>
+                <.model_combobox
+                  id="add-project-slug"
+                  name="linear_project_slug"
+                  value=""
+                  list_id="linear-project-slugs"
+                  options={Enum.map(@linear_projects, &linear_project_option/1)}
+                  placeholder="slug or ailogic-ced4159f70c4"
+                  class="settings-field"
+                />
+              </label>
+              <div class="settings-field-grid">
+                <label class="settings-field-row" for="add-project-name">
+                  <span class="inline-label">name</span>
+                  <input id="add-project-name" type="text" name="name" class="settings-field" />
+                </label>
+                <label class="settings-field-row" for="add-project-github">
+                  <span class="inline-label">github</span>
+                  <input id="add-project-github" type="text" name="github_repo_url" class="settings-field" />
+                </label>
+              </div>
               <div class="advanced-only add-project-advanced">
-                <label class="inline-label" for="add-project-agent">agent</label>
-                <select id="add-project-agent" name="agent" class="settings-field">
-                  <option value="" selected={@add_project_kind == ""}>default</option>
-                  <%= for k <- Agent.known_kinds() do %>
-                    <option value={k} selected={@add_project_kind == k}><%= k %></option>
-                  <% end %>
-                </select>
-                <div class="model-switcher">
+                <label class="settings-field-row" for="add-project-agent">
+                  <span class="inline-label">agent</span>
+                  <select id="add-project-agent" name="agent" class="settings-field">
+                    <option value="" selected={@add_project_kind == ""}>default</option>
+                    <%= for k <- Agent.known_kinds() do %>
+                      <option value={k} selected={@add_project_kind == k}><%= k %></option>
+                    <% end %>
+                  </select>
+                </label>
+                <div class="model-switcher settings-field-row">
                   <label class="inline-label" for="add-project-model-input">model</label>
                   <.model_combobox
                     id="add-project-model"
@@ -706,19 +798,23 @@ defmodule CymphonyElixirWeb.DashboardLive do
                     class="settings-field"
                   />
                 </div>
-                <label class="inline-label" for="add-project-effort">effort</label>
-                <select id="add-project-effort" name="effort" class="settings-field">
-                  <option value="" selected={@add_project_effort in [nil, ""]}>default</option>
-                  <%= for level <- effort_levels(@add_project_kind) do %>
-                    <option value={level} selected={@add_project_effort == level}><%= level %></option>
-                  <% end %>
-                </select>
+                <label class="settings-field-row" for="add-project-effort">
+                  <span class="inline-label">effort</span>
+                  <select id="add-project-effort" name="effort" class="settings-field">
+                    <option value="" selected={@add_project_effort in [nil, ""]}>default</option>
+                    <%= for level <- effort_levels(@add_project_kind) do %>
+                      <option value={level} selected={@add_project_effort == level}><%= level %></option>
+                    <% end %>
+                  </select>
+                </label>
                 <%= if @add_project_kind == "claude" do %>
-                  <label class="inline-label" for="add-project-provider">provider</label>
-                  <input id="add-project-provider" type="text" name="provider" value={@add_project_provider} class="settings-field" />
+                  <label class="settings-field-row" for="add-project-provider">
+                    <span class="inline-label">provider</span>
+                    <input id="add-project-provider" type="text" name="provider" value={@add_project_provider} class="settings-field" />
+                  </label>
                 <% end %>
               </div>
-              <button type="submit" class="subtle-button">Add project</button>
+              <button type="submit" class="subtle-button settings-submit">Add project</button>
             </form>
             <%= if @add_project_error do %>
               <p class="settings-error"><%= @add_project_error %></p>
@@ -731,30 +827,26 @@ defmodule CymphonyElixirWeb.DashboardLive do
         <section class="settings-group">
           <h3 class="settings-group-title simple-only">Automation</h3>
           <h3 class="settings-group-title advanced-only">Orchestrator</h3>
-          <p class="settings-help simple-only">Pause automatic pickup or change how many tasks may run together.</p>
 
           <%= if @payload[:polling] do %>
             <%= if autonomy_state(@payload) == :paused do %>
-              <button type="button" class="subtle-button subtle-button--accent" phx-click="resume_dispatch">Resume all projects</button>
+              <button type="button" class="subtle-button subtle-button--accent settings-submit" phx-click="resume_dispatch">Resume all</button>
             <% else %>
-              <button type="button" class="subtle-button" phx-click="pause_dispatch">Pause all projects</button>
+              <button type="button" class="subtle-button settings-submit" phx-click="pause_dispatch">Pause all</button>
             <% end %>
           <% end %>
 
-          <form phx-submit="set_concurrency" class="settings-form">
+          <form phx-submit="set_concurrency" class="settings-inline settings-form">
             <label class="inline-label" for="drawer-global-concurrency">
-              <span class="simple-only">tasks at once</span>
-              <span class="advanced-only">global concurrency</span>
+              <span class="simple-only">tasks</span>
+              <span class="advanced-only">concurrency</span>
             </label>
             <input id="drawer-global-concurrency" type="number" name="value" min="1" class="settings-field" />
             <button type="submit" class="subtle-button">Set</button>
           </form>
 
-          <form phx-submit="set_refresh_interval" class="settings-form">
-            <label class="inline-label" for="drawer-refresh-interval">
-              <span class="simple-only">status refresh (s)</span>
-              <span class="advanced-only">dashboard refresh (s)</span>
-            </label>
+          <form phx-submit="set_refresh_interval" class="settings-inline settings-form">
+            <label class="inline-label" for="drawer-refresh-interval">refresh (s)</label>
             <input
               id="drawer-refresh-interval"
               type="number"
@@ -778,7 +870,7 @@ defmodule CymphonyElixirWeb.DashboardLive do
 
           <div class="settings-row">
             <span class="inline-label">sections</span>
-            <%= for {label, key} <- [{"Metrics", "metrics"}, {"Polling", "polling"}, {"Rate limits", "ratelimits"}, {"Completions", "completions"}, {"States", "states"}, {"Kinds", "kinds"}] do %>
+            <%= for {label, key} <- [{"Metrics", "metrics"}, {"Polling", "polling"}, {"Rate limits", "ratelimits"}, {"Completions", "completions"}, {"States", "states"}, {"Kinds", "kinds"}, {"Board", "board"}] do %>
               <label><input type="checkbox" data-pref-section={key} checked /> <%= label %></label>
             <% end %>
           </div>
@@ -835,7 +927,7 @@ defmodule CymphonyElixirWeb.DashboardLive do
 
         <%= for project <- (@payload[:projects] || []) do %>
           <% agent_settings = project_agent_settings(@agent_setting_drafts, project) %>
-          <article class={"project-section" <> if(Map.get(project, :paused, false), do: " project-section--paused", else: "")}>
+          <article class={project_section_class(project, @queue_edit_ids)}>
             <header class="project-section-header">
               <div class="project-section-title-block">
                 <h2 class="project-section-name">
@@ -850,10 +942,10 @@ defmodule CymphonyElixirWeb.DashboardLive do
                     <span class="muted">/<%= max %></span>
                   <% end %>
                   <span class="muted">running</span>
-                  <%= if (Map.get(project, :retrying_count, length(project.retrying)) || 0) > 0 do %>
-                    · <span class="numeric"><%= Map.get(project, :retrying_count, length(project.retrying)) %></span>
-                    <span class="muted">retrying</span>
-                  <% end %>
+                  · <span class="numeric"><%= project_waiting_count(project) %></span>
+                  <span class="muted">queued</span>
+                  · <span class="numeric"><%= Map.get(project, :retrying_count, length(project.retrying)) %></span>
+                  <span class="muted">retrying</span>
                 </p>
               </div>
 
@@ -955,7 +1047,7 @@ defmodule CymphonyElixirWeb.DashboardLive do
               </div>
             </header>
 
-            <%= if project.running == [] and project.retrying == [] do %>
+            <%= if project.running == [] and project.retrying == [] and project_waiting(project) == [] do %>
               <%= if Map.get(project, :paused, false) do %>
                 <p class="empty-state simple-only">
                   This project is paused. Resume it when you want Cymphony to start ready issues again.
@@ -966,6 +1058,107 @@ defmodule CymphonyElixirWeb.DashboardLive do
                 </p>
               <% end %>
               <p class="empty-state advanced-only">No active sessions.</p>
+            <% end %>
+
+            <%= if project_waiting(project) != [] do %>
+              <section class="queue-board section--board">
+                <header class="queue-board-header">
+                  <span class="queue-board-label simple-only">Up next</span>
+                  <span class="queue-board-label advanced-only">Queue</span>
+                  <span class="queue-board-count numeric"><%= project_waiting_count(project) %></span>
+                </header>
+                <div
+                  id={"queue-board-#{project.name}"}
+                  class="queue-board-list"
+                  phx-hook="QueueBoard"
+                  data-project={project.name}
+                  data-order={queue_order_attr(project_waiting(project))}
+                >
+                  <%= for {entry, rank} <- Enum.with_index(project_waiting(project)) do %>
+                    <% identifier = entry.issue_identifier %>
+                    <% editing? = MapSet.member?(@queue_edit_ids, {project.name, identifier}) %>
+                    <% queue_spec = queue_run_spec_settings(@queue_run_spec_drafts, project.name, entry) %>
+                    <article
+                      id={"queue-card-#{project.name}-#{identifier}"}
+                      class={"queue-card" <> if(editing?, do: " is-editing", else: "")}
+                      data-issue={identifier}
+                      data-issue-id={entry.issue_id}
+                      data-rank={rank}
+                      tabindex="0"
+                    >
+                      <div class="queue-card-body">
+                        <div class="queue-card-id">
+                          <%= if entry.issue_url do %>
+                            <a href={entry.issue_url} target="_blank" rel="noopener" class="session-row-link queue-card-link"><%= identifier %></a>
+                          <% else %>
+                            <%= identifier %>
+                          <% end %>
+                        </div>
+                        <div class="queue-card-title"><%= entry.issue_title %></div>
+                        <button
+                          type="button"
+                          class="queue-card-edit-toggle"
+                          phx-click="toggle_queue_edit"
+                          phx-value-project={project.name}
+                          phx-value-issue={identifier}
+                        >
+                          Edit
+                        </button>
+                      </div>
+                      <%= if editing? do %>
+                        <div class="queue-card-edit" id={"queue-edit-#{identifier}"}>
+                          <form
+                            class="queue-edit-form"
+                            phx-change="preview_queue_run_spec"
+                            phx-submit="set_queue_run_spec"
+                          >
+                            <input type="hidden" name="project" value={project.name} />
+                            <input type="hidden" name="issue" value={identifier} />
+                            <div class="agent-switcher">
+                              <label class="inline-label" for={"queue-agent-#{identifier}"}>agent</label>
+                              <select
+                                id={"queue-agent-#{identifier}"}
+                                name="agent_kind"
+                                class="inline-input inline-input--narrow"
+                              >
+                                <option value="" selected={queue_spec.kind in [nil, ""]}>keep</option>
+                                <%= for k <- Agent.known_kinds() do %>
+                                  <option value={k} selected={queue_spec.kind == k}><%= k %></option>
+                                <% end %>
+                              </select>
+                            </div>
+                            <div class="model-switcher">
+                              <label class="inline-label" for={"queue-model-#{identifier}-input"}>model</label>
+                              <.model_combobox
+                                id={"queue-model-#{identifier}"}
+                                name="model"
+                                value={queue_spec.model}
+                                list_id={"model-suggestions-queue-#{identifier}"}
+                                options={model_suggestions(queue_spec.suggestion_kind)}
+                                placeholder="default"
+                              />
+                            </div>
+                            <div class="effort-switcher">
+                              <label class="inline-label" for={"queue-effort-#{identifier}"}>effort</label>
+                              <select
+                                id={"queue-effort-#{identifier}"}
+                                name="effort"
+                                class="inline-input inline-input--narrow"
+                              >
+                                <option value="" selected={queue_spec.effort in [nil, ""]}>keep</option>
+                                <%= for level <- effort_levels(queue_spec.suggestion_kind) do %>
+                                  <option value={level} selected={queue_spec.effort == level}><%= level %></option>
+                                <% end %>
+                              </select>
+                            </div>
+                            <button type="submit" class="subtle-button">Pin</button>
+                          </form>
+                        </div>
+                      <% end %>
+                    </article>
+                  <% end %>
+                </div>
+              </section>
             <% end %>
 
             <%= if project.running != [] do %>
@@ -1405,8 +1598,8 @@ defmodule CymphonyElixirWeb.DashboardLive do
     do: Map.put(drafts, project_name, confirmed)
 
   # Suggestions only — values are pass-through free text. Codex entries come
-  # from the live `codex debug models` catalog (cached); claude from its
-  # stable alias vocabulary.
+  # from the live `codex debug models` catalog (cached, PATH + ~/.local/bin);
+  # claude from its stable alias vocabulary.
   defp model_suggestions(kind) do
     CymphonyElixir.AgentCatalog.models(kind)
   catch
@@ -1444,7 +1637,7 @@ defmodule CymphonyElixirWeb.DashboardLive do
         placeholder={@placeholder}
         title={@title}
       />
-      <input type="hidden" name={@name} id={@id} value={@value} class={@class} />
+      <input type="hidden" name={@name} id={@id} value={@value} />
       <ul id={@list_id} class="combobox-list" role="listbox" hidden>
         <%= for option <- @options do %>
           <% value = combobox_option_value(option) %>
@@ -1605,6 +1798,242 @@ defmodule CymphonyElixirWeb.DashboardLive do
     }
 
     assign(socket, :issue_run_spec_drafts, Map.put(socket.assigns.issue_run_spec_drafts, issue_identifier, draft))
+  end
+
+  defp project_waiting(project) when is_map(project) do
+    case Map.get(project, :waiting, []) do
+      list when is_list(list) -> list
+      _ -> []
+    end
+  end
+
+  defp project_waiting(_project), do: []
+
+  defp project_waiting_count(project) do
+    case Map.fetch(project, :waiting_count) do
+      {:ok, count} when is_integer(count) -> count
+      _ -> length(project_waiting(project))
+    end
+  end
+
+  defp project_section_class(project, queue_edit_ids) do
+    paused? = Map.get(project, :paused, false)
+    edit_open? = queue_edit_open?(queue_edit_ids, Map.get(project, :name))
+
+    ["project-section", paused? && "project-section--paused", edit_open? && "is-queue-edit-open"]
+    |> Enum.filter(& &1)
+    |> Enum.join(" ")
+  end
+
+  defp queue_edit_open?(ids, project_name) do
+    Enum.any?(ids, fn
+      {^project_name, _issue} -> true
+      _ -> false
+    end)
+  end
+
+  defp queue_order_attr(waiting) do
+    waiting
+    |> Enum.map(& &1.issue_identifier)
+    |> Jason.encode!()
+  end
+
+  defp queue_run_spec_settings(drafts, project_name, entry) do
+    default_kind = Map.get(entry, :agent_kind) || ""
+
+    default = %{
+      kind: default_kind,
+      model: Map.get(entry, :model) || "",
+      effort: Map.get(entry, :effort) || "",
+      suggestion_kind: suggestion_kind(default_kind, entry)
+    }
+
+    case Map.get(drafts, {project_name, entry.issue_identifier}) do
+      nil ->
+        default
+
+      draft ->
+        kind = Map.get(draft, :kind, default_kind)
+
+        %{
+          kind: kind,
+          model: Map.get(draft, :model, default.model),
+          effort: Map.get(draft, :effort, default.effort),
+          suggestion_kind: suggestion_kind(kind, entry)
+        }
+    end
+  end
+
+  defp put_queue_run_spec_draft(socket, project_name, issue, kind, params) do
+    if kind == "" or Agent.known_kind?(kind) do
+      entry = find_waiting_entry(socket.assigns.payload, project_name, issue)
+      current = queue_run_spec_settings(socket.assigns.queue_run_spec_drafts, project_name, entry)
+      agent_changed? = current.kind != kind
+
+      draft = %{
+        kind: kind,
+        model: if(agent_changed?, do: "", else: Map.get(params, "model", "")),
+        effort: if(agent_changed?, do: "", else: Map.get(params, "effort", ""))
+      }
+
+      assign(
+        socket,
+        :queue_run_spec_drafts,
+        Map.put(socket.assigns.queue_run_spec_drafts, {project_name, issue}, draft)
+      )
+    else
+      socket
+    end
+  end
+
+  defp find_waiting_entry(payload, project_name, identifier) do
+    project = Enum.find(Map.get(payload, :projects) || [], &(&1.name == project_name)) || %{}
+
+    Enum.find(project_waiting(project), &(&1.issue_identifier == identifier)) ||
+      %{issue_identifier: identifier}
+  end
+
+  defp queue_pin_from_params(params) do
+    %{}
+    |> maybe_override_agent_kind(params["agent_kind"] || params["kind"])
+    |> maybe_skip_keep(:model, params["model"])
+    |> maybe_skip_keep(:effort, params["effort"])
+  end
+
+  defp maybe_skip_keep(map, key, value) when is_binary(value) do
+    case String.trim(value) do
+      "" -> map
+      "keep" -> map
+      trimmed -> Map.put(map, key, trimmed)
+    end
+  end
+
+  defp maybe_skip_keep(map, _key, _value), do: map
+
+  defp persist_queue_order(project_name, raw_order) do
+    cond do
+      not is_binary(project_name) or String.trim(project_name) == "" ->
+        {:error, :invalid_scope}
+
+      true ->
+        with {:ok, order} <- parse_queue_order_param(raw_order) do
+          orch_result = call_project_orchestrator(project_name, {:reorder_queue, order})
+          control_or_orch(Control, :set_queue_order, [{:project, project_name}, order], orch_result)
+        end
+    end
+  end
+
+  defp persist_queue_pin(project_name, issue_key, pin) do
+    cond do
+      not is_binary(project_name) or String.trim(project_name) == "" ->
+        {:error, :invalid_scope}
+
+      true ->
+        orch_result = call_project_orchestrator(project_name, {:set_queue_pin, issue_key, pin})
+        control_or_orch(Control, :set_queue_pin, [{:project, project_name}, issue_key, pin], orch_result)
+    end
+  end
+
+  defp parse_queue_order_param(raw) do
+    case normalize_queue_order(raw) do
+      :error -> :error
+      order -> Control.parse_queue_order(order)
+    end
+  end
+
+  defp control_or_orch(module, fun, args, orch_result) do
+    if function_exported?(module, fun, length(args)) do
+      try do
+        case apply(module, fun, args) do
+          :ok -> :ok
+          _other -> orch_result
+        end
+      rescue
+        UndefinedFunctionError -> orch_result
+      end
+    else
+      orch_result
+    end
+  end
+
+  defp normalize_queue_order(order) when is_list(order) do
+    Enum.reduce_while(order, [], fn
+      id, acc when is_binary(id) ->
+        case String.trim(id) do
+          "" -> {:halt, :error}
+          trimmed -> {:cont, acc ++ [trimmed]}
+        end
+
+      _, _acc ->
+        {:halt, :error}
+    end)
+  end
+
+  defp normalize_queue_order(order) when is_map(order) do
+    order
+    |> Enum.sort_by(fn {key, _} ->
+      case Integer.parse(to_string(key)) do
+        {n, ""} -> n
+        _ -> 0
+      end
+    end)
+    |> Enum.map(fn {_key, value} -> value end)
+    |> normalize_queue_order()
+  end
+
+  defp normalize_queue_order(order) when is_binary(order) do
+    case Jason.decode(order) do
+      {:ok, decoded} ->
+        normalize_queue_order(decoded)
+
+      _ ->
+        order
+        |> String.split(",")
+        |> Enum.map(&String.trim/1)
+        |> Enum.reject(&(&1 == ""))
+        |> normalize_queue_order()
+    end
+  end
+
+  defp normalize_queue_order(_order), do: :error
+
+  defp optimistic_reorder_queue(socket, project_name, raw_order) do
+    order =
+      case normalize_queue_order(raw_order) do
+        :error -> []
+        list -> list
+      end
+
+    payload = socket.assigns.payload
+
+    projects =
+      Enum.map(payload[:projects] || [], fn project ->
+        if project.name == project_name do
+          waiting = project_waiting(project)
+          by_id = Map.new(waiting, &{&1.issue_identifier, &1})
+          reordered = Enum.flat_map(order, fn id -> List.wrap(Map.get(by_id, id)) end)
+          leftover = Enum.reject(waiting, &(&1.issue_identifier in order))
+          Map.put(project, :waiting, reordered ++ leftover)
+        else
+          project
+        end
+      end)
+
+    assign(socket, :payload, Map.put(payload, :projects, projects))
+  end
+
+  defp call_project_orchestrator(project_name, message) do
+    pid = lookup_orchestrator(project_name)
+
+    if orchestrator_addressable?(pid) do
+      try do
+        GenServer.call(pid, message, 10_000)
+      catch
+        :exit, _ -> {:error, :unavailable}
+      end
+    else
+      {:error, :not_found}
+    end
   end
 
   defp project_agent_settings(drafts, project) do

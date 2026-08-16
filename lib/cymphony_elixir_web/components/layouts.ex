@@ -118,6 +118,7 @@ defmodule CymphonyElixirWeb.Layouts do
                     }
                   },
                   destroyed() {
+                    if (this.setChrome) this.setChrome(false);
                     this.unbind();
                   },
                   queryParts() {
@@ -176,9 +177,20 @@ defmodule CymphonyElixirWeb.Layouts do
                     this.hidden.dispatchEvent(new Event('input', {bubbles: true}));
                     this.hidden.dispatchEvent(new Event('change', {bubbles: true}));
                   },
+                  setChrome(open) {
+                    var on = !!open;
+                    this.el.classList.toggle('combobox--open', on);
+                    var section = this.el.closest('.project-section');
+                    if (section) section.classList.toggle('is-combobox-open', on);
+                    var row = this.el.closest('.session-row');
+                    if (row) row.classList.toggle('is-combobox-open', on);
+                    var card = this.el.closest('.queue-card');
+                    if (card) card.classList.toggle('is-combobox-open', on);
+                  },
                   setOpen(open) {
                     this.open = !!open;
                     if (this.list) this.list.hidden = !this.open;
+                    this.setChrome(this.open);
                     if (this.input) {
                       this.input.setAttribute('aria-expanded', this.open ? 'true' : 'false');
                       if (!this.open) this.input.removeAttribute('aria-activedescendant');
@@ -304,6 +316,514 @@ defmodule CymphonyElixirWeb.Layouts do
                       return;
                     }
                     if (key === 'Tab') this.commitText();
+                  }
+                },
+                QueueBoard: {
+                  mounted() {
+                    this._onPointerDown = this.onPointerDown.bind(this);
+                    this._onPointerMove = this.onPointerMove.bind(this);
+                    this._onPointerUp = this.onPointerUp.bind(this);
+                    this._onKeydown = this.onKeydown.bind(this);
+                    this._onMotionChange = this.onMotionChange.bind(this);
+                    this._onDragStart = this.onDragStart.bind(this);
+                    this.dragging = false;
+                    this.pending = null;
+                    this.sourceCard = null;
+                    this.ghost = null;
+                    this.lastBefore = undefined;
+                    this.orderAtPick = [];
+                    this.pointerId = null;
+                    this.flipGen = 0;
+                    this.ghostTimer = null;
+                    this.opacityTimer = null;
+                    this.flipTimer = null;
+                    this.cards = [];
+                    this.lastOrderAttr = this.el.getAttribute('data-order') || '';
+                    this.bindMotion();
+                    this.el.addEventListener('pointerdown', this._onPointerDown);
+                    this.el.addEventListener('keydown', this._onKeydown);
+                    this.el.addEventListener('dragstart', this._onDragStart);
+                    this.refreshCards();
+                  },
+                  updated() {
+                    this.bindMotion();
+                    this.refreshCards();
+                    if (this.dragging) return;
+                    var attr = this.el.getAttribute('data-order') || '';
+                    if (attr === this.lastOrderAttr) return;
+                    this.lastOrderAttr = attr;
+                    var serverOrder = this.parseOrder(attr);
+                    if (!this.sameOrder(serverOrder, this.currentOrder())) {
+                      this.reconcileTo(serverOrder);
+                    }
+                  },
+                  destroyed() {
+                    this.teardownDrag(true);
+                    this.unbindMotion();
+                    if (this.el) {
+                      this.el.removeEventListener('pointerdown', this._onPointerDown);
+                      this.el.removeEventListener('keydown', this._onKeydown);
+                      this.el.removeEventListener('dragstart', this._onDragStart);
+                    }
+                    this.unbindWindow();
+                    this.removeGhost();
+                    this.clearTimers();
+                  },
+                  bindMotion() {
+                    this.reducedMotion = false;
+                    if (typeof window.matchMedia !== 'function') {
+                      this.syncReducedClass();
+                      return;
+                    }
+                    if (!this.motionQuery) {
+                      this.motionQuery = window.matchMedia('(prefers-reduced-motion: reduce)');
+                      if (this.motionQuery.addEventListener) {
+                        this.motionQuery.addEventListener('change', this._onMotionChange);
+                      } else if (this.motionQuery.addListener) {
+                        this.motionQuery.addListener(this._onMotionChange);
+                      }
+                    }
+                    this.reducedMotion = !!this.motionQuery.matches;
+                    this.syncReducedClass();
+                  },
+                  unbindMotion() {
+                    if (!this.motionQuery) return;
+                    if (this.motionQuery.removeEventListener) {
+                      this.motionQuery.removeEventListener('change', this._onMotionChange);
+                    } else if (this.motionQuery.removeListener) {
+                      this.motionQuery.removeListener(this._onMotionChange);
+                    }
+                    this.motionQuery = null;
+                  },
+                  onMotionChange() {
+                    this.reducedMotion = !!(this.motionQuery && this.motionQuery.matches);
+                    this.syncReducedClass();
+                  },
+                  syncReducedClass() {
+                    if (this.el) this.el.classList.toggle('is-reduced-motion', !!this.reducedMotion);
+                  },
+                  refreshCards() {
+                    this.cards = this.queryCards();
+                  },
+                  queryCards() {
+                    return Array.prototype.filter.call(this.el.children, function(node) {
+                      return node.nodeType === 1 && node.matches && node.matches('article.queue-card');
+                    });
+                  },
+                  cardKey(card) {
+                    return card ? (card.getAttribute('data-issue') || '') : '';
+                  },
+                  currentOrder() {
+                    return this.queryCards().map(function(card) {
+                      return card.getAttribute('data-issue') || '';
+                    }).filter(Boolean);
+                  },
+                  parseOrder(raw) {
+                    var text = (raw == null ? '' : String(raw)).trim();
+                    if (!text) return [];
+                    if (text.charAt(0) === '[') {
+                      try {
+                        var parsed = JSON.parse(text);
+                        if (Object.prototype.toString.call(parsed) === '[object Array]') {
+                          return parsed.map(function(v) { return String(v); }).filter(Boolean);
+                        }
+                      } catch (err) {}
+                    }
+                    return text.split(/[,\s]+/).map(function(part) {
+                      return part.trim();
+                    }).filter(Boolean);
+                  },
+                  sameOrder(a, b) {
+                    if (!a || !b || a.length !== b.length) return false;
+                    for (var i = 0; i < a.length; i++) {
+                      if (a[i] !== b[i]) return false;
+                    }
+                    return true;
+                  },
+                  tokenMs(name, fallback) {
+                    var value;
+                    try {
+                      value = window.getComputedStyle(document.documentElement).getPropertyValue(name).trim();
+                    } catch (err) {
+                      return fallback;
+                    }
+                    if (!value) return fallback;
+                    var n = parseFloat(value);
+                    if (isNaN(n)) return fallback;
+                    if (value.indexOf('ms') !== -1) return n;
+                    if (value.charAt(value.length - 1) === 's') return n * 1000;
+                    return n;
+                  },
+                  isInteractive(target) {
+                    if (!target || !target.closest) return false;
+                    return !!target.closest('a, button, input, select, textarea, label, option, .queue-card-edit, .queue-edit-form, .combobox');
+                  },
+                  refreshRanks() {
+                    var cards = this.queryCards();
+                    for (var i = 0; i < cards.length; i++) {
+                      cards[i].setAttribute('data-rank', String(i));
+                    }
+                    this.cards = cards;
+                  },
+                  emitOrder() {
+                    var order = this.currentOrder();
+                    this.pushEvent('reorder_queue', {
+                      project: this.el.getAttribute('data-project') || '',
+                      order: order
+                    });
+                  },
+                  reconcileTo(desired) {
+                    if (!desired || !desired.length) return;
+                    var cards = this.queryCards();
+                    var byKey = {};
+                    var i, key, card;
+                    for (i = 0; i < cards.length; i++) {
+                      key = this.cardKey(cards[i]);
+                      if (key) byKey[key] = cards[i];
+                    }
+                    if (this.sameOrder(this.currentOrder(), desired)) return;
+                    var host = this.el;
+                    this.flip(function() {
+                      for (i = 0; i < desired.length; i++) {
+                        card = byKey[desired[i]];
+                        if (card) host.appendChild(card);
+                      }
+                    }, null);
+                  },
+                  clearFlipStyles() {
+                    var cards = this.queryCards();
+                    for (var i = 0; i < cards.length; i++) {
+                      cards[i].style.transition = '';
+                      cards[i].style.transform = '';
+                    }
+                  },
+                  flip(mutate, skipEl) {
+                    var cards, first, i, card, key, rect, last, dx, dy, gen, self;
+                    if (this.reducedMotion) {
+                      mutate();
+                      this.refreshRanks();
+                      return;
+                    }
+                    this.flipGen += 1;
+                    gen = this.flipGen;
+                    cards = this.queryCards();
+                    first = {};
+                    for (i = 0; i < cards.length; i++) {
+                      card = cards[i];
+                      card.style.transition = 'none';
+                      card.style.transform = '';
+                    }
+                    this.el.offsetWidth;
+                    for (i = 0; i < cards.length; i++) {
+                      card = cards[i];
+                      if (skipEl && card === skipEl) continue;
+                      key = this.cardKey(card) || ('idx-' + i);
+                      rect = card.getBoundingClientRect();
+                      first[key] = {left: rect.left, top: rect.top};
+                    }
+                    mutate();
+                    cards = this.queryCards();
+                    for (i = 0; i < cards.length; i++) {
+                      card = cards[i];
+                      if (skipEl && card === skipEl) continue;
+                      key = this.cardKey(card) || ('idx-' + i);
+                      if (!first[key]) continue;
+                      last = card.getBoundingClientRect();
+                      dx = first[key].left - last.left;
+                      dy = first[key].top - last.top;
+                      if (!dx && !dy) continue;
+                      card.style.transition = 'none';
+                      card.style.transform = 'translate(' + dx + 'px, ' + dy + 'px)';
+                    }
+                    this.el.offsetWidth;
+                    for (i = 0; i < cards.length; i++) {
+                      card = cards[i];
+                      if (skipEl && card === skipEl) continue;
+                      if (!card.style.transform) continue;
+                      card.style.transition = 'transform var(--dur-flip, 280ms) var(--ease, cubic-bezier(0.2, 0.8, 0.2, 1))';
+                      card.style.transform = 'translate(0, 0)';
+                    }
+                    this.refreshRanks();
+                    self = this;
+                    if (this.flipTimer) window.clearTimeout(this.flipTimer);
+                    this.flipTimer = window.setTimeout(function() {
+                      if (self.flipGen !== gen) return;
+                      self.clearFlipStyles();
+                    }, this.tokenMs('--dur-flip', 280) + 30);
+                  },
+                  bindWindow() {
+                    window.addEventListener('pointermove', this._onPointerMove, {passive: false});
+                    window.addEventListener('pointerup', this._onPointerUp);
+                    window.addEventListener('pointercancel', this._onPointerUp);
+                  },
+                  unbindWindow() {
+                    window.removeEventListener('pointermove', this._onPointerMove);
+                    window.removeEventListener('pointerup', this._onPointerUp);
+                    window.removeEventListener('pointercancel', this._onPointerUp);
+                  },
+                  clearTimers() {
+                    if (this.ghostTimer) window.clearTimeout(this.ghostTimer);
+                    if (this.opacityTimer) window.clearTimeout(this.opacityTimer);
+                    if (this.flipTimer) window.clearTimeout(this.flipTimer);
+                    this.ghostTimer = null;
+                    this.opacityTimer = null;
+                    this.flipTimer = null;
+                  },
+                  removeGhost() {
+                    if (this.ghost && this.ghost.parentNode) {
+                      this.ghost.parentNode.removeChild(this.ghost);
+                    }
+                    this.ghost = null;
+                  },
+                  clearDragChrome() {
+                    var section = this.el && this.el.closest('.project-section');
+                    if (section) section.classList.remove('is-queue-dragging');
+                    if (document.body) document.body.classList.remove('queue-board-dragging');
+                    if (document.body) document.body.style.userSelect = '';
+                  },
+                  teardownDrag(immediate) {
+                    var source = this.sourceCard;
+                    if (source) {
+                      source.classList.remove('is-dragging');
+                      source.style.opacity = '';
+                      source.style.transition = '';
+                    }
+                    this.clearDragChrome();
+                    this.unbindWindow();
+                    if (this.pointerId != null && this.el && this.el.releasePointerCapture) {
+                      try { this.el.releasePointerCapture(this.pointerId); } catch (err) {}
+                    }
+                    if (immediate) this.removeGhost();
+                    this.dragging = false;
+                    this.pending = null;
+                    this.sourceCard = null;
+                    this.lastBefore = undefined;
+                    this.pointerId = null;
+                  },
+                  onDragStart(e) {
+                    if (this.pending || this.dragging) {
+                      e.preventDefault();
+                      return;
+                    }
+                    var card = e.target.closest ? e.target.closest('article.queue-card') : null;
+                    if (card && this.el.contains(card) && !this.isInteractive(e.target)) e.preventDefault();
+                  },
+                  onPointerDown(e) {
+                    if (e.button != null && e.button !== 0) return;
+                    if (this.dragging || this.pending) return;
+                    var card = e.target.closest ? e.target.closest('article.queue-card') : null;
+                    if (!card || !this.el.contains(card)) return;
+                    if (this.isInteractive(e.target)) return;
+                    this.pending = {
+                      card: card,
+                      pointerId: e.pointerId,
+                      startX: e.clientX,
+                      startY: e.clientY,
+                      originOrder: this.currentOrder()
+                    };
+                    this.bindWindow();
+                  },
+                  onPointerMove(e) {
+                    if (this.pending && !this.dragging) {
+                      var adx = e.clientX - this.pending.startX;
+                      var ady = e.clientY - this.pending.startY;
+                      if ((adx * adx) + (ady * ady) < 25) return;
+                      this.pick(e);
+                    }
+                    if (!this.dragging) return;
+                    if (e.cancelable) e.preventDefault();
+                    this.moveGhost(e.clientX, e.clientY);
+                    this.maybeReorder(e.clientX, e.clientY);
+                  },
+                  onPointerUp() {
+                    if (this.dragging) {
+                      var changed = !this.sameOrder(this.currentOrder(), this.orderAtPick || []);
+                      this.drop(changed);
+                      return;
+                    }
+                    this.pending = null;
+                    this.unbindWindow();
+                  },
+                  pick(e) {
+                    var pending = this.pending;
+                    if (!pending || !pending.card || !pending.card.parentNode) {
+                      this.pending = null;
+                      return;
+                    }
+                    var card = pending.card;
+                    var rect = card.getBoundingClientRect();
+                    this.dragging = true;
+                    this.sourceCard = card;
+                    this.orderAtPick = pending.originOrder || [];
+                    this.pointerId = pending.pointerId;
+                    this.offsetX = e.clientX - rect.left;
+                    this.offsetY = e.clientY - rect.top;
+                    this.lastBefore = card.nextElementSibling;
+                    this.createGhost(card, rect);
+                    card.classList.add('is-dragging');
+                    card.style.opacity = '0.35';
+                    var section = this.el.closest('.project-section');
+                    if (section) section.classList.add('is-queue-dragging');
+                    if (document.body) {
+                      document.body.classList.add('queue-board-dragging');
+                      document.body.style.userSelect = 'none';
+                    }
+                    if (this.el.setPointerCapture && this.pointerId != null) {
+                      try { this.el.setPointerCapture(this.pointerId); } catch (err) {}
+                    }
+                    if (e.cancelable) e.preventDefault();
+                  },
+                  createGhost(card, rect) {
+                    this.removeGhost();
+                    var ghost = card.cloneNode(true);
+                    var nodes = ghost.querySelectorAll('[id]');
+                    var i, edit;
+                    ghost.removeAttribute('id');
+                    ghost.classList.remove('is-dragging', 'is-editing', 'is-combobox-open');
+                    ghost.classList.add('queue-drag-ghost');
+                    ghost.setAttribute('aria-hidden', 'true');
+                    ghost.tabIndex = -1;
+                    for (i = 0; i < nodes.length; i++) nodes[i].removeAttribute('id');
+                    edit = ghost.querySelector('.queue-card-edit');
+                    if (edit && edit.parentNode) edit.parentNode.removeChild(edit);
+                    ghost.style.position = 'fixed';
+                    ghost.style.left = rect.left + 'px';
+                    ghost.style.top = rect.top + 'px';
+                    ghost.style.width = rect.width + 'px';
+                    ghost.style.height = rect.height + 'px';
+                    ghost.style.margin = '0';
+                    ghost.style.boxSizing = 'border-box';
+                    ghost.style.pointerEvents = 'none';
+                    ghost.style.zIndex = 'var(--z-drag)';
+                    ghost.style.boxShadow = 'var(--shadow-drag)';
+                    ghost.style.backgroundColor = 'var(--accent-soft)';
+                    ghost.style.opacity = '1';
+                    ghost.style.transform = 'scale(1)';
+                    ghost.style.transition = 'none';
+                    document.body.appendChild(ghost);
+                    this.ghost = ghost;
+                    if (!this.reducedMotion) {
+                      ghost.style.transition = 'transform var(--dur-fast, 140ms) var(--ease, cubic-bezier(0.2, 0.8, 0.2, 1))';
+                      ghost.offsetWidth;
+                      ghost.style.transform = 'scale(1.03)';
+                    }
+                  },
+                  moveGhost(x, y) {
+                    if (!this.ghost) return;
+                    this.ghost.style.left = (x - this.offsetX) + 'px';
+                    this.ghost.style.top = (y - this.offsetY) + 'px';
+                  },
+                  cardBeforePoint(x, y) {
+                    var cards = this.queryCards();
+                    var source = this.sourceCard;
+                    var board = this.el.getBoundingClientRect();
+                    var i, card, r, midX, midY, full;
+                    for (i = 0; i < cards.length; i++) {
+                      card = cards[i];
+                      if (card === source) continue;
+                      r = card.getBoundingClientRect();
+                      midX = r.left + r.width / 2;
+                      midY = r.top + r.height / 2;
+                      full = r.width > board.width * 0.6;
+                      if (y < r.top) return card;
+                      if (full) {
+                        if (y < midY) return card;
+                      } else if (y <= r.bottom && x < midX) {
+                        return card;
+                      }
+                    }
+                    return null;
+                  },
+                  maybeReorder(x, y) {
+                    var source = this.sourceCard;
+                    if (!source) return;
+                    var before = this.cardBeforePoint(x, y);
+                    if (before === this.lastBefore) return;
+                    if (!before && this.el.lastElementChild === source) {
+                      this.lastBefore = before;
+                      return;
+                    }
+                    if (before && source.nextElementSibling === before) {
+                      this.lastBefore = before;
+                      return;
+                    }
+                    this.lastBefore = before;
+                    var host = this.el;
+                    this.flip(function() {
+                      if (before && host.contains(before)) host.insertBefore(source, before);
+                      else host.appendChild(source);
+                    }, source);
+                  },
+                  drop(changed) {
+                    var self = this;
+                    var source = this.sourceCard;
+                    var ghost = this.ghost;
+                    var mid = this.tokenMs('--dur-mid', 220);
+                    if (source) {
+                      source.classList.remove('is-dragging');
+                      if (this.reducedMotion) {
+                        source.style.opacity = '';
+                        source.style.transition = '';
+                      } else {
+                        source.style.transition = 'opacity var(--dur-mid, 220ms) var(--ease-spring, cubic-bezier(0.22, 1.15, 0.36, 1))';
+                        source.style.opacity = '1';
+                        if (this.opacityTimer) window.clearTimeout(this.opacityTimer);
+                        this.opacityTimer = window.setTimeout(function() {
+                          source.style.opacity = '';
+                          source.style.transition = '';
+                        }, mid + 20);
+                      }
+                    }
+                    if (ghost) {
+                      if (this.reducedMotion) {
+                        this.removeGhost();
+                      } else {
+                        ghost.style.transition = 'transform var(--dur-mid, 220ms) var(--ease-spring, cubic-bezier(0.22, 1.15, 0.36, 1)), opacity var(--dur-mid, 220ms) var(--ease-spring, cubic-bezier(0.22, 1.15, 0.36, 1))';
+                        ghost.style.transform = 'scale(1)';
+                        ghost.style.opacity = '0';
+                        if (this.ghostTimer) window.clearTimeout(this.ghostTimer);
+                        this.ghostTimer = window.setTimeout(function() { self.removeGhost(); }, mid + 20);
+                      }
+                    }
+                    this.clearDragChrome();
+                    this.unbindWindow();
+                    if (this.pointerId != null && this.el && this.el.releasePointerCapture) {
+                      try { this.el.releasePointerCapture(this.pointerId); } catch (err) {}
+                    }
+                    this.dragging = false;
+                    this.pending = null;
+                    this.sourceCard = null;
+                    this.lastBefore = undefined;
+                    this.pointerId = null;
+                    this.refreshRanks();
+                    if (changed) this.emitOrder();
+                  },
+                  onKeydown(e) {
+                    if (this.dragging) return;
+                    var card = e.target.closest ? e.target.closest('article.queue-card') : null;
+                    if (!card || !this.el.contains(card)) return;
+                    if (this.isInteractive(e.target)) return;
+                    var dir = 0;
+                    if (e.key === 'ArrowLeft' || e.key === '[') dir = -1;
+                    else if (e.key === 'ArrowRight' || e.key === ']') dir = 1;
+                    else return;
+                    e.preventDefault();
+                    this.nudge(card, dir);
+                  },
+                  nudge(card, dir) {
+                    var cards = this.queryCards();
+                    var index = cards.indexOf(card);
+                    if (index < 0) return;
+                    var next = index + dir;
+                    if (next < 0 || next >= cards.length) return;
+                    var host = this.el;
+                    var target = cards[next];
+                    this.flip(function() {
+                      if (dir > 0) host.insertBefore(card, target.nextSibling);
+                      else host.insertBefore(card, target);
+                    }, null);
+                    this.emitOrder();
+                    if (card.focus) card.focus();
                   }
                 }
               }

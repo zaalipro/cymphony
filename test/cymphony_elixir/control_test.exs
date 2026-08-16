@@ -82,6 +82,46 @@ defmodule CymphonyElixirWeb.ControlTest do
       assert Control.parse_concurrency("nope") == :error
       assert Control.parse_concurrency(nil) == :error
     end
+
+    test "parse_queue_order/1 trims, drops blanks, and rejects non-lists" do
+      assert Control.parse_queue_order(["LLM-51", " LLM-12 ", ""]) == {:ok, ["LLM-51", "LLM-12"]}
+      assert Control.parse_queue_order([]) == {:ok, []}
+      assert Control.parse_queue_order("LLM-51") == :error
+      assert Control.parse_queue_order(nil) == :error
+      assert Control.parse_queue_order([1, "LLM-51"]) == :error
+    end
+
+    test "parse_queue_pin/1 requires issue plus at least one real field" do
+      assert {:ok, {"LLM-51", %{"agent_kind" => "codex", "model" => "m", "effort" => "high"}}} =
+               Control.parse_queue_pin(%{
+                 "issue" => " LLM-51 ",
+                 "kind" => "codex",
+                 "model" => " m ",
+                 "effort" => "high"
+               })
+
+      assert {:ok, {"LLM-51", %{"agent_kind" => "antigravity"}}} =
+               Control.parse_queue_pin(%{"issue" => "LLM-51", "agent_kind" => "antigravity"})
+
+      assert {:ok, {"LLM-51", %{"model" => "opus"}}} =
+               Control.parse_queue_pin(%{"issue" => "LLM-51", "kind" => "keep", "model" => "opus", "effort" => ""})
+
+      assert {:ok, {"LLM-51", %{"agent_kind" => "codex", "model" => "m"}}} =
+               Control.parse_queue_pin(%{
+                 "issue" => "LLM-51",
+                 "kind" => 1,
+                 "agent_kind" => "codex",
+                 "model" => "m",
+                 "effort" => 3
+               })
+
+      assert :error = Control.parse_queue_pin(%{"issue" => "LLM-51"})
+      assert :error = Control.parse_queue_pin(%{"issue" => "", "kind" => "codex"})
+      assert :error = Control.parse_queue_pin(%{"kind" => "codex"})
+      assert :error = Control.parse_queue_pin(%{"issue" => "LLM-51", "kind" => "gemini"})
+      assert :error = Control.parse_queue_pin(%{"issue" => "LLM-51", "kind" => "keep", "model" => "  "})
+      assert :error = Control.parse_queue_pin("LLM-51")
+    end
   end
 
   describe "dispatch across registered project orchestrators" do
@@ -204,6 +244,208 @@ defmodule CymphonyElixirWeb.ControlTest do
 
       assert {:error, :invalid_agent_kind} =
                Control.set_agent_settings({:project, "alpha"}, %{"agent" => "gemini"})
+    end
+
+    test "set_queue_order(:all) is invalid_scope and does not message orchestrators" do
+      start_orch!("alpha")
+
+      assert Control.set_queue_order(:all, ["LLM-51"]) == {:error, :invalid_scope}
+      assert Control.set_queue_order({:project, ""}, ["LLM-51"]) == {:error, :invalid_scope}
+      refute_receive {:orch, _, _}, 100
+    end
+
+    test "set_queue_order calls orchestrator then persists queue_order", %{tmp: tmp} do
+      start_orch!("alpha")
+      start_orch!("beta")
+
+      assert Control.set_queue_order({:project, "alpha"}, ["LLM-51", "LLM-12"]) == :ok
+      assert_receive {:orch, _, {:reorder_queue, ["LLM-51", "LLM-12"]}}
+      refute_receive {:orch, _, {:reorder_queue, _}}, 100
+
+      {:ok, cfg} = Jason.decode(File.read!(Path.join(tmp, "config.json")))
+      alpha = Enum.find(cfg["projects"], &(&1["name"] == "alpha"))
+      beta = Enum.find(cfg["projects"], &(&1["name"] == "beta"))
+      assert alpha["queue_order"] == ["LLM-51", "LLM-12"]
+      refute Map.has_key?(beta, "queue_order")
+    end
+
+    test "set_queue_pin calls orchestrator then persists queue_pins", %{tmp: tmp} do
+      start_orch!("alpha")
+      start_orch!("beta")
+
+      pin = %{"agent_kind" => "codex", "model" => "gpt-5.2-codex", "effort" => "high"}
+      assert Control.set_queue_pin({:project, "alpha"}, "LLM-51", pin) == :ok
+      assert_receive {:orch, _, {:set_queue_run_spec, "LLM-51", ^pin}}
+      refute_receive {:orch, _, {:set_queue_run_spec, _, _}}, 100
+
+      {:ok, cfg} = Jason.decode(File.read!(Path.join(tmp, "config.json")))
+      alpha = Enum.find(cfg["projects"], &(&1["name"] == "alpha"))
+      beta = Enum.find(cfg["projects"], &(&1["name"] == "beta"))
+      assert alpha["queue_pins"]["LLM-51"] == pin
+      refute Map.has_key?(beta, "queue_pins")
+
+      assert Control.set_queue_pin({:project, "alpha"}, "LLM-51", %{"model" => "opus"}) == :ok
+      {:ok, cfg} = Jason.decode(File.read!(Path.join(tmp, "config.json")))
+      alpha = Enum.find(cfg["projects"], &(&1["name"] == "alpha"))
+      assert alpha["queue_pins"]["LLM-51"]["agent_kind"] == "codex"
+      assert alpha["queue_pins"]["LLM-51"]["model"] == "opus"
+    end
+
+    test "set_queue_pin stringifies atom LiveView keys and does not clobber siblings", %{tmp: tmp} do
+      File.write!(
+        Path.join(tmp, "config.json"),
+        Jason.encode!(%{
+          "projects" => [
+            %{
+              "name" => "alpha",
+              "queue_pins" => %{
+                "LLM-51" => %{"agent_kind" => "claude", "model" => "sonnet"},
+                "LLM-12" => %{"effort" => "low"}
+              }
+            }
+          ]
+        })
+      )
+
+      start_orch!("alpha")
+
+      assert Control.set_queue_pin({:project, "alpha"}, "LLM-51", %{model: "opus"}) == :ok
+      {:ok, cfg} = Jason.decode(File.read!(Path.join(tmp, "config.json")))
+      alpha = Enum.find(cfg["projects"], &(&1["name"] == "alpha"))
+      assert alpha["queue_pins"]["LLM-51"] == %{"agent_kind" => "claude", "model" => "opus"}
+      assert alpha["queue_pins"]["LLM-12"] == %{"effort" => "low"}
+    end
+
+    test "set_queue_pin(:all) is invalid_scope" do
+      start_orch!("alpha")
+
+      assert Control.set_queue_pin(:all, "LLM-51", %{"agent_kind" => "codex"}) == {:error, :invalid_scope}
+      refute_receive {:orch, _, _}, 100
+    end
+
+    test "set_queue_order returns :not_found for an unknown project when others are registered" do
+      start_orch!("alpha")
+
+      assert Control.set_queue_order({:project, "ghost"}, ["LLM-51"]) == {:error, :not_found}
+
+      assert Control.set_queue_pin({:project, "ghost"}, "LLM-51", %{"effort" => "high"}) ==
+               {:error, :not_found}
+
+      refute_receive {:orch, _, _}, 100
+    end
+
+    test "set_queue_order persists via nil name when no orchestrators are registered", %{tmp: tmp} do
+      assert Control.set_queue_order({:project, "alpha"}, ["LLM-51"]) == :ok
+      refute_receive {:orch, _, _}, 100
+
+      {:ok, cfg} = Jason.decode(File.read!(Path.join(tmp, "config.json")))
+      assert Enum.all?(cfg["projects"], &(&1["queue_order"] == ["LLM-51"]))
+    end
+
+    test "set_queue_pin persists via nil name when no orchestrators are registered", %{tmp: tmp} do
+      assert Control.set_queue_pin({:project, "alpha"}, "LLM-51", %{"effort" => "high"}) == :ok
+      refute_receive {:orch, _, _}, 100
+
+      {:ok, cfg} = Jason.decode(File.read!(Path.join(tmp, "config.json")))
+      assert Enum.all?(cfg["projects"], &(&1["queue_pins"]["LLM-51"]["effort"] == "high"))
+    end
+
+    test "set_queue_pin overlays a non-map existing pin and can delete an empty pin", %{tmp: tmp} do
+      File.write!(
+        Path.join(tmp, "config.json"),
+        Jason.encode!(%{
+          "projects" => [
+            %{"name" => "alpha", "queue_pins" => %{"LLM-51" => "bad", "LLM-12" => %{"model" => "m"}}}
+          ]
+        })
+      )
+
+      start_orch!("alpha")
+
+      assert Control.set_queue_pin({:project, "alpha"}, "LLM-51", %{"effort" => "high"}) == :ok
+      assert_receive {:orch, _, {:set_queue_run_spec, "LLM-51", %{"effort" => "high"}}}
+      {:ok, cfg} = Jason.decode(File.read!(Path.join(tmp, "config.json")))
+      alpha = Enum.find(cfg["projects"], &(&1["name"] == "alpha"))
+      assert alpha["queue_pins"]["LLM-51"] == %{"effort" => "high"}
+      assert alpha["queue_pins"]["LLM-12"] == %{"model" => "m"}
+
+      assert Control.set_queue_pin({:project, "alpha"}, "LLM-12", %{}) == :ok
+      assert_receive {:orch, _, {:set_queue_run_spec, "LLM-12", %{}}}
+      {:ok, cfg} = Jason.decode(File.read!(Path.join(tmp, "config.json")))
+      alpha = Enum.find(cfg["projects"], &(&1["name"] == "alpha"))
+      refute Map.has_key?(alpha["queue_pins"], "LLM-12")
+    end
+
+    test "set_queue_pin with no orchestrators reads top-level pins when projects is empty", %{tmp: tmp} do
+      File.write!(
+        Path.join(tmp, "config.json"),
+        Jason.encode!(%{"projects" => [], "queue_pins" => %{"LLM-1" => %{"model" => "opus"}}})
+      )
+
+      assert Control.set_queue_pin({:project, "alpha"}, "LLM-1", %{"effort" => "high"}) == :ok
+
+      {:ok, cfg} = Jason.decode(File.read!(Path.join(tmp, "config.json")))
+      assert cfg["projects"] == []
+      assert cfg["queue_pins"] == %{"LLM-1" => %{"model" => "opus"}}
+    end
+
+    test "set_queue_pin treats a non-map pins value as empty", %{tmp: tmp} do
+      File.write!(
+        Path.join(tmp, "config.json"),
+        Jason.encode!(%{
+          "projects" => [
+            %{"name" => "alpha", "queue_pins" => "legacy"},
+            %{"name" => "beta"}
+          ]
+        })
+      )
+
+      start_orch!("alpha")
+
+      assert Control.set_queue_pin({:project, "alpha"}, "LLM-51", %{"effort" => "high"}) == :ok
+      assert_receive {:orch, _, {:set_queue_run_spec, "LLM-51", %{"effort" => "high"}}}
+      {:ok, cfg} = Jason.decode(File.read!(Path.join(tmp, "config.json")))
+      alpha = Enum.find(cfg["projects"], &(&1["name"] == "alpha"))
+      assert alpha["queue_pins"] == %{"LLM-51" => %{"effort" => "high"}}
+
+      assert Control.set_queue_pin({:project, "alpha"}, "LLM-51", %{"model" => "opus"}) == :ok
+      assert_receive {:orch, _, {:set_queue_run_spec, "LLM-51", %{"model" => "opus"}}}
+      {:ok, cfg} = Jason.decode(File.read!(Path.join(tmp, "config.json")))
+      alpha = Enum.find(cfg["projects"], &(&1["name"] == "alpha"))
+      assert alpha["queue_pins"]["LLM-51"]["effort"] == "high"
+      assert alpha["queue_pins"]["LLM-51"]["model"] == "opus"
+    end
+
+    test "set_queue_pin with a registered name missing from config does not invent a project", %{
+      tmp: tmp
+    } do
+      File.write!(Path.join(tmp, "config.json"), Jason.encode!(%{"projects" => [%{"name" => "beta"}]}))
+      start_orch!("alpha")
+
+      assert Control.set_queue_pin({:project, "alpha"}, "LLM-51", %{"effort" => "high"}) == :ok
+      assert_receive {:orch, _, {:set_queue_run_spec, "LLM-51", %{"effort" => "high"}}}
+      {:ok, cfg} = Jason.decode(File.read!(Path.join(tmp, "config.json")))
+      assert cfg["projects"] == [%{"name" => "beta"}]
+    end
+
+    test "set_queue_order surfaces persist errors after the orchestrator call", %{tmp: tmp} do
+      start_orch!("alpha")
+      File.rm!(Path.join(tmp, "config.json"))
+
+      assert {:error, msg} = Control.set_queue_order({:project, "alpha"}, ["LLM-51"])
+      assert_receive {:orch, _, {:reorder_queue, ["LLM-51"]}}
+      assert is_binary(msg)
+      assert msg =~ "Failed to read"
+    end
+
+    test "set_queue_pin surfaces persist errors after the orchestrator call", %{tmp: tmp} do
+      start_orch!("alpha")
+      File.rm!(Path.join(tmp, "config.json"))
+
+      assert {:error, msg} = Control.set_queue_pin({:project, "alpha"}, "LLM-51", %{"effort" => "high"})
+      assert_receive {:orch, _, {:set_queue_run_spec, "LLM-51", %{"effort" => "high"}}}
+      assert is_binary(msg)
+      assert msg =~ "Failed to read"
     end
 
     test "set_agent_settings rewrites WORKFLOW.md after a successful persist", %{tmp: tmp} do

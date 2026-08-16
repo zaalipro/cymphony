@@ -253,4 +253,190 @@ defmodule CymphonyElixir.Cymphony.ConfigPersistenceTest do
       assert updated["projects"] == nil
     end
   end
+
+  describe "update_project_queue/2" do
+    test "updates only the named project and sets 0o600", %{path: path} do
+      write_config!(path, %{
+        "dashboard_refresh_seconds" => 9,
+        "projects" => [%{"name" => "alpha"}, %{"name" => "beta"}]
+      })
+
+      assert {:ok, updated} =
+               CymphonyConfig.update_project_queue("alpha", %{
+                 "queue_order" => ["LLM-51", " LLM-12 ", ""],
+                 "queue_pins" => %{
+                   " LLM-51 " => %{
+                     "agent_kind" => "codex",
+                     "model" => " gpt-5.2-codex ",
+                     "effort" => "high",
+                     "provider" => "cz1"
+                   },
+                   "LLM-99" => %{"model" => "keep", "effort" => ""}
+                 },
+                 "queue_priority_seen" => %{" LLM-51 " => 2, "LLM-12" => nil, "LLM-0" => 0}
+               })
+
+      alpha = Enum.find(updated["projects"], &(&1["name"] == "alpha"))
+      beta = Enum.find(updated["projects"], &(&1["name"] == "beta"))
+      assert alpha["queue_order"] == ["LLM-51", "LLM-12"]
+
+      assert alpha["queue_pins"] == %{
+               "LLM-51" => %{
+                 "agent_kind" => "codex",
+                 "model" => "gpt-5.2-codex",
+                 "effort" => "high"
+               }
+             }
+
+      assert alpha["queue_priority_seen"] == %{"LLM-51" => 2, "LLM-12" => nil, "LLM-0" => 0}
+      refute Map.has_key?(beta, "queue_order")
+      refute Map.has_key?(beta, "queue_pins")
+      refute Map.has_key?(beta, "queue_priority_seen")
+      assert updated["dashboard_refresh_seconds"] == 9
+
+      {:ok, reloaded} = CymphonyConfig.load()
+      assert reloaded == updated
+      assert File.stat!(path).mode |> Bitwise.band(0o777) == 0o600
+    end
+
+    test "nil project name updates every project", %{path: path} do
+      write_config!(path, %{"projects" => [%{"name" => "alpha"}, %{"name" => "beta"}]})
+
+      assert {:ok, updated} =
+               CymphonyConfig.update_project_queue(nil, %{"queue_order" => ["LLM-1"]})
+
+      assert Enum.all?(updated["projects"], &(&1["queue_order"] == ["LLM-1"]))
+    end
+
+    test "normalizes a legacy flat file when project name is nil", %{path: path} do
+      write_config!(path, %{"linear_project_slug" => "farm", "linear_api_key" => "k"})
+
+      assert {:ok, updated} =
+               CymphonyConfig.update_project_queue(nil, %{"queue_order" => ["LLM-51"]})
+
+      assert [%{"name" => "farm", "queue_order" => ["LLM-51"]}] = updated["projects"]
+      refute Map.has_key?(updated, "queue_order")
+    end
+
+    test "returns the load error when the file is missing" do
+      assert {:error, msg} = CymphonyConfig.update_project_queue("alpha", %{"queue_order" => []})
+      assert msg =~ "Failed to read"
+    end
+
+    test "applies at the top level when projects is not a list", %{path: path} do
+      write_config!(path, %{"projects" => "legacy", "name" => "flat"})
+
+      assert {:ok, updated} =
+               CymphonyConfig.update_project_queue("ignored", %{"queue_order" => ["LLM-1"]})
+
+      assert updated["queue_order"] == ["LLM-1"]
+      assert updated["projects"] == "legacy"
+    end
+
+    test "replaces queue_pins/order/seen and drops empty pin fields", %{path: path} do
+      write_config!(path, %{
+        "projects" => [
+          %{
+            "name" => "alpha",
+            "queue_order" => ["OLD"],
+            "queue_pins" => %{"LLM-51" => %{"agent_kind" => "claude", "effort" => "low"}},
+            "queue_priority_seen" => %{"LLM-51" => 3, "LLM-12" => 4}
+          }
+        ]
+      })
+
+      assert {:ok, updated} =
+               CymphonyConfig.update_project_queue("alpha", %{
+                 "queue_order" => ["LLM-51", "LLM-12"],
+                 "queue_pins" => %{
+                   "LLM-51" => %{"model" => "opus", "agent_kind" => 1},
+                   "LLM-12" => %{"effort" => "high"}
+                 },
+                 "queue_priority_seen" => %{"LLM-51" => 1}
+               })
+
+      [project] = updated["projects"]
+      assert project["queue_order"] == ["LLM-51", "LLM-12"]
+      assert project["queue_priority_seen"] == %{"LLM-51" => 1}
+
+      assert project["queue_pins"] == %{
+               "LLM-51" => %{"model" => "opus"},
+               "LLM-12" => %{"effort" => "high"}
+             }
+
+      assert {:ok, deleted} =
+               CymphonyConfig.update_project_queue("alpha", %{
+                 "queue_pins" => %{"LLM-51" => %{}, "LLM-12" => %{"agent_kind" => "", "model" => "keep"}}
+               })
+
+      assert hd(deleted["projects"])["queue_pins"] == %{}
+    end
+
+    test "replaces a project's pins without touching another project", %{path: path} do
+      write_config!(path, %{
+        "projects" => [
+          %{"name" => "alpha", "queue_pins" => %{"LLM-51" => "bad"}},
+          %{"name" => "beta", "queue_pins" => %{"LLM-9" => %{"effort" => "low"}}}
+        ]
+      })
+
+      assert {:ok, updated} =
+               CymphonyConfig.update_project_queue("alpha", %{
+                 "queue_pins" => %{"LLM-51" => %{"agent_kind" => "codex"}}
+               })
+
+      alpha = Enum.find(updated["projects"], &(&1["name"] == "alpha"))
+      beta = Enum.find(updated["projects"], &(&1["name"] == "beta"))
+      assert alpha["queue_pins"] == %{"LLM-51" => %{"agent_kind" => "codex"}}
+      assert beta["queue_pins"] == %{"LLM-9" => %{"effort" => "low"}}
+    end
+
+    test "does not change other projects when the name is unknown", %{path: path} do
+      write_config!(path, %{"projects" => [%{"name" => "alpha"}]})
+
+      assert {:ok, updated} =
+               CymphonyConfig.update_project_queue("ghost", %{"queue_order" => ["LLM-51"]})
+
+      assert updated["projects"] == [%{"name" => "alpha"}]
+
+      assert {:ok, same} = CymphonyConfig.update_project_queue("alpha", %{})
+      assert same["projects"] == [%{"name" => "alpha"}]
+
+      assert {:ok, emptied} = CymphonyConfig.update_project_queue("alpha", %{"queue_order" => ["", "  "]})
+      assert hd(emptied["projects"])["queue_order"] == []
+
+      assert {:ok, pins} = CymphonyConfig.update_project_queue("alpha", %{"queue_pins" => %{}})
+      assert hd(pins["projects"])["queue_pins"] == %{}
+    end
+
+    test "rejects invalid payloads without writing", %{path: path} do
+      write_config!(path, %{"projects" => [%{"name" => "alpha"}]})
+      before = File.read!(path)
+
+      assert CymphonyConfig.update_project_queue("alpha", "nope") == {:error, :invalid_queue}
+      assert CymphonyConfig.update_project_queue(1, %{"queue_order" => []}) == {:error, :invalid_queue}
+      assert CymphonyConfig.update_project_queue("alpha", %{"queue_order" => "LLM-51"}) == {:error, :invalid_queue}
+      assert CymphonyConfig.update_project_queue("alpha", %{"queue_order" => [1]}) == {:error, :invalid_queue}
+      assert CymphonyConfig.update_project_queue("alpha", %{"queue_pins" => []}) == {:error, :invalid_queue}
+      assert CymphonyConfig.update_project_queue("alpha", %{"queue_pins" => %{"" => %{}}}) == {:error, :invalid_queue}
+      assert CymphonyConfig.update_project_queue("alpha", %{"queue_pins" => %{1 => %{}}}) == {:error, :invalid_queue}
+
+      assert CymphonyConfig.update_project_queue("alpha", %{"queue_pins" => %{"LLM-51" => "codex"}}) ==
+               {:error, :invalid_queue}
+
+      assert CymphonyConfig.update_project_queue("alpha", %{"queue_priority_seen" => []}) ==
+               {:error, :invalid_queue}
+
+      assert CymphonyConfig.update_project_queue("alpha", %{"queue_priority_seen" => %{"" => 1}}) ==
+               {:error, :invalid_queue}
+
+      assert CymphonyConfig.update_project_queue("alpha", %{"queue_priority_seen" => %{"LLM-51" => "2"}}) ==
+               {:error, :invalid_queue}
+
+      assert CymphonyConfig.update_project_queue("alpha", %{"queue_priority_seen" => %{1 => 2}}) ==
+               {:error, :invalid_queue}
+
+      assert File.read!(path) == before
+    end
+  end
 end

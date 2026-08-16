@@ -262,6 +262,70 @@ defmodule CymphonyElixir.Orchestrator.RunSpecDispatchTest do
     assert :sys.get_state(pid).config.tracker.api_key == "lin_test"
   end
 
+  test "waiting pin beats labels" do
+    isolate_config_dir()
+    orchestrator_name = Module.concat(__MODULE__, :WaitingPinBeatsLabels)
+    {:ok, pid} = Orchestrator.start_link(name: orchestrator_name)
+    on_exit(fn -> if Process.alive?(pid), do: Process.exit(pid, :normal) end)
+
+    issue = %Issue{
+      id: "iss-queue-pin-1",
+      identifier: "MT-520",
+      title: "Pinned over labels",
+      description: nil,
+      state: "Todo",
+      url: "https://example.org/MT-520",
+      labels: ["agent:claude", "model:sonnet", "effort:low"]
+    }
+
+    assert :ok =
+             Orchestrator.set_queue_run_spec(pid, "MT-520", %{
+               agent_kind: "codex",
+               model: "gpt-5.2-codex",
+               effort: "high"
+             })
+
+    :ok = Orchestrator.dispatch_issue_for_test(pid, issue)
+
+    snapshot = GenServer.call(pid, :snapshot)
+    assert %{running: [entry]} = snapshot
+    assert entry.agent_kind == "codex"
+    assert entry.model == "gpt-5.2-codex"
+    assert entry.effort == "high"
+  end
+
+  test "empty pin falls through to labels" do
+    isolate_config_dir()
+    orchestrator_name = Module.concat(__MODULE__, :EmptyPinFallsThrough)
+    {:ok, pid} = Orchestrator.start_link(name: orchestrator_name)
+    on_exit(fn -> if Process.alive?(pid), do: Process.exit(pid, :normal) end)
+
+    issue = %Issue{
+      id: "iss-queue-pin-2",
+      identifier: "MT-521",
+      title: "No pin",
+      description: nil,
+      state: "Todo",
+      url: "https://example.org/MT-521",
+      labels: ["agent:codex", "model:gpt-5.2-codex", "effort:low"]
+    }
+
+    assert :ok =
+             Orchestrator.set_queue_run_spec(pid, "MT-521", %{
+               agent_kind: "keep",
+               model: "",
+               effort: "keep"
+             })
+
+    :ok = Orchestrator.dispatch_issue_for_test(pid, issue)
+
+    snapshot = GenServer.call(pid, :snapshot)
+    assert %{running: [entry]} = snapshot
+    assert entry.agent_kind == "codex"
+    assert entry.model == "gpt-5.2-codex"
+    assert entry.effort == "low"
+  end
+
   test "a retry dispatch re-resolves labels (label edits take effect on next attempt)" do
     orchestrator_name = Module.concat(__MODULE__, :RetryResolveOrch)
     {:ok, pid} = Orchestrator.start_link(name: orchestrator_name)
@@ -285,6 +349,24 @@ defmodule CymphonyElixir.Orchestrator.RunSpecDispatchTest do
     :ok = Orchestrator.dispatch_issue_for_test(pid, %{base | labels: ["effort:max"]})
     assert %{running: [second]} = GenServer.call(pid, :snapshot)
     assert second.effort == "max"
+  end
+
+  defp isolate_config_dir do
+    tmp = Path.join(System.tmp_dir!(), "cymphony-qpin-#{System.unique_integer([:positive])}")
+    File.mkdir_p!(tmp)
+    previous = Application.get_env(:cymphony_elixir, :config_dir_override)
+    Application.put_env(:cymphony_elixir, :config_dir_override, tmp)
+    :ok = CymphonyElixir.Cymphony.Config.save(%{"projects" => []})
+
+    on_exit(fn ->
+      if is_binary(previous) do
+        Application.put_env(:cymphony_elixir, :config_dir_override, previous)
+      else
+        Application.delete_env(:cymphony_elixir, :config_dir_override)
+      end
+
+      File.rm_rf(tmp)
+    end)
   end
 
   defp put_config_json_project!(attrs) when is_map(attrs) do

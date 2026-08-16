@@ -142,7 +142,7 @@ defmodule CymphonyElixir.Cymphony.ConfigTest do
 
     test "github_repo_url adds an after_create clone hook; absence omits hooks" do
       with_repo = CymphonyConfig.to_schema_map(%{"github_repo_url" => "git@github.com:me/repo.git"})
-      assert with_repo["hooks"]["after_create"] =~ "git clone --depth 1 git@github.com:me/repo.git"
+      assert with_repo["hooks"]["after_create"] =~ "git clone --depth 1 https://github.com/me/repo.git"
 
       refute Map.has_key?(CymphonyConfig.to_schema_map(%{}), "hooks")
       refute Map.has_key?(CymphonyConfig.to_schema_map(%{"github_repo_url" => ""}), "hooks")
