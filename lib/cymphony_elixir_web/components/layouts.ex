@@ -825,6 +825,81 @@ defmodule CymphonyElixirWeb.Layouts do
                     this.emitOrder();
                     if (card.focus) card.focus();
                   }
+                },
+                QueueEditPanel: {
+                  mounted() {
+                    this._place = this.place.bind(this);
+                    this._onDoc = this.onDoc.bind(this);
+                    this.place();
+                    window.addEventListener('resize', this._place);
+                    window.addEventListener('scroll', this._place, true);
+                    document.addEventListener('mousedown', this._onDoc, true);
+                    document.documentElement.removeAttribute('data-drawer');
+                  },
+                  updated() { this.place(); },
+                  destroyed() {
+                    window.removeEventListener('resize', this._place);
+                    window.removeEventListener('scroll', this._place, true);
+                    document.removeEventListener('mousedown', this._onDoc, true);
+                  },
+                  onDoc(e) {
+                    var t = e.target;
+                    if (!t || !t.closest) return;
+                    if (this.el.contains(t)) return;
+                    if (t.closest('.queue-card-edit-toggle')) return;
+                    if (t.closest('.combobox-list')) return;
+                    document.documentElement.removeAttribute('data-drawer');
+                    this.pushEvent('dismiss_overlays', {});
+                  },
+                  place() {
+                    var card = this.el.closest('.queue-card');
+                    if (!card) return;
+                    var r = card.getBoundingClientRect();
+                    var width = Math.min(Math.max(r.width, 304), Math.min(360, window.innerWidth - 24));
+                    var left = Math.min(Math.max(12, r.left), window.innerWidth - width - 12);
+                    this.el.style.position = 'fixed';
+                    this.el.style.left = left + 'px';
+                    this.el.style.width = width + 'px';
+                    this.el.style.right = 'auto';
+                    var below = r.bottom + 8;
+                    var h = this.el.offsetHeight || 240;
+                    if (below + h > window.innerHeight - 12 && r.top - h - 8 > 12) {
+                      this.el.style.top = (r.top - h - 8) + 'px';
+                    } else {
+                      this.el.style.top = below + 'px';
+                    }
+                  }
+                },
+                OverlayDismiss: {
+                  mounted() {
+                    this._onDoc = this.onDoc.bind(this);
+                    document.addEventListener('mousedown', this._onDoc, true);
+                  },
+                  destroyed() {
+                    document.removeEventListener('mousedown', this._onDoc, true);
+                  },
+                  keepOpen(target) {
+                    if (!target || !target.closest) return false;
+                    if (target.closest('.settings-drawer')) return true;
+                    if (target.closest('.queue-card-edit')) return true;
+                    if (target.closest('.combobox-list')) return true;
+                    if (target.closest('.combobox.combobox--open')) return true;
+                    return false;
+                  },
+                  onDoc(e) {
+                    var target = e.target;
+                    if (target && target.closest && target.closest('[data-drawer-toggle]')) {
+                      this.pushEvent('dismiss_overlays', {});
+                      return;
+                    }
+                    if (target && target.closest && target.closest('.queue-card-edit-toggle')) {
+                      document.documentElement.removeAttribute('data-drawer');
+                      return;
+                    }
+                    if (this.keepOpen(target)) return;
+                    document.documentElement.removeAttribute('data-drawer');
+                    this.pushEvent('dismiss_overlays', {});
+                  }
                 }
               }
             });
