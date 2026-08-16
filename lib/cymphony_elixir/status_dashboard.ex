@@ -268,10 +268,7 @@ defmodule CymphonyElixir.StatusDashboard do
 
     if snapshot_data != state.last_snapshot_fingerprint or periodic_rerender_due?(state, now_ms) do
       content =
-        format_snapshot_content(
-          snapshot_data,
-          tps
-        )
+        format_snapshot_content(snapshot_data, tps)
 
       state
       |> maybe_update_snapshot_fingerprint(snapshot_data)
@@ -386,19 +383,19 @@ defmodule CymphonyElixir.StatusDashboard do
     end
   end
 
-  defp format_snapshot_content(snapshot_data, tps, terminal_columns_override \\ nil) do
+  defp format_snapshot_content(snapshot_data, tps, terminal_columns_override \\ nil, opts \\ []) do
     case snapshot_data do
       {:ok, %{running: running, retrying: retrying, token_totals: token_totals} = snapshot} ->
         rate_limits = Map.get(snapshot, :rate_limits)
         per_project = Map.get(snapshot, :per_project, [])
-        project_link_lines = format_project_link_lines(per_project)
+        project_link_lines = format_project_link_lines(per_project, opts)
         project_refresh_line = format_project_refresh_line(Map.get(snapshot, :polling))
         input_tokens = Map.get(token_totals, :input_tokens, 0)
         output_tokens = Map.get(token_totals, :output_tokens, 0)
         total_tokens = Map.get(token_totals, :total_tokens, 0)
         claude_seconds_running = Map.get(token_totals, :seconds_running, 0)
         agent_count = length(running)
-        max_agents = aggregate_max_agents()
+        max_agents = aggregate_max_agents(opts)
         running_event_width = running_event_width(terminal_columns_override)
         running_rows = format_running_rows(running, running_event_width)
         running_to_backoff_spacer = if(running == [], do: [], else: ["│"])
@@ -439,7 +436,7 @@ defmodule CymphonyElixir.StatusDashboard do
           colorize("╭─ CYMPHONY STATUS", @ansi_bold),
           colorize("│ Orchestrator snapshot unavailable", @ansi_red),
           colorize("│ Throughput: ", @ansi_bold) <> colorize("#{format_tps(tps)} tps", @ansi_cyan),
-          format_project_link_lines(),
+          format_project_link_lines([], opts),
           format_project_refresh_line(nil),
           closing_border()
         ]
@@ -448,10 +445,10 @@ defmodule CymphonyElixir.StatusDashboard do
     end
   end
 
-  defp format_project_link_lines(per_project \\ []) do
-    project_lines = format_multi_project_lines(per_project)
+  defp format_project_link_lines(per_project, opts) do
+    project_lines = format_multi_project_lines(per_project, opts)
 
-    case dashboard_url() do
+    case dashboard_url(opts) do
       url when is_binary(url) ->
         project_lines ++ [colorize("│ Dashboard: ", @ansi_bold) <> colorize(url, @ansi_cyan)]
 
@@ -460,8 +457,13 @@ defmodule CymphonyElixir.StatusDashboard do
     end
   end
 
-  defp format_multi_project_lines(per_project) do
-    project_names = CymphonyElixir.ProjectSupervisor.list_project_names()
+  defp format_multi_project_lines(per_project, opts) do
+    project_names =
+      if hermetic_snapshot?(opts) do
+        []
+      else
+        CymphonyElixir.ProjectSupervisor.list_project_names()
+      end
 
     case project_names do
       [] ->
@@ -560,15 +562,20 @@ defmodule CymphonyElixir.StatusDashboard do
 
   defp linear_project_url(project_slug), do: "https://linear.app/project/#{project_slug}/issues"
 
-  defp dashboard_url do
+  defp dashboard_url(opts) do
     host =
       case Config.settings() do
         {:ok, settings} -> settings.server.host
         {:error, _reason} -> "127.0.0.1"
       end
 
-    url = dashboard_url(host, Config.server_port(), HttpServer.bound_port())
-    if is_binary(url), do: maybe_persist_dashboard_url(url)
+    bound_port = if hermetic_snapshot?(opts), do: nil, else: HttpServer.bound_port()
+    url = dashboard_url(host, Config.server_port(), bound_port)
+
+    if is_binary(url) and not hermetic_snapshot?(opts) do
+      maybe_persist_dashboard_url(url)
+    end
+
     url
   end
 
@@ -685,12 +692,13 @@ defmodule CymphonyElixir.StatusDashboard do
 
   @doc false
   @spec format_snapshot_content_for_test(term(), number()) :: String.t()
-  def format_snapshot_content_for_test(snapshot_data, tps), do: format_snapshot_content(snapshot_data, tps)
+  def format_snapshot_content_for_test(snapshot_data, tps),
+    do: format_snapshot_content(snapshot_data, tps, nil, hermetic: true)
 
   @doc false
   @spec format_snapshot_content_for_test(term(), number(), integer() | nil) :: String.t()
   def format_snapshot_content_for_test(snapshot_data, tps, terminal_columns),
-    do: format_snapshot_content(snapshot_data, tps, terminal_columns)
+    do: format_snapshot_content(snapshot_data, tps, terminal_columns, hermetic: true)
 
   @doc false
   @spec dashboard_url_for_test(String.t(), non_neg_integer() | nil, non_neg_integer() | nil) ::
@@ -805,7 +813,23 @@ defmodule CymphonyElixir.StatusDashboard do
     }
   end
 
-  defp aggregate_max_agents do
+  defp hermetic_snapshot?(opts), do: Keyword.get(opts, :hermetic, false)
+
+  defp aggregate_max_agents(opts) do
+    if hermetic_snapshot?(opts) do
+      hermetic_max_agents()
+    else
+      live_max_agents()
+    end
+  end
+
+  defp hermetic_max_agents do
+    Config.settings!().agent.max_concurrent_agents
+  rescue
+    _ -> 10
+  end
+
+  defp live_max_agents do
     case CymphonyElixir.ProjectSupervisor.list_project_names() do
       [] ->
         # Legacy single-project mode: use global config

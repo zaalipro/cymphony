@@ -518,8 +518,12 @@ defmodule CymphonyElixir.DashboardLiveTest do
   end
 
   test "preview_project_agent hides providers for non-claude kinds and restores them for claude" do
-    start_dashboard()
+    start_dashboard(recipient: self())
     {:ok, view, _html} = live(build_conn(), "/")
+
+    {:ok, config} = CymphonyElixir.Cymphony.Config.load()
+    projects = Enum.map(config["projects"], &Map.put(&1, "provider", "cv1"))
+    assert :ok = CymphonyElixir.Cymphony.Config.save(Map.put(config, "projects", projects))
 
     assert has_element?(view, ~s|form[phx-submit="set_project_providers"] #providers-default|)
 
@@ -528,6 +532,7 @@ defmodule CymphonyElixir.DashboardLiveTest do
     |> render_change()
 
     refute has_element?(view, "#providers-default")
+    refute has_element?(view, ~s|form[phx-submit="set_project_providers"]|)
     assert has_element?(view, ~s|form[phx-submit="set_project_agent"] option[value="codex"][selected]|)
 
     view
@@ -535,17 +540,48 @@ defmodule CymphonyElixir.DashboardLiveTest do
     |> render_change()
 
     refute has_element?(view, "#providers-default")
+    refute has_element?(view, ~s|form[phx-submit="set_project_providers"]|)
     assert has_element?(view, ~s|form[phx-submit="set_project_agent"] option[value="antigravity"][selected]|)
 
     view
     |> form(~s|form[phx-change="preview_project_agent"]|, %{agent_kind: "claude"})
     |> render_change()
 
-    assert has_element?(view, "#providers-default")
+    assert has_element?(view, ~s|form[phx-submit="set_project_providers"] #providers-default|)
     assert has_element?(view, ~s|form[phx-submit="set_project_agent"] option[value="claude"][selected]|)
+
+    refute_received {:orchestrator_call, {:set_providers, _}}
+    {:ok, persisted} = CymphonyElixir.Cymphony.Config.load()
+    assert Enum.any?(persisted["projects"], &(&1["provider"] == "cv1"))
   end
 
-  test "restart form has Harness label and hides provider when previewed to antigravity" do
+  test "header providers stay hidden for empty and unknown agent kinds" do
+    start_dashboard()
+    {:ok, view, _html} = live(build_conn(), "/")
+
+    payload = view_assigns(view).payload
+    [project | rest] = payload.projects
+
+    send(
+      view.pid,
+      {:payload_loaded, view_assigns(view).payload_seq, %{payload | projects: [Map.put(project, :agent_kind, nil) | rest]}}
+    )
+
+    render(view)
+    refute has_element?(view, "#providers-default")
+    refute has_element?(view, ~s|form[phx-submit="set_project_providers"]|)
+
+    send(
+      view.pid,
+      {:payload_loaded, view_assigns(view).payload_seq, %{payload | projects: [Map.put(project, :agent_kind, "gemini") | rest]}}
+    )
+
+    render(view)
+    refute has_element?(view, "#providers-default")
+    refute has_element?(view, ~s|form[phx-submit="set_project_providers"]|)
+  end
+
+  test "restart form shows provider only for claude and hides it for codex" do
     start_dashboard()
     {:ok, view, _html} = live(build_conn(), "/")
 
@@ -562,20 +598,59 @@ defmodule CymphonyElixir.DashboardLiveTest do
     assert has_element?(view, "#model-suggestions-session-MT-HTTP")
     assert has_element?(view, "#restart-effort-MT-HTTP")
     assert has_element?(view, ~s|#harness-tail-MT-HTTP[phx-hook="HarnessTail"]|)
+    assert render(view) =~ ">Provider<"
 
     view
     |> form(~s|form[phx-change="preview_issue_run_spec"]|, %{agent_kind: "claude"})
     |> render_change()
 
-    assert has_element?(view, "#restart-provider-MT-HTTP")
+    assert has_element?(view, ~s|#restart-provider-MT-HTTP[name="provider"]|)
+
+    view
+    |> form(~s|form[phx-change="preview_issue_run_spec"]|, %{agent_kind: "codex"})
+    |> render_change()
+
+    refute has_element?(view, "#restart-provider-MT-HTTP")
+    refute has_element?(view, ~s|form.restart-form input[name="provider"]|)
+    assert has_element?(view, ~s|form[phx-submit="set_issue_run_spec"] option[value="codex"][selected]|)
 
     view
     |> form(~s|form[phx-change="preview_issue_run_spec"]|, %{agent_kind: "antigravity"})
     |> render_change()
 
     refute has_element?(view, "#restart-provider-MT-HTTP")
+    refute has_element?(view, ~s|form.restart-form input[name="provider"]|)
     assert has_element?(view, "#restart-agent-MT-HTTP")
     assert has_element?(view, ~s|form[phx-submit="set_issue_run_spec"] option[value="antigravity"][selected]|)
+
+    view
+    |> form(~s|form[phx-change="preview_issue_run_spec"]|, %{agent_kind: ""})
+    |> render_change()
+
+    refute has_element?(view, "#restart-provider-MT-HTTP")
+    assert render(view) =~ ">Provider<"
+  end
+
+  test "session provider chip stays visible when the session kind is not claude" do
+    start_dashboard()
+    {:ok, view, _html} = live(build_conn(), "/")
+
+    payload = view_assigns(view).payload
+    [entry | rest] = payload.running
+    entry = entry |> Map.put(:provider, "cz2") |> Map.put(:agent_kind, "codex")
+
+    send(
+      view.pid,
+      {:payload_loaded, view_assigns(view).payload_seq,
+       %{payload | running: [entry | rest], projects: patch_running(payload.projects, entry)}}
+    )
+
+    html = render(view)
+    assert html =~ ~s(class="chip chip--accent advanced-only")
+    assert html =~ "cz2"
+    assert html =~ ~s(class="chip chip--agent advanced-only")
+    assert html =~ "codex"
+    assert has_element?(view, ~s|form[phx-submit="set_project_providers"] #providers-default|)
   end
 
   test "preview_add_project shows provider only for claude" do
@@ -609,6 +684,20 @@ defmodule CymphonyElixir.DashboardLiveTest do
     |> render_change()
 
     assert view_assigns(view).add_project_kind == "codex"
+    refute has_element?(view, "#add-project-provider")
+
+    view
+    |> form("#add-project-form", %{agent: "antigravity"})
+    |> render_change()
+
+    assert view_assigns(view).add_project_kind == "antigravity"
+    refute has_element?(view, "#add-project-provider")
+
+    view
+    |> form("#add-project-form", %{agent: ""})
+    |> render_change()
+
+    assert view_assigns(view).add_project_kind == ""
     refute has_element?(view, "#add-project-provider")
   end
 

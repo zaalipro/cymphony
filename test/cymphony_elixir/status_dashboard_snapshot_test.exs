@@ -194,6 +194,48 @@ defmodule CymphonyElixir.StatusDashboardSnapshotTest do
     Snapshot.assert_dashboard_snapshot!("credits_unlimited", render_snapshot(snapshot_data, 42.0))
   end
 
+  test "snapshot fixtures ignore leftover HTTP bound port and registered projects" do
+    previous_port_override = Application.get_env(:cymphony_elixir, :server_port_override)
+    Application.delete_env(:cymphony_elixir, :server_port_override)
+
+    on_exit(fn ->
+      if is_nil(previous_port_override) do
+        Application.delete_env(:cymphony_elixir, :server_port_override)
+      else
+        Application.put_env(:cymphony_elixir, :server_port_override, previous_port_override)
+      end
+    end)
+
+    case HttpServer.start_link(port: 0) do
+      {:ok, pid} ->
+        on_exit(fn ->
+          if Process.alive?(pid), do: Process.exit(pid, :shutdown)
+        end)
+
+      {:error, {:already_started, _pid}} ->
+        :ok
+
+      {:error, _reason} ->
+        :ok
+    end
+
+    snapshot_data =
+      {:ok,
+       %{
+         running: [],
+         retrying: [],
+         token_totals: %{input_tokens: 0, output_tokens: 0, total_tokens: 0, seconds_running: 0},
+         rate_limits: nil
+       }}
+
+    rendered = render_snapshot(snapshot_data, 0.0)
+    refute rendered =~ "Dashboard:"
+    refute rendered =~ "Projects:"
+    assert rendered =~ "https://linear.app/project/project/issues"
+
+    Snapshot.assert_dashboard_snapshot!("idle", rendered)
+  end
+
   defp render_snapshot(snapshot_data, tps) do
     StatusDashboard.format_snapshot_content_for_test(snapshot_data, tps, @terminal_columns)
   end
