@@ -760,7 +760,7 @@ defmodule CymphonyElixirWeb.DashboardLive do
               phx-submit="add_project"
               class="settings-stack"
             >
-              <label class="settings-field-row" for="add-project-slug-input">
+              <label class="settings-field-row" for="add-project-slug-trigger">
                 <span class="inline-label">Linear project</span>
                 <.model_combobox
                   id="add-project-slug"
@@ -770,6 +770,7 @@ defmodule CymphonyElixirWeb.DashboardLive do
                   options={Enum.map(@linear_projects, &linear_project_option/1)}
                   placeholder="slug or ailogic-ced4159f70c4"
                   class="settings-field"
+                  allow_custom={true}
                 />
               </label>
               <div class="settings-field-grid">
@@ -784,7 +785,7 @@ defmodule CymphonyElixirWeb.DashboardLive do
               </div>
               <div class="advanced-only add-project-advanced">
                 <div class="settings-field-row">
-                  <label class="inline-label" for="add-project-agent-input">agent</label>
+                  <label class="inline-label" for="add-project-agent-trigger">agent</label>
                   <.model_combobox
                     id="add-project-agent"
                     name="agent"
@@ -796,7 +797,7 @@ defmodule CymphonyElixirWeb.DashboardLive do
                   />
                 </div>
                 <div class="model-switcher settings-field-row">
-                  <label class="inline-label" for="add-project-model-input">model</label>
+                  <label class="inline-label" for="add-project-model-trigger">model</label>
                   <.model_combobox
                     id="add-project-model"
                     name="model"
@@ -804,10 +805,11 @@ defmodule CymphonyElixirWeb.DashboardLive do
                     list_id="model-suggestions-add-project"
                     options={model_suggestions(@add_project_kind)}
                     class="settings-field"
+                    allow_custom={true}
                   />
                 </div>
                 <div class="settings-field-row">
-                  <label class="inline-label" for="add-project-effort-input">effort</label>
+                  <label class="inline-label" for="add-project-effort-trigger">effort</label>
                   <.model_combobox
                     id="add-project-effort"
                     name="effort"
@@ -986,7 +988,7 @@ defmodule CymphonyElixirWeb.DashboardLive do
                 >
                   <input type="hidden" name="project" value={project.name} />
                   <div class="agent-switcher">
-                    <label class="inline-label" for={"agent-#{project.name}-input"}>agent</label>
+                    <label class="inline-label" for={"agent-#{project.name}-trigger"}>agent</label>
                     <.model_combobox
                       id={"agent-#{project.name}"}
                       name="agent_kind"
@@ -998,7 +1000,7 @@ defmodule CymphonyElixirWeb.DashboardLive do
                   </div>
 
                   <div class="model-switcher">
-                    <label class="inline-label" for={"model-#{project.name}-input"}>model</label>
+                    <label class="inline-label" for={"model-#{project.name}-trigger"}>model</label>
                     <.model_combobox
                       id={"model-#{project.name}"}
                       name="model"
@@ -1007,11 +1009,12 @@ defmodule CymphonyElixirWeb.DashboardLive do
                       options={model_suggestions(agent_settings.kind)}
                       placeholder="default"
                       title="Model override passed to the agent CLI (cli alias: model)"
+                      allow_custom={true}
                     />
                   </div>
 
                   <div class="effort-switcher">
-                    <label class="inline-label" for={"effort-#{project.name}-input"}>effort</label>
+                    <label class="inline-label" for={"effort-#{project.name}-trigger"}>effort</label>
                     <.model_combobox
                       id={"effort-#{project.name}"}
                       name="effort"
@@ -1130,7 +1133,7 @@ defmodule CymphonyElixirWeb.DashboardLive do
                             <input type="hidden" name="project" value={project.name} />
                             <input type="hidden" name="issue" value={identifier} />
                             <div class="menu-field">
-                              <label class="menu-field-label" for={"queue-agent-#{identifier}-input"}>Harness</label>
+                              <label class="menu-field-label" for={"queue-agent-#{identifier}-trigger"}>Harness</label>
                               <.model_combobox
                                 id={"queue-agent-#{identifier}"}
                                 name="agent_kind"
@@ -1141,7 +1144,7 @@ defmodule CymphonyElixirWeb.DashboardLive do
                               />
                             </div>
                             <div class="menu-field">
-                              <label class="menu-field-label" for={"queue-model-#{identifier}-input"}>Model</label>
+                              <label class="menu-field-label" for={"queue-model-#{identifier}-trigger"}>Model</label>
                               <.model_combobox
                                 id={"queue-model-#{identifier}"}
                                 name="model"
@@ -1149,10 +1152,11 @@ defmodule CymphonyElixirWeb.DashboardLive do
                                 list_id={"model-suggestions-queue-#{identifier}"}
                                 options={model_suggestions(queue_spec.suggestion_kind)}
                                 placeholder="default"
+                                allow_custom={true}
                               />
                             </div>
                             <div class="menu-field">
-                              <label class="menu-field-label" for={"queue-effort-#{identifier}-input"}>Effort</label>
+                              <label class="menu-field-label" for={"queue-effort-#{identifier}-trigger"}>Effort</label>
                               <.model_combobox
                                 id={"queue-effort-#{identifier}"}
                                 name="effort"
@@ -1318,7 +1322,7 @@ defmodule CymphonyElixirWeb.DashboardLive do
                             >
                               <input type="hidden" name="issue" value={entry.issue_identifier} />
                               <div class="agent-switcher">
-                                <label class="inline-label" for={"restart-agent-#{entry.issue_identifier}-input"}>
+                                <label class="inline-label" for={"restart-agent-#{entry.issue_identifier}-trigger"}>
                                   Harness
                                 </label>
                                 <.model_combobox
@@ -1348,7 +1352,7 @@ defmodule CymphonyElixirWeb.DashboardLive do
                                 </div>
                               <% end %>
                               <div class="model-switcher">
-                                <label class="inline-label" for={"restart-model-#{entry.issue_identifier}-input"}>
+                                <label class="inline-label" for={"restart-model-#{entry.issue_identifier}-trigger"}>
                                   Model
                                 </label>
                                 <.model_combobox
@@ -1359,10 +1363,11 @@ defmodule CymphonyElixirWeb.DashboardLive do
                                   options={model_suggestions(session_spec.suggestion_kind)}
                                   placeholder="model"
                                   title="Model passed to the agent CLI (empty = keep resolved)"
+                                  allow_custom={true}
                                 />
                               </div>
                               <div class="effort-switcher">
-                                <label class="inline-label" for={"restart-effort-#{entry.issue_identifier}-input"}>
+                                <label class="inline-label" for={"restart-effort-#{entry.issue_identifier}-trigger"}>
                                   Effort
                                 </label>
                                 <.model_combobox
@@ -1639,34 +1644,74 @@ defmodule CymphonyElixirWeb.DashboardLive do
       |> assign_new(:title, fn -> nil end)
       |> assign_new(:class, fn -> nil end)
       |> assign_new(:options, fn -> [] end)
+      |> assign_new(:allow_custom, fn -> false end)
+
+    trigger = combobox_trigger_label(assigns.value, assigns.options, assigns.placeholder)
+
+    assigns = assign(assigns, :trigger_label, trigger)
 
     ~H"""
-    <div id={"combobox-#{@id}"} class="combobox combobox--menu" phx-hook="Combobox">
-      <input
-        id={"#{@id}-input"}
-        type="text"
-        class={["combobox-input", @class]}
-        role="combobox"
-        aria-autocomplete="list"
+    <div
+      id={"combobox-#{@id}"}
+      class="combobox combobox--menu"
+      phx-hook="Combobox"
+      data-allow-custom={to_string(@allow_custom)}
+      data-placeholder={@placeholder}
+    >
+      <button
+        type="button"
+        id={"#{@id}-trigger"}
+        class={["combobox-trigger", @class, @value in [nil, ""] && "combobox-trigger--empty"]}
+        aria-haspopup="listbox"
         aria-expanded="false"
         aria-controls={@list_id}
-        aria-activedescendant=""
-        autocomplete="off"
-        value={@value}
-        placeholder={@placeholder}
         title={@title}
-      />
+      >
+        <span class="combobox-trigger-label"><%= @trigger_label %></span>
+      </button>
       <input type="hidden" name={@name} id={@id} value={@value} />
-      <ul id={@list_id} class="combobox-list" role="listbox" hidden>
-        <%= for option <- @options do %>
-          <% value = combobox_option_value(option) %>
-          <li id={combobox_option_dom_id(@list_id, value)} role="option" data-value={value}>
-            <%= combobox_option_label(option) %>
-          </li>
-        <% end %>
-      </ul>
+      <div class="combobox-panel" hidden>
+        <input
+          id={"#{@id}-input"}
+          type="text"
+          class="combobox-search"
+          role="combobox"
+          aria-autocomplete="list"
+          aria-expanded="false"
+          aria-controls={@list_id}
+          aria-activedescendant=""
+          autocomplete="off"
+          placeholder="Filter"
+        />
+        <ul id={@list_id} class="combobox-list" role="listbox">
+          <%= for option <- @options do %>
+            <% value = combobox_option_value(option) %>
+            <li
+              id={combobox_option_dom_id(@list_id, value)}
+              role="option"
+              data-value={value}
+              data-label={combobox_option_label(option)}
+            >
+              <%= combobox_option_label(option) %>
+            </li>
+          <% end %>
+        </ul>
+      </div>
     </div>
     """
+  end
+
+  defp combobox_trigger_label(value, options, placeholder) do
+    cond do
+      value in [nil, ""] ->
+        placeholder
+
+      true ->
+        case Enum.find(options, &(combobox_option_value(&1) == value)) do
+          nil -> value
+          option -> combobox_option_label(option)
+        end
+    end
   end
 
   defp combobox_option_value(%{value: value}) when is_binary(value), do: value
