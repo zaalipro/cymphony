@@ -239,10 +239,13 @@ defmodule CymphonyElixir.DashboardLiveTest do
     [entry | rest] = payload.running
     entry = Map.put(entry, :tokens_per_second, 12.34)
 
-    send(
-      view.pid,
-      {:payload_loaded, view_assigns(view).payload_seq, %{payload | running: [entry | rest], projects: patch_running(payload.projects, entry)}}
-    )
+    patched = %{
+      payload
+      | running: [entry | rest],
+        projects: patch_running(payload.projects, entry)
+    }
+
+    send(view.pid, {:payload_loaded, view_assigns(view).payload_seq, patched})
 
     html = render(view)
     assert html =~ "12.3 t/s"
@@ -639,11 +642,13 @@ defmodule CymphonyElixir.DashboardLiveTest do
     [entry | rest] = payload.running
     entry = entry |> Map.put(:provider, "cz2") |> Map.put(:agent_kind, "codex")
 
-    send(
-      view.pid,
-      {:payload_loaded, view_assigns(view).payload_seq,
-       %{payload | running: [entry | rest], projects: patch_running(payload.projects, entry)}}
-    )
+    patched = %{
+      payload
+      | running: [entry | rest],
+        projects: patch_running(payload.projects, entry)
+    }
+
+    send(view.pid, {:payload_loaded, view_assigns(view).payload_seq, patched})
 
     html = render(view)
     assert html =~ ~s(class="chip chip--accent advanced-only")

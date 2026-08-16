@@ -620,34 +620,29 @@ defmodule CymphonyElixirWeb.DashboardLive do
 
       <aside class="settings-drawer" aria-label="Dashboard settings">
         <div class="settings-drawer-header">
-          <h2 class="section-title">Settings</h2>
+          <h2 class="settings-drawer-title">Settings</h2>
           <button type="button" class="subtle-button" data-drawer-toggle aria-label="Close settings">Close</button>
         </div>
 
         <section class="settings-group settings-group--mode" data-prefs>
           <h3 class="settings-group-title">Experience</h3>
-          <p class="settings-help">Choose how much operational detail you want to see. This only changes this browser.</p>
-          <div class="mode-option-list" role="group" aria-label="Choose dashboard mode">
-            <button type="button" class="mode-option" data-mode-set="simple" aria-pressed="true">
-              <span class="mode-option-title">Simple</span>
-              <span class="mode-option-copy">Clear status and safe controls for everyday use.</span>
-            </button>
-            <button type="button" class="mode-option" data-mode-set="advanced" aria-pressed="false">
-              <span class="mode-option-title">Advanced</span>
-              <span class="mode-option-copy">Models, providers, usage, logs, and restart overrides.</span>
-            </button>
+          <div class="mode-switch settings-mode-switch" role="group" aria-label="Choose dashboard mode">
+            <button type="button" class="mode-switch-button" data-mode-set="simple" aria-pressed="true">Simple</button>
+            <button type="button" class="mode-switch-button" data-mode-set="advanced" aria-pressed="false">Advanced</button>
           </div>
         </section>
 
         <section class="settings-group settings-group--linear">
-          <h3 class="settings-group-title">Linear</h3>
-          <span class={"linear-status " <> if(@linear_status.connected, do: "linear-status--connected", else: "linear-status--disconnected")}>
-            <%= if @linear_status.connected, do: "Connected", else: "Disconnected" %>
-          </span>
-          <%= if @linear_status.connected && @linear_status.masked_key do %>
-            <span class="linear-key-mask"><%= @linear_status.masked_key %></span>
-          <% end %>
-          <form id="linear-connect-form" phx-submit="connect_linear" class="inline-form">
+          <h3 class="settings-group-title">
+            Linear
+            <span class={"linear-status " <> if(@linear_status.connected, do: "linear-status--connected", else: "linear-status--disconnected")}>
+              <%= if @linear_status.connected, do: "Connected", else: "Disconnected" %>
+            </span>
+            <%= if @linear_status.connected && @linear_status.masked_key do %>
+              <span class="linear-key-mask"><%= @linear_status.masked_key %></span>
+            <% end %>
+          </h3>
+          <form id="linear-connect-form" phx-submit="connect_linear" class="settings-inline">
             <input
               type="password"
               name="api_key"
@@ -671,31 +666,41 @@ defmodule CymphonyElixirWeb.DashboardLive do
               id="add-project-form"
               phx-change="preview_add_project"
               phx-submit="add_project"
-              class="inline-form"
+              class="settings-stack"
             >
-              <label class="inline-label" for="add-project-slug-input">Linear project</label>
-              <.model_combobox
-                id="add-project-slug"
-                name="linear_project_slug"
-                value=""
-                list_id="linear-project-slugs"
-                options={Enum.map(@linear_projects, &linear_project_option/1)}
-                placeholder="slug or ailogic-ced4159f70c4"
-                class="settings-field"
-              />
-              <label class="inline-label" for="add-project-name">name</label>
-              <input id="add-project-name" type="text" name="name" class="settings-field" />
-              <label class="inline-label" for="add-project-github">github</label>
-              <input id="add-project-github" type="text" name="github_repo_url" class="settings-field" />
+              <label class="settings-field-row" for="add-project-slug-input">
+                <span class="inline-label">Linear project</span>
+                <.model_combobox
+                  id="add-project-slug"
+                  name="linear_project_slug"
+                  value=""
+                  list_id="linear-project-slugs"
+                  options={Enum.map(@linear_projects, &linear_project_option/1)}
+                  placeholder="slug or ailogic-ced4159f70c4"
+                  class="settings-field"
+                />
+              </label>
+              <div class="settings-field-grid">
+                <label class="settings-field-row" for="add-project-name">
+                  <span class="inline-label">name</span>
+                  <input id="add-project-name" type="text" name="name" class="settings-field" />
+                </label>
+                <label class="settings-field-row" for="add-project-github">
+                  <span class="inline-label">github</span>
+                  <input id="add-project-github" type="text" name="github_repo_url" class="settings-field" />
+                </label>
+              </div>
               <div class="advanced-only add-project-advanced">
-                <label class="inline-label" for="add-project-agent">agent</label>
-                <select id="add-project-agent" name="agent" class="settings-field">
-                  <option value="" selected={@add_project_kind == ""}>default</option>
-                  <%= for k <- Agent.known_kinds() do %>
-                    <option value={k} selected={@add_project_kind == k}><%= k %></option>
-                  <% end %>
-                </select>
-                <div class="model-switcher">
+                <label class="settings-field-row" for="add-project-agent">
+                  <span class="inline-label">agent</span>
+                  <select id="add-project-agent" name="agent" class="settings-field">
+                    <option value="" selected={@add_project_kind == ""}>default</option>
+                    <%= for k <- Agent.known_kinds() do %>
+                      <option value={k} selected={@add_project_kind == k}><%= k %></option>
+                    <% end %>
+                  </select>
+                </label>
+                <div class="model-switcher settings-field-row">
                   <label class="inline-label" for="add-project-model-input">model</label>
                   <.model_combobox
                     id="add-project-model"
@@ -706,19 +711,23 @@ defmodule CymphonyElixirWeb.DashboardLive do
                     class="settings-field"
                   />
                 </div>
-                <label class="inline-label" for="add-project-effort">effort</label>
-                <select id="add-project-effort" name="effort" class="settings-field">
-                  <option value="" selected={@add_project_effort in [nil, ""]}>default</option>
-                  <%= for level <- effort_levels(@add_project_kind) do %>
-                    <option value={level} selected={@add_project_effort == level}><%= level %></option>
-                  <% end %>
-                </select>
+                <label class="settings-field-row" for="add-project-effort">
+                  <span class="inline-label">effort</span>
+                  <select id="add-project-effort" name="effort" class="settings-field">
+                    <option value="" selected={@add_project_effort in [nil, ""]}>default</option>
+                    <%= for level <- effort_levels(@add_project_kind) do %>
+                      <option value={level} selected={@add_project_effort == level}><%= level %></option>
+                    <% end %>
+                  </select>
+                </label>
                 <%= if @add_project_kind == "claude" do %>
-                  <label class="inline-label" for="add-project-provider">provider</label>
-                  <input id="add-project-provider" type="text" name="provider" value={@add_project_provider} class="settings-field" />
+                  <label class="settings-field-row" for="add-project-provider">
+                    <span class="inline-label">provider</span>
+                    <input id="add-project-provider" type="text" name="provider" value={@add_project_provider} class="settings-field" />
+                  </label>
                 <% end %>
               </div>
-              <button type="submit" class="subtle-button">Add project</button>
+              <button type="submit" class="subtle-button settings-submit">Add project</button>
             </form>
             <%= if @add_project_error do %>
               <p class="settings-error"><%= @add_project_error %></p>
@@ -731,30 +740,26 @@ defmodule CymphonyElixirWeb.DashboardLive do
         <section class="settings-group">
           <h3 class="settings-group-title simple-only">Automation</h3>
           <h3 class="settings-group-title advanced-only">Orchestrator</h3>
-          <p class="settings-help simple-only">Pause automatic pickup or change how many tasks may run together.</p>
 
           <%= if @payload[:polling] do %>
             <%= if autonomy_state(@payload) == :paused do %>
-              <button type="button" class="subtle-button subtle-button--accent" phx-click="resume_dispatch">Resume all projects</button>
+              <button type="button" class="subtle-button subtle-button--accent settings-submit" phx-click="resume_dispatch">Resume all</button>
             <% else %>
-              <button type="button" class="subtle-button" phx-click="pause_dispatch">Pause all projects</button>
+              <button type="button" class="subtle-button settings-submit" phx-click="pause_dispatch">Pause all</button>
             <% end %>
           <% end %>
 
-          <form phx-submit="set_concurrency" class="settings-form">
+          <form phx-submit="set_concurrency" class="settings-inline settings-form">
             <label class="inline-label" for="drawer-global-concurrency">
-              <span class="simple-only">tasks at once</span>
-              <span class="advanced-only">global concurrency</span>
+              <span class="simple-only">tasks</span>
+              <span class="advanced-only">concurrency</span>
             </label>
             <input id="drawer-global-concurrency" type="number" name="value" min="1" class="settings-field" />
             <button type="submit" class="subtle-button">Set</button>
           </form>
 
-          <form phx-submit="set_refresh_interval" class="settings-form">
-            <label class="inline-label" for="drawer-refresh-interval">
-              <span class="simple-only">status refresh (s)</span>
-              <span class="advanced-only">dashboard refresh (s)</span>
-            </label>
+          <form phx-submit="set_refresh_interval" class="settings-inline settings-form">
+            <label class="inline-label" for="drawer-refresh-interval">refresh (s)</label>
             <input
               id="drawer-refresh-interval"
               type="number"
@@ -1405,8 +1410,8 @@ defmodule CymphonyElixirWeb.DashboardLive do
     do: Map.put(drafts, project_name, confirmed)
 
   # Suggestions only — values are pass-through free text. Codex entries come
-  # from the live `codex debug models` catalog (cached); claude from its
-  # stable alias vocabulary.
+  # from the live `codex debug models` catalog (cached, PATH + ~/.local/bin);
+  # claude from its stable alias vocabulary.
   defp model_suggestions(kind) do
     CymphonyElixir.AgentCatalog.models(kind)
   catch
@@ -1444,7 +1449,7 @@ defmodule CymphonyElixirWeb.DashboardLive do
         placeholder={@placeholder}
         title={@title}
       />
-      <input type="hidden" name={@name} id={@id} value={@value} class={@class} />
+      <input type="hidden" name={@name} id={@id} value={@value} />
       <ul id={@list_id} class="combobox-list" role="listbox" hidden>
         <%= for option <- @options do %>
           <% value = combobox_option_value(option) %>

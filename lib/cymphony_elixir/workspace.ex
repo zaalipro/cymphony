@@ -34,6 +34,9 @@ defmodule CymphonyElixir.Workspace do
 
   defp ensure_workspace(workspace, nil) do
     cond do
+      File.dir?(workspace) and workspace_needs_bootstrap?(workspace) ->
+        {:ok, workspace, true}
+
       File.dir?(workspace) ->
         {:ok, workspace, false}
 
@@ -84,6 +87,22 @@ defmodule CymphonyElixir.Workspace do
     File.mkdir_p!(workspace)
     {:ok, workspace, true}
   end
+
+  # A previous failed after_create (e.g. git clone) leaves an empty directory.
+  # Later ticks must not treat that as "already bootstrapped" or the agent
+  # runs in a folder with no repo and can never open a PR.
+  defp workspace_needs_bootstrap?(workspace) do
+    case File.ls(workspace) do
+      {:ok, entries} ->
+        Enum.all?(entries, &bootstrap_placeholder?/1)
+
+      _ ->
+        true
+    end
+  end
+
+  defp bootstrap_placeholder?(name) when name in [".cymphony", ".DS_Store"], do: true
+  defp bootstrap_placeholder?(_name), do: false
 
   @spec remove(Path.t()) :: {:ok, [String.t()]} | {:error, term(), String.t()}
   def remove(workspace), do: remove(workspace, nil)

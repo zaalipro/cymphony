@@ -613,10 +613,23 @@ defmodule CymphonyElixir.Cymphony.Config do
   defp maybe_put_hooks(base, config) do
     case Map.get(config, "github_repo_url", "") do
       repo when is_binary(repo) and repo != "" ->
-        Map.put(base, "hooks", %{"after_create" => "git clone --depth 1 #{repo} .\n"})
+        clone_url = github_clone_url(repo)
+        Map.put(base, "hooks", %{"after_create" => "git clone --depth 1 #{clone_url} .\n"})
 
       _ ->
         base
+    end
+  end
+
+  # Prefer HTTPS so clone uses `gh auth` / git credentials. A host SSH key
+  # is often a deploy key for a different repo; GitHub then reports
+  # "Repository not found" and the workspace stays empty.
+  defp github_clone_url(repo) do
+    trimmed = String.trim(repo)
+
+    case Regex.run(Regex.compile!("^git@github\\.com:([^/]+)/(.+?)(?:\\.git)?$"), trimmed) do
+      [_, owner, name] -> "https://github.com/#{owner}/#{name}.git"
+      _ -> trimmed
     end
   end
 end

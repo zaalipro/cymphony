@@ -786,6 +786,17 @@ html[data-ui-mode="advanced"] .mode-switch-button[data-mode-set="advanced"] {
 
 .project-section > * { position: relative; z-index: 1; }
 
+/* Header must stack above the session/retry list or the model list is clipped. */
+.project-section > .project-section-header {
+  z-index: 8;
+  overflow: visible;
+}
+
+.project-section.is-combobox-open {
+  z-index: 30;
+  transform: none;
+}
+
 .project-section:hover {
   transform: translateY(-1px);
   box-shadow: var(--glow-bold);
@@ -846,6 +857,7 @@ html[data-ui-mode="advanced"] .mode-switch-button[data-mode-set="advanced"] {
   gap: 8px;
   flex-wrap: wrap;
   margin-left: auto;
+  overflow: visible;
   min-width: 0;
 }
 
@@ -955,6 +967,10 @@ select.inline-input--narrow {
   border-top-color: transparent;
   margin: 4px 0;
   z-index: 1;
+}
+
+.session-row.is-combobox-open {
+  z-index: 12;
 }
 
 .session-row--expanded + .session-row { border-top-color: transparent; }
@@ -1463,12 +1479,12 @@ select.inline-input--narrow {
   top: 0;
   right: 0;
   height: 100dvh;
-  width: min(380px, 100vw);
+  width: min(320px, 100vw);
   transform: translateX(100%);
   transition: transform 160ms ease;
   z-index: 40;
   overflow-y: auto;
-  padding: 20px;
+  padding: 14px 16px 28px;
   background: var(--surface);
   border-left: 1px solid var(--line-strong);
   box-shadow: -12px 0 32px rgba(0, 0, 0, 0.25);
@@ -1482,18 +1498,38 @@ html[data-drawer="open"] .settings-drawer {
   display: flex;
   align-items: center;
   justify-content: space-between;
-  margin-bottom: 8px;
+  gap: 8px;
+  margin-bottom: 4px;
+}
+
+.settings-drawer-title {
+  margin: 0;
+  font-size: 15px;
+  font-weight: 650;
+  letter-spacing: -0.02em;
 }
 
 .settings-group {
-  margin-top: 20px;
+  margin-top: 14px;
+  padding-top: 12px;
+  border-top: 1px solid var(--line);
   display: flex;
   flex-direction: column;
-  gap: 10px;
+  gap: 6px;
+}
+
+.settings-group--mode {
+  margin-top: 10px;
+  padding-top: 0;
+  border-top: 0;
 }
 
 .settings-group-title {
-  font-size: 11px;
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 6px 8px;
+  font-size: 10px;
   text-transform: uppercase;
   letter-spacing: 0.08em;
   opacity: 0.65;
@@ -1504,23 +1540,22 @@ html[data-drawer="open"] .settings-drawer {
   max-width: 42ch;
   margin: 0;
   color: var(--ink-mute);
-  font-size: var(--text-body-sm);
-  line-height: 1.5;
-  text-wrap: pretty;
+  font-size: var(--text-caption);
+  line-height: 1.4;
 }
 
 .settings-group--linear,
 .settings-group--projects {
-  gap: 8px;
+  gap: 6px;
 }
 
 .linear-status {
   display: inline-flex;
   align-items: center;
   width: fit-content;
-  padding: 2px 8px;
+  padding: 1px 6px;
   border-radius: var(--radius-pill);
-  font-size: var(--text-caption);
+  font-size: 10px;
   font-weight: 600;
   letter-spacing: 0.04em;
   text-transform: uppercase;
@@ -1539,23 +1574,38 @@ html[data-drawer="open"] .settings-drawer {
 .linear-key-mask {
   font-family: var(--font-mono);
   color: var(--ink-mute);
-  font-size: var(--text-body-sm);
+  font-size: var(--text-caption);
+  font-weight: 500;
+  letter-spacing: 0;
+  text-transform: none;
+  opacity: 1;
 }
 
 .settings-error {
   margin: 0;
   color: var(--danger);
-  font-size: var(--text-body-sm);
+  font-size: var(--text-caption);
 }
 
+.settings-drawer input[type="hidden"],
+.combobox input[type="hidden"] {
+  display: none !important;
+  width: 0 !important;
+  height: 0 !important;
+  padding: 0 !important;
+  margin: 0 !important;
+  border: 0 !important;
+  position: absolute !important;
+}
+
+.settings-drawer .settings-inline,
 .settings-drawer #linear-connect-form,
-.settings-drawer #add-project-form,
 .settings-drawer .settings-form {
   display: flex;
-  flex-direction: column;
+  flex-direction: row;
   flex-wrap: nowrap;
-  align-items: stretch;
-  gap: 8px;
+  align-items: center;
+  gap: 6px;
   padding: 0;
   background: transparent;
   border: none;
@@ -1563,6 +1613,21 @@ html[data-drawer="open"] .settings-drawer {
   box-shadow: none;
 }
 
+.settings-drawer .settings-stack,
+.settings-drawer #add-project-form {
+  display: flex;
+  flex-direction: column;
+  align-items: stretch;
+  gap: 6px;
+  padding: 0;
+  background: transparent;
+  border: none;
+  border-radius: 0;
+  box-shadow: none;
+}
+
+.settings-drawer .settings-inline:focus-within,
+.settings-drawer .settings-stack:focus-within,
 .settings-drawer #linear-connect-form:focus-within,
 .settings-drawer #add-project-form:focus-within,
 .settings-drawer .settings-form:focus-within {
@@ -1570,55 +1635,55 @@ html[data-drawer="open"] .settings-drawer {
   box-shadow: none;
 }
 
-.mode-option-list {
-  display: grid;
-  gap: 8px;
-}
-
-.mode-option {
-  width: 100%;
-  display: grid;
+.settings-field-row {
+  display: flex;
+  flex-direction: column;
   gap: 3px;
-  padding: 11px 12px;
-  text-align: left;
-  border-radius: 10px;
-  border-color: var(--line);
-  background: var(--surface-soft);
-  box-shadow: none;
+  min-width: 0;
 }
 
-.mode-option:hover {
-  border-color: var(--line-strong);
-  background: var(--surface-deep);
-  transform: translateY(-1px);
+.settings-field-grid,
+.settings-drawer .add-project-advanced {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 6px 8px;
 }
 
-html[data-ui-mode="simple"] .mode-option[data-mode-set="simple"],
-html[data-ui-mode="advanced"] .mode-option[data-mode-set="advanced"] {
-  border-color: var(--accent);
-  background: var(--accent-soft);
-  box-shadow: inset 3px 0 0 var(--accent);
+.settings-drawer .settings-mode-switch {
+  width: 100%;
 }
 
-.mode-option-title {
-  color: var(--ink);
-  font-size: var(--text-body);
-  font-weight: 600;
+.settings-drawer .settings-mode-switch .mode-switch-button {
+  flex: 1 1 0;
 }
 
-.mode-option-copy {
-  color: var(--ink-mute);
-  font-size: var(--text-caption);
-  font-weight: 400;
-  line-height: 1.45;
+.settings-drawer .settings-submit {
+  align-self: stretch;
+  width: 100%;
+  padding-top: 5px;
+  padding-bottom: 5px;
 }
+
+.settings-drawer .settings-inline .subtle-button,
+.settings-drawer #linear-connect-form .subtle-button {
+  flex: 0 0 auto;
+  width: auto;
+}
+
+.settings-drawer .settings-inline .settings-field,
+.settings-drawer #linear-connect-form .settings-field {
+  flex: 1 1 auto;
+  width: auto;
+}
+
+.mode-option-list { display: none; }
 
 .settings-row {
   display: flex;
   flex-wrap: wrap;
-  gap: 8px 12px;
+  gap: 4px 10px;
   align-items: center;
-  font-size: 13px;
+  font-size: 12px;
 }
 
 .settings-row label {
@@ -1863,16 +1928,14 @@ form.project-agent-form.inline-form--agent {
 /* ============================================================
    SETTINGS FIELD CHROME (drawer only; not header/session pills)
    ============================================================ */
-.settings-field,
-.settings-drawer input.settings-field,
+.settings-field:not([type="hidden"]),
+.settings-drawer input.settings-field:not([type="hidden"]),
 .settings-drawer select.settings-field,
 .settings-drawer #linear-api-key,
-.settings-drawer #add-project-slug:not([type="hidden"]),
 .settings-drawer #add-project-slug-input,
 .settings-drawer #add-project-name,
 .settings-drawer #add-project-github,
 .settings-drawer #add-project-agent,
-.settings-drawer #add-project-model:not([type="hidden"]),
 .settings-drawer #add-project-model-input,
 .settings-drawer #add-project-effort,
 .settings-drawer #add-project-provider,
@@ -1882,24 +1945,31 @@ form.project-agent-form.inline-form--agent {
   display: block;
   width: 100%;
   min-width: 0;
+  height: 30px;
   background: var(--surface-deep);
   border: 1px solid var(--line-strong);
-  padding: 8px 10px;
-  border-radius: 8px;
+  padding: 4px 8px;
+  border-radius: 7px;
   color: var(--ink);
   caret-color: var(--ink);
   font: inherit;
-  font-size: var(--text-body-sm);
+  font-size: var(--text-caption);
   font-family: var(--font-mono);
   outline: none;
   flex: 1 1 auto;
+  box-sizing: border-box;
 }
 
 .settings-drawer select.settings-field,
 .settings-drawer #add-project-agent,
 .settings-drawer #add-project-effort {
-  appearance: auto;
+  -webkit-appearance: menulist;
+  appearance: menulist;
+  display: inline-block;
   cursor: pointer;
+  height: 30px !important;
+  max-height: 30px !important;
+  line-height: 20px;
 }
 
 .settings-field:focus,
@@ -1929,18 +1999,32 @@ form.project-agent-form.inline-form--agent {
   text-align: left;
   border: 1px solid var(--line-strong);
   background: var(--surface-deep);
-  padding: 8px 10px;
-  border-radius: 8px;
+  padding: 4px 8px;
+  border-radius: 7px;
 }
 
 .settings-drawer .inline-label {
   color: var(--ink-soft);
+  font-size: 10px;
+  line-height: 1.2;
 }
 
-.settings-drawer .add-project-advanced {
-  display: flex;
-  flex-direction: column;
-  gap: 8px;
+.settings-drawer .settings-inline .inline-label {
+  flex: 0 0 auto;
+  min-width: 5.5rem;
+}
+
+.settings-drawer .combobox {
+  min-width: 0;
+  width: 100%;
+  flex: 1 1 auto;
+}
+
+.settings-drawer .combobox-input,
+.settings-drawer .combobox-input.settings-field {
+  height: 30px;
+  padding: 4px 8px;
+  border-radius: 7px;
 }
 
 .project-section-controls .settings-field,
@@ -1968,6 +2052,11 @@ form.project-agent-form.inline-form--agent {
   min-width: 160px;
   width: 100%;
   flex: 1 1 160px;
+  overflow: visible;
+}
+
+.combobox.combobox--open {
+  z-index: 40;
 }
 
 .combobox-input {
@@ -1981,6 +2070,15 @@ form.project-agent-form.inline-form--agent {
 .model-switcher .combobox {
   flex: 1 1 160px;
   min-width: 160px;
+}
+
+.settings-drawer .combobox,
+.settings-drawer .model-switcher .combobox,
+.settings-drawer .settings-field-row .combobox {
+  flex: 0 0 auto;
+  min-width: 0;
+  width: 100%;
+  height: auto;
 }
 
 .inline-form .combobox-input,
@@ -2017,8 +2115,8 @@ form.project-agent-form.inline-form--agent {
   top: calc(100% + 4px);
   left: 0;
   right: 0;
-  z-index: 20;
-  max-height: 240px;
+  z-index: 80;
+  max-height: min(480px, 60vh);
   overflow: auto;
   margin: 0;
   padding: 4px 0;
@@ -2050,7 +2148,7 @@ form.project-agent-form.inline-form--agent {
 }
 
 .session-row-detail .combobox-list {
-  z-index: 20;
+  z-index: 80;
 }
 
 @media (min-width: 960px) {
@@ -2085,6 +2183,6 @@ form.project-agent-form.inline-form--agent {
 
   .combobox-list {
     position: absolute;
-    z-index: 20;
+    z-index: 80;
   }
 }

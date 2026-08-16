@@ -1011,6 +1011,11 @@ defmodule CymphonyElixir.ExtensionsTest do
 
       assert dashboard_css =~
                ~s|html[data-ui-mode="simple"]:not([data-expanded-sections~="completions"]) .section--completions .session-row-list|
+
+      assert dashboard_css =~ ".project-section > .project-section-header"
+      assert dashboard_css =~ ".project-section.is-combobox-open"
+      assert dashboard_css =~ ".combobox.combobox--open"
+      assert dashboard_css =~ "z-index: 80"
     end
 
     test "pause_dispatch sends :pause to the orchestrator" do

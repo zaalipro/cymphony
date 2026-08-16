@@ -28,6 +28,10 @@ defmodule CymphonyElixir.AgentCatalogTest do
       Application.delete_env(:cymphony_elixir, :codex_catalog_fetcher)
       Application.delete_env(:cymphony_elixir, :codex_catalog_cmd)
       Application.delete_env(:cymphony_elixir, :codex_catalog_timeout_ms)
+      Application.delete_env(:cymphony_elixir, :codex_catalog_error_ttl_ms)
+      Application.delete_env(:cymphony_elixir, :codex_catalog_home)
+      Application.delete_env(:cymphony_elixir, :codex_catalog_which)
+      Application.delete_env(:cymphony_elixir, :codex_catalog_extra_dirs)
       AgentCatalog.clear_cache()
     end)
 
@@ -48,7 +52,7 @@ defmodule CymphonyElixir.AgentCatalogTest do
     assert [frontier, mini] = AgentCatalog.models("codex")
 
     assert frontier.value == "gpt-9-frontier"
-    assert frontier.label == "gpt-9-frontier"
+    assert frontier.label == "GPT-9 Frontier"
     assert frontier.description == "Latest frontier model."
     assert frontier.efforts == ["low", "medium", "high", "ultra"]
     assert frontier.default_effort == "low"
@@ -159,9 +163,16 @@ defmodule CymphonyElixir.AgentCatalogTest do
 
     assert [ok] = AgentCatalog.models("codex")
     assert ok.value == "ok"
+    assert ok.label == "ok"
     assert ok.efforts == ["high"]
     assert ok.default_effort == nil
     assert AgentCatalog.efforts("codex", "ok") == ["high"]
+  end
+
+  test "empty display_name falls back to the slug as the picker label" do
+    stub_fetcher({:ok, ~s({"models": [{"slug": "plain-slug", "display_name": "", "visibility": "list", "priority": 1}]})})
+
+    assert [%{value: "plain-slug", label: "plain-slug"}] = AgentCatalog.models("codex")
   end
 
   test "a visible model with no usable efforts falls through to the union of other models" do
@@ -213,6 +224,152 @@ defmodule CymphonyElixir.AgentCatalogTest do
 
     Application.put_env(:cymphony_elixir, :codex_catalog_cmd, fn _, _, _ ->
       {@catalog_json, 0}
+    end)
+
+    assert Enum.any?(AgentCatalog.models("codex"), &(&1.value == "gpt-5.2-codex"))
+  end
+
+  test "failed catalog fetches are retried after the error TTL" do
+    {:ok, counter} = Agent.start_link(fn -> 0 end)
+    Application.put_env(:cymphony_elixir, :codex_catalog_error_ttl_ms, 20)
+
+    Application.put_env(:cymphony_elixir, :codex_catalog_fetcher, fn ->
+      n = Agent.get_and_update(counter, &{&1, &1 + 1})
+
+      if n == 0 do
+        {:error, :boom}
+      else
+        {:ok, @catalog_json}
+      end
+    end)
+
+    assert Enum.any?(AgentCatalog.models("codex"), &(&1.value == "gpt-5.2-codex"))
+    assert Enum.any?(AgentCatalog.models("codex"), &(&1.value == "gpt-5.2-codex"))
+    assert Agent.get(counter, & &1) == 1
+
+    Process.sleep(30)
+
+    assert [%{value: "gpt-9-frontier"} | _] = AgentCatalog.models("codex")
+    assert Agent.get(counter, & &1) == 2
+  end
+
+  test "live catalog miss falls back to `codex debug models --bundled`" do
+    use_default_fetcher()
+
+    Application.put_env(:cymphony_elixir, :codex_catalog_cmd, fn
+      "codex", ["debug", "models"], _opts -> {"nope", 1}
+      "codex", ["debug", "models", "--bundled"], _opts -> {@catalog_json, 0}
+    end)
+
+    assert [%{value: "gpt-9-frontier", label: "GPT-9 Frontier"} | _] = AgentCatalog.models("codex")
+  end
+
+  test "default cmd resolves ~/.local/bin/codex when PATH lookup misses" do
+    tmp = Path.join(System.tmp_dir!(), "cymphony-catalog-#{System.unique_integer([:positive])}")
+    bin_dir = Path.join(tmp, ".local/bin")
+    File.mkdir_p!(bin_dir)
+    bin = Path.join(bin_dir, "codex")
+
+    File.write!(bin, """
+    #!/bin/sh
+    if [ "$2" = "--bundled" ]; then
+      printf '%s' '{"models":[]}'
+      exit 1
+    fi
+    cat <<'JSON'
+    #{String.trim(@catalog_json)}
+    JSON
+    """)
+
+    File.chmod!(bin, 0o755)
+    Application.put_env(:cymphony_elixir, :codex_catalog_home, tmp)
+    Application.put_env(:cymphony_elixir, :codex_catalog_which, fn _name -> :missing end)
+    Application.put_env(:cymphony_elixir, :codex_catalog_extra_dirs, [])
+    use_default_fetcher()
+
+    try do
+      assert [%{value: "gpt-9-frontier", label: "GPT-9 Frontier"} | _] = AgentCatalog.models("codex")
+    after
+      File.rm_rf!(tmp)
+    end
+  end
+
+  test "default cmd falls back when no codex binary is found" do
+    Application.put_env(
+      :cymphony_elixir,
+      :codex_catalog_home,
+      Path.join(System.tmp_dir!(), "cymphony-missing-#{System.unique_integer([:positive])}")
+    )
+
+    Application.put_env(:cymphony_elixir, :codex_catalog_which, fn _name -> nil end)
+    Application.put_env(:cymphony_elixir, :codex_catalog_extra_dirs, [])
+    use_default_fetcher()
+
+    assert Enum.any?(AgentCatalog.models("codex"), &(&1.value == "gpt-5.2-codex"))
+  end
+
+  test "default cmd uses an empty HOME env when catalog home is unset" do
+    tmp = Path.join(System.tmp_dir!(), "cymphony-catalog-path-#{System.unique_integer([:positive])}")
+    File.mkdir_p!(tmp)
+    bin = Path.join(tmp, "codex")
+
+    File.write!(bin, """
+    #!/bin/sh
+    cat <<'JSON'
+    #{String.trim(@catalog_json)}
+    JSON
+    """)
+
+    File.chmod!(bin, 0o755)
+    Application.put_env(:cymphony_elixir, :codex_catalog_home, "")
+    Application.put_env(:cymphony_elixir, :codex_catalog_which, fn _name -> bin end)
+    use_default_fetcher()
+
+    try do
+      assert [%{value: "gpt-9-frontier"} | _] = AgentCatalog.models("codex")
+    after
+      File.rm_rf!(tmp)
+    end
+  end
+
+  test "catalog home falls back to empty when HOME is unset" do
+    previous_home = System.get_env("HOME")
+    System.delete_env("HOME")
+    Application.delete_env(:cymphony_elixir, :codex_catalog_home)
+    Application.put_env(:cymphony_elixir, :codex_catalog_which, fn _name -> nil end)
+    Application.put_env(:cymphony_elixir, :codex_catalog_extra_dirs, [])
+    use_default_fetcher()
+
+    try do
+      assert Enum.any?(AgentCatalog.models("codex"), &(&1.value == "gpt-5.2-codex"))
+    after
+      if previous_home, do: System.put_env("HOME", previous_home), else: :ok
+    end
+  end
+
+  test "models/1 and efforts/2 return fallbacks when the catalog process exits" do
+    Application.put_env(:cymphony_elixir, :codex_catalog_fetcher, fn -> exit(:catalog_gone) end)
+
+    assert Enum.any?(AgentCatalog.models("codex"), &(&1.value == "gpt-5.2-codex"))
+    AgentCatalog.clear_cache()
+    assert AgentCatalog.efforts("codex", nil) == ["minimal", "low", "medium", "high", "xhigh"]
+  end
+
+  test "default_fetcher treats a killed worker as a failed fetch" do
+    use_default_fetcher()
+
+    Application.put_env(:cymphony_elixir, :codex_catalog_cmd, fn _, _, _ ->
+      Process.exit(self(), :kill)
+    end)
+
+    assert Enum.any?(AgentCatalog.models("codex"), &(&1.value == "gpt-5.2-codex"))
+  end
+
+  test "default_fetcher catches thrown catalog commands" do
+    use_default_fetcher()
+
+    Application.put_env(:cymphony_elixir, :codex_catalog_cmd, fn _, _, _ ->
+      throw(:catalog_throw)
     end)
 
     assert Enum.any?(AgentCatalog.models("codex"), &(&1.value == "gpt-5.2-codex"))

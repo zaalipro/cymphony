@@ -7,8 +7,14 @@ defmodule CymphonyElixir.AgentCatalog do
   slugs, descriptions, and per-model `supported_reasoning_levels`), so codex
   choices are fetched live and cached for the process lifetime; the static
   list is only a fallback when the binary is missing or the output doesn't
-  parse. Claude Code has no equivalent listing command — its stable alias
-  vocabulary (sonnet/opus/haiku) and effort levels are kept statically.
+  parse. The fetch looks up `codex` on PATH and in well-known install dirs
+  (`$HOME/.local/bin`, `/usr/local/bin`, Homebrew) because burrito/systemd
+  PATH is often just `/usr/bin:/bin`. Failed fetches are retried after a
+  short TTL so a missing binary at boot does not pin the fallback forever.
+  If the live catalog command fails, `codex debug models --bundled` is tried
+  before the static list. Claude Code has no equivalent listing command —
+  its stable alias vocabulary (sonnet/opus/haiku) and effort levels are kept
+  statically.
   Antigravity is also static: Gemini/Claude slugs plus low/medium/high
   efforts. There is no `agy models` fetch in v1.
 
@@ -55,19 +61,18 @@ defmodule CymphonyElixir.AgentCatalog do
   @antigravity_efforts ["low", "medium", "high"]
 
   @cache_key {__MODULE__, :codex_catalog}
-  @fetch_timeout_ms 5_000
+  @fetch_timeout_ms 15_000
+  @error_ttl_ms 30_000
 
   @doc "Model choices for an agent kind, best first. Never empty."
   @spec models(String.t()) :: [model_choice()]
   def models("codex") do
-    try do
-      case codex_catalog() do
-        {:ok, models} -> models
-        :error -> @codex_fallback_models
-      end
-    catch
-      :exit, _reason -> @codex_fallback_models
+    case codex_catalog() do
+      {:ok, models} -> models
+      :error -> @codex_fallback_models
     end
+  catch
+    :exit, _reason -> @codex_fallback_models
   end
 
   def models("antigravity"), do: @antigravity_models
@@ -83,20 +88,18 @@ defmodule CymphonyElixir.AgentCatalog do
   """
   @spec efforts(String.t(), String.t() | nil) :: [String.t()]
   def efforts("codex", model) do
-    try do
-      case codex_catalog() do
-        {:ok, models} ->
-          case Enum.find(models, &(&1.value == model)) do
-            %{efforts: efforts} when is_list(efforts) and efforts != [] -> efforts
-            _ -> effort_union(models)
-          end
+    case codex_catalog() do
+      {:ok, models} ->
+        case Enum.find(models, &(&1.value == model)) do
+          %{efforts: efforts} when is_list(efforts) and efforts != [] -> efforts
+          _ -> effort_union(models)
+        end
 
-        :error ->
-          @codex_fallback_efforts
-      end
-    catch
-      :exit, _reason -> @codex_fallback_efforts
+      :error ->
+        @codex_fallback_efforts
     end
+  catch
+    :exit, _reason -> @codex_fallback_efforts
   end
 
   def efforts("antigravity", _model), do: @antigravity_efforts
@@ -117,15 +120,32 @@ defmodule CymphonyElixir.AgentCatalog do
   end
 
   defp codex_catalog do
-    case :persistent_term.get(@cache_key, :miss) do
-      :miss ->
-        result = fetch_and_parse()
-        :persistent_term.put(@cache_key, result)
-        result
+    now = System.monotonic_time(:millisecond)
+    ttl = error_ttl_ms()
 
-      cached ->
-        cached
+    case :persistent_term.get(@cache_key, :miss) do
+      {:ok, _models} = ok ->
+        ok
+
+      {:error, cached_at} when is_integer(cached_at) ->
+        if now - cached_at < ttl, do: :error, else: refresh_catalog()
+
+      _stale_or_miss ->
+        refresh_catalog()
     end
+  end
+
+  defp refresh_catalog do
+    result = fetch_and_parse()
+
+    stored =
+      case result do
+        {:ok, _models} = ok -> ok
+        :error -> {:error, System.monotonic_time(:millisecond)}
+      end
+
+    :persistent_term.put(@cache_key, stored)
+    result
   end
 
   defp fetch_and_parse do
@@ -134,8 +154,9 @@ defmodule CymphonyElixir.AgentCatalog do
          parsed when parsed != [] <- parse_models(models) do
       {:ok, parsed}
     else
-      other ->
-        Logger.debug("AgentCatalog: codex catalog unavailable (#{inspect(other)}); using fallback list")
+      reason ->
+        Logger.warning("AgentCatalog: codex catalog unavailable (#{format_catalog_reason(reason)}); using fallback list")
+
         :error
     end
   end
@@ -147,12 +168,19 @@ defmodule CymphonyElixir.AgentCatalog do
     |> Enum.map(fn m ->
       %{
         value: m["slug"],
-        label: m["slug"],
+        label: model_label(m),
         description: m["description"],
         efforts: reasoning_levels(m),
         default_effort: m["default_reasoning_level"]
       }
     end)
+  end
+
+  defp model_label(model) do
+    case model do
+      %{"display_name" => name} when is_binary(name) and name != "" -> name
+      %{"slug" => slug} when is_binary(slug) -> slug
+    end
   end
 
   defp reasoning_levels(model) do
@@ -169,10 +197,10 @@ defmodule CymphonyElixir.AgentCatalog do
     Application.get_env(:cymphony_elixir, :codex_catalog_fetcher, &default_fetcher/0)
   end
 
-  # Shells out to `codex debug models` (measured ~60ms). The worker is
-  # *unlinked* (`spawn_monitor`, not `Task.async`) so a missing binary
-  # (`:enoent`) or a crashing `System.cmd/3` cannot take down the LiveView
-  # that asked for suggestions.
+  # Shells out to `codex debug models` (live catalog can be several MB).
+  # The worker is *unlinked* (`spawn_monitor`, not `Task.async`) so a
+  # missing binary (`:enoent`) or a crashing `System.cmd/3` cannot take
+  # down the LiveView that asked for suggestions.
   defp default_fetcher do
     fun = catalog_cmd()
     timeout = fetch_timeout_ms()
@@ -205,7 +233,17 @@ defmodule CymphonyElixir.AgentCatalog do
   end
 
   defp catalog_cmd_result(fun) do
-    case fun.("codex", ["debug", "models"], stderr_to_stdout: false) do
+    case invoke_catalog_cmd(fun, ["debug", "models"]) do
+      {:ok, output} ->
+        {:ok, output}
+
+      {:error, _reason} ->
+        invoke_catalog_cmd(fun, ["debug", "models", "--bundled"])
+    end
+  end
+
+  defp invoke_catalog_cmd(fun, args) do
+    case fun.("codex", args, stderr_to_stdout: false) do
       {output, 0} -> {:ok, output}
       {_output, code} -> {:error, {:exit, code}}
     end
@@ -216,10 +254,81 @@ defmodule CymphonyElixir.AgentCatalog do
   end
 
   defp catalog_cmd do
-    Application.get_env(:cymphony_elixir, :codex_catalog_cmd, &System.cmd/3)
+    Application.get_env(:cymphony_elixir, :codex_catalog_cmd, &default_cmd/3)
+  end
+
+  defp default_cmd(bin, args, opts) do
+    case resolve_bin(bin) do
+      nil ->
+        :erlang.error(:enoent)
+
+      path ->
+        System.cmd(path, args, Keyword.put(opts, :env, catalog_child_env(path)))
+    end
+  end
+
+  defp resolve_bin(name) do
+    name
+    |> bin_candidates()
+    |> Enum.find(&usable_bin?/1)
+  end
+
+  defp bin_candidates(name) do
+    home = catalog_home()
+
+    extra =
+      extra_bin_dirs()
+      |> Enum.map(&Path.join(&1, name))
+
+    [
+      path_lookup(name),
+      join_home(home, [".local", "bin", name])
+      | extra
+    ]
+    |> Enum.reject(&(&1 in [nil, ""]))
+    |> Enum.uniq()
+  end
+
+  defp path_lookup(name) do
+    fun = Application.get_env(:cymphony_elixir, :codex_catalog_which, &System.find_executable/1)
+    fun.(name)
+  end
+
+  defp join_home("", _segments), do: nil
+  defp join_home(home, segments), do: Path.join([home | segments])
+
+  defp usable_bin?(path) when is_binary(path), do: File.regular?(path)
+  defp usable_bin?(_), do: false
+
+  defp catalog_child_env(path) do
+    home = catalog_home()
+    dir = Path.dirname(path)
+
+    path_var =
+      ([dir, join_home(home, [".local", "bin"])] ++ extra_bin_dirs() ++ [System.get_env("PATH")])
+      |> Enum.reject(&(&1 in [nil, ""]))
+      |> Enum.join(":")
+
+    env = [{"PATH", path_var}]
+    if home == "", do: env, else: [{"HOME", home} | env]
+  end
+
+  defp catalog_home do
+    Application.get_env(:cymphony_elixir, :codex_catalog_home) || System.get_env("HOME") || ""
+  end
+
+  defp extra_bin_dirs do
+    Application.get_env(:cymphony_elixir, :codex_catalog_extra_dirs) ||
+      ["/usr/local/bin", "/opt/homebrew/bin", "/usr/bin"]
   end
 
   defp fetch_timeout_ms do
     Application.get_env(:cymphony_elixir, :codex_catalog_timeout_ms, @fetch_timeout_ms)
   end
+
+  defp error_ttl_ms do
+    Application.get_env(:cymphony_elixir, :codex_catalog_error_ttl_ms, @error_ttl_ms)
+  end
+
+  defp format_catalog_reason(reason), do: inspect(reason)
 end

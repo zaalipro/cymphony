@@ -118,6 +118,7 @@ defmodule CymphonyElixirWeb.Layouts do
                     }
                   },
                   destroyed() {
+                    if (this.setChrome) this.setChrome(false);
                     this.unbind();
                   },
                   queryParts() {
@@ -176,9 +177,18 @@ defmodule CymphonyElixirWeb.Layouts do
                     this.hidden.dispatchEvent(new Event('input', {bubbles: true}));
                     this.hidden.dispatchEvent(new Event('change', {bubbles: true}));
                   },
+                  setChrome(open) {
+                    var on = !!open;
+                    this.el.classList.toggle('combobox--open', on);
+                    var section = this.el.closest('.project-section');
+                    if (section) section.classList.toggle('is-combobox-open', on);
+                    var row = this.el.closest('.session-row');
+                    if (row) row.classList.toggle('is-combobox-open', on);
+                  },
                   setOpen(open) {
                     this.open = !!open;
                     if (this.list) this.list.hidden = !this.open;
+                    this.setChrome(this.open);
                     if (this.input) {
                       this.input.setAttribute('aria-expanded', this.open ? 'true' : 'false');
                       if (!this.open) this.input.removeAttribute('aria-activedescendant');
