@@ -1207,7 +1207,7 @@ defmodule CymphonyElixir.ExtensionsTest do
 
       # The immediate re-render must already show the submitted kind, not the
       # previous one (confirmed-draft until the payload catches up).
-      assert has_element?(view, ~s|form[phx-submit="set_project_agent"] option[value="codex"][selected]|)
+      assert has_element?(view, ~s|form[phx-submit="set_project_agent"] input[name="agent_kind"][value="codex"]|)
 
       {:ok, persisted} = Jason.decode(File.read!(Path.join(tmp, "config.json")))
       [project | _] = persisted["projects"]
@@ -1294,7 +1294,7 @@ defmodule CymphonyElixir.ExtensionsTest do
       })
 
       assert has_element?(view, ~s|form[phx-submit="set_project_agent"] input[name="model"][value="gpt-5.6-terra"]|)
-      assert has_element?(view, ~s|form[phx-submit="set_project_agent"] option[value="minimal"][selected]|)
+      assert has_element?(view, ~s|form[phx-submit="set_project_agent"] input[name="effort"][value="minimal"]|)
 
       render_change(view, "preview_project_agent", %{
         "project" => "default",

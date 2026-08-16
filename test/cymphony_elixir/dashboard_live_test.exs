@@ -85,7 +85,8 @@ defmodule CymphonyElixir.DashboardLiveTest do
       |> render_click()
 
     assert expanded =~ ~s(name="agent_kind")
-    assert expanded =~ ">keep</option>"
+    assert expanded =~ ~s(data-value="")
+    assert expanded =~ "keep"
     assert expanded =~ "Restart kills the session and redispatches with these overrides."
     assert expanded =~ ~s(id="harness-tail-MT-HTTP")
     assert expanded =~ ~s(phx-hook="HarnessTail")
@@ -210,11 +211,12 @@ defmodule CymphonyElixir.DashboardLiveTest do
     start_dashboard()
     {:ok, view, _html} = live(build_conn(), "/")
 
-    view
-    |> form(~s|form[phx-change="preview_project_agent"]|, %{agent_kind: "antigravity"})
-    |> render_change()
+    render_change(view, "preview_project_agent", %{
+      "project" => "default",
+      "agent_kind" => "antigravity"
+    })
 
-    assert has_element?(view, ~s|form[phx-submit="set_project_agent"] option[value="antigravity"][selected]|)
+    assert has_element?(view, ~s|form[phx-submit="set_project_agent"] input[name="agent_kind"][value="antigravity"]|)
     drafts = view_assigns(view).agent_setting_drafts
     assert drafts["default"].kind == "antigravity"
 
@@ -225,7 +227,7 @@ defmodule CymphonyElixir.DashboardLiveTest do
       "agent_kind" => "gemini"
     })
 
-    assert has_element?(view, ~s|form[phx-submit="set_project_agent"] option[value="antigravity"][selected]|)
+    assert has_element?(view, ~s|form[phx-submit="set_project_agent"] input[name="agent_kind"][value="antigravity"]|)
     assert view_assigns(view).agent_setting_drafts["default"].kind == "antigravity"
 
     html = render_click(view, "toggle_harness_follow", %{"issue" => "MT-HTTP"})
@@ -430,17 +432,18 @@ defmodule CymphonyElixir.DashboardLiveTest do
     assert html =~ ~s(id="effort-default")
     refute html =~ ~s(id="agent-default-claude")
     refute html =~ ~s(id="effort-default-claude")
-    assert has_element?(view, ~s|form[phx-submit="set_project_agent"] option[value="claude"][selected]|)
+    assert has_element?(view, ~s|form[phx-submit="set_project_agent"] input[name="agent_kind"][value="claude"]|)
 
-    view
-    |> form(~s|form[phx-change="preview_project_agent"]|, %{agent_kind: "codex"})
-    |> render_change()
+    render_change(view, "preview_project_agent", %{
+      "project" => "default",
+      "agent_kind" => "codex"
+    })
 
     assert has_element?(view, ~s|#agent-default|)
     refute has_element?(view, ~s|#agent-default-codex|)
-    assert has_element?(view, ~s|form[phx-submit="set_project_agent"] option[value="codex"][selected]|)
+    assert has_element?(view, ~s|form[phx-submit="set_project_agent"] input[name="agent_kind"][value="codex"]|)
     assert render(view) =~ ~s(id="agent-default")
-    assert has_element?(view, ~s|form[phx-submit="set_project_agent"] option[value="codex"][selected]|)
+    assert has_element?(view, ~s|form[phx-submit="set_project_agent"] input[name="agent_kind"][value="codex"]|)
 
     preview_assigns = view_assigns(view)
     preview_payload = preview_assigns.payload
@@ -453,8 +456,8 @@ defmodule CymphonyElixir.DashboardLiveTest do
     )
 
     render(view)
-    assert has_element?(view, ~s|form[phx-submit="set_project_agent"] option[value="codex"][selected]|)
-    refute has_element?(view, ~s|form[phx-submit="set_project_agent"] option[value="claude"][selected]|)
+    assert has_element?(view, ~s|form[phx-submit="set_project_agent"] input[name="agent_kind"][value="codex"]|)
+    refute has_element?(view, ~s|form[phx-submit="set_project_agent"] input[name="agent_kind"][value="claude"]|)
     assert view_assigns(view).agent_setting_drafts[preview_project.name].kind == "codex"
 
     seq_before = view_assigns(view).payload_seq
@@ -466,7 +469,7 @@ defmodule CymphonyElixir.DashboardLiveTest do
       "effort" => "high"
     })
 
-    assert has_element?(view, ~s|form[phx-submit="set_project_agent"] option[value="codex"][selected]|)
+    assert has_element?(view, ~s|form[phx-submit="set_project_agent"] input[name="agent_kind"][value="codex"]|)
     seq_after = view_assigns(view).payload_seq
     assert seq_after > seq_before
 
@@ -476,8 +479,8 @@ defmodule CymphonyElixir.DashboardLiveTest do
 
     send(view.pid, {:payload_loaded, seq_after, payload})
     render(view)
-    assert has_element?(view, ~s|form[phx-submit="set_project_agent"] option[value="codex"][selected]|)
-    refute has_element?(view, ~s|form[phx-submit="set_project_agent"] option[value="claude"][selected]|)
+    assert has_element?(view, ~s|form[phx-submit="set_project_agent"] input[name="agent_kind"][value="codex"]|)
+    refute has_element?(view, ~s|form[phx-submit="set_project_agent"] input[name="agent_kind"][value="claude"]|)
 
     stale_project =
       project
@@ -488,7 +491,7 @@ defmodule CymphonyElixir.DashboardLiveTest do
     send(view.pid, {:payload_loaded, seq_before, %{payload | projects: [stale_project | rest]}})
     render(view)
 
-    assert has_element?(view, ~s|form[phx-submit="set_project_agent"] option[value="codex"][selected]|)
+    assert has_element?(view, ~s|form[phx-submit="set_project_agent"] input[name="agent_kind"][value="codex"]|)
     assert has_element?(view, ~s|#agent-default|)
 
     matching_project =
@@ -500,7 +503,7 @@ defmodule CymphonyElixir.DashboardLiveTest do
     send(view.pid, {:payload_loaded, seq_after, %{payload | projects: [matching_project | rest]}})
     render(view)
 
-    assert has_element?(view, ~s|form[phx-submit="set_project_agent"] option[value="codex"][selected]|)
+    assert has_element?(view, ~s|form[phx-submit="set_project_agent"] input[name="agent_kind"][value="codex"]|)
     refute Map.has_key?(view_assigns(view).agent_setting_drafts, project.name)
   end
 
@@ -531,28 +534,31 @@ defmodule CymphonyElixir.DashboardLiveTest do
 
     assert has_element?(view, ~s|form[phx-submit="set_project_providers"] #providers-default|)
 
-    view
-    |> form(~s|form[phx-change="preview_project_agent"]|, %{agent_kind: "codex"})
-    |> render_change()
+    render_change(view, "preview_project_agent", %{
+      "project" => "default",
+      "agent_kind" => "codex"
+    })
 
     refute has_element?(view, "#providers-default")
     refute has_element?(view, ~s|form[phx-submit="set_project_providers"]|)
-    assert has_element?(view, ~s|form[phx-submit="set_project_agent"] option[value="codex"][selected]|)
+    assert has_element?(view, ~s|form[phx-submit="set_project_agent"] input[name="agent_kind"][value="codex"]|)
 
-    view
-    |> form(~s|form[phx-change="preview_project_agent"]|, %{agent_kind: "antigravity"})
-    |> render_change()
+    render_change(view, "preview_project_agent", %{
+      "project" => "default",
+      "agent_kind" => "antigravity"
+    })
 
     refute has_element?(view, "#providers-default")
     refute has_element?(view, ~s|form[phx-submit="set_project_providers"]|)
-    assert has_element?(view, ~s|form[phx-submit="set_project_agent"] option[value="antigravity"][selected]|)
+    assert has_element?(view, ~s|form[phx-submit="set_project_agent"] input[name="agent_kind"][value="antigravity"]|)
 
-    view
-    |> form(~s|form[phx-change="preview_project_agent"]|, %{agent_kind: "claude"})
-    |> render_change()
+    render_change(view, "preview_project_agent", %{
+      "project" => "default",
+      "agent_kind" => "claude"
+    })
 
     assert has_element?(view, ~s|form[phx-submit="set_project_providers"] #providers-default|)
-    assert has_element?(view, ~s|form[phx-submit="set_project_agent"] option[value="claude"][selected]|)
+    assert has_element?(view, ~s|form[phx-submit="set_project_agent"] input[name="agent_kind"][value="claude"]|)
 
     refute_received {:orchestrator_call, {:set_providers, _}}
     {:ok, persisted} = CymphonyElixir.Cymphony.Config.load()
@@ -594,7 +600,7 @@ defmodule CymphonyElixir.DashboardLiveTest do
     |> render_click()
 
     assert has_element?(view, ~s|form.restart-form[phx-change="preview_issue_run_spec"][phx-submit="set_issue_run_spec"]|)
-    assert has_element?(view, ~s|label[for="restart-agent-MT-HTTP"]|, "Harness")
+    assert has_element?(view, ~s|label[for="restart-agent-MT-HTTP-input"]|, "Harness")
     assert has_element?(view, "#restart-agent-MT-HTTP")
     assert has_element?(view, ".model-switcher #restart-model-MT-HTTP")
     assert has_element?(view, ~s|#restart-model-MT-HTTP[name="model"]|)
@@ -604,32 +610,24 @@ defmodule CymphonyElixir.DashboardLiveTest do
     assert has_element?(view, ~s|#harness-tail-MT-HTTP[phx-hook="HarnessTail"]|)
     assert render(view) =~ ">Provider<"
 
-    view
-    |> form(~s|form[phx-change="preview_issue_run_spec"]|, %{agent_kind: "claude"})
-    |> render_change()
+    render_change(view, "preview_issue_run_spec", %{"issue" => "MT-HTTP", "agent_kind" => "claude"})
 
     assert has_element?(view, ~s|#restart-provider-MT-HTTP[name="provider"]|)
 
-    view
-    |> form(~s|form[phx-change="preview_issue_run_spec"]|, %{agent_kind: "codex"})
-    |> render_change()
+    render_change(view, "preview_issue_run_spec", %{"issue" => "MT-HTTP", "agent_kind" => "codex"})
 
     refute has_element?(view, "#restart-provider-MT-HTTP")
     refute has_element?(view, ~s|form.restart-form input[name="provider"]|)
-    assert has_element?(view, ~s|form[phx-submit="set_issue_run_spec"] option[value="codex"][selected]|)
+    assert has_element?(view, ~s|form[phx-submit="set_issue_run_spec"] input[name="agent_kind"][value="codex"]|)
 
-    view
-    |> form(~s|form[phx-change="preview_issue_run_spec"]|, %{agent_kind: "antigravity"})
-    |> render_change()
+    render_change(view, "preview_issue_run_spec", %{"issue" => "MT-HTTP", "agent_kind" => "antigravity"})
 
     refute has_element?(view, "#restart-provider-MT-HTTP")
     refute has_element?(view, ~s|form.restart-form input[name="provider"]|)
     assert has_element?(view, "#restart-agent-MT-HTTP")
-    assert has_element?(view, ~s|form[phx-submit="set_issue_run_spec"] option[value="antigravity"][selected]|)
+    assert has_element?(view, ~s|form[phx-submit="set_issue_run_spec"] input[name="agent_kind"][value="antigravity"]|)
 
-    view
-    |> form(~s|form[phx-change="preview_issue_run_spec"]|, %{agent_kind: ""})
-    |> render_change()
+    render_change(view, "preview_issue_run_spec", %{"issue" => "MT-HTTP", "agent_kind" => ""})
 
     refute has_element?(view, "#restart-provider-MT-HTTP")
     assert render(view) =~ ">Provider<"
@@ -678,30 +676,22 @@ defmodule CymphonyElixir.DashboardLiveTest do
     refute has_element?(view, "#add-project-provider")
     assert view_assigns(view).add_project_kind == ""
 
-    view
-    |> form("#add-project-form", %{agent: "claude"})
-    |> render_change()
+    render_change(view, "preview_add_project", %{"agent" => "claude"})
 
     assert view_assigns(view).add_project_kind == "claude"
     assert has_element?(view, "#add-project-provider")
 
-    view
-    |> form("#add-project-form", %{agent: "codex"})
-    |> render_change()
+    render_change(view, "preview_add_project", %{"agent" => "codex"})
 
     assert view_assigns(view).add_project_kind == "codex"
     refute has_element?(view, "#add-project-provider")
 
-    view
-    |> form("#add-project-form", %{agent: "antigravity"})
-    |> render_change()
+    render_change(view, "preview_add_project", %{"agent" => "antigravity"})
 
     assert view_assigns(view).add_project_kind == "antigravity"
     refute has_element?(view, "#add-project-provider")
 
-    view
-    |> form("#add-project-form", %{agent: ""})
-    |> render_change()
+    render_change(view, "preview_add_project", %{"agent" => ""})
 
     assert view_assigns(view).add_project_kind == ""
     refute has_element?(view, "#add-project-provider")
@@ -773,10 +763,14 @@ defmodule CymphonyElixir.DashboardLiveTest do
     assert has_element?(view, "section.queue-board.section--board")
     assert has_element?(view, "#queue-board-default.queue-board-list")
     assert has_element?(view, ~s|#queue-card-default-LLM-51[data-issue="LLM-51"][data-rank="0"]|)
+    assert has_element?(view, ~s|#queue-card-default-LLM-51.queue-card--next|)
+    assert has_element?(view, "#queue-card-default-LLM-51 .queue-next-badge", "Next")
+    refute has_element?(view, ~s|#queue-card-default-LLM-12.queue-card--next|)
     assert has_element?(view, ~s|a.session-row-link.queue-card-link|, "LLM-51")
     assert html =~ "Pin the queue"
     assert has_element?(view, "button.queue-card-edit-toggle", "Edit")
     assert html =~ "queued"
+    assert html =~ "Leftmost starts next"
 
     card = view |> element("#queue-card-default-LLM-51") |> render()
     refute card =~ "chip"
@@ -784,6 +778,37 @@ defmodule CymphonyElixir.DashboardLiveTest do
     refute card =~ "High"
     refute card =~ "Todo"
     refute card =~ "In Progress"
+  end
+
+  test "only one queue edit sheet is open and dismiss_overlays closes it" do
+    start_dashboard(
+      snapshot:
+        static_snapshot()
+        |> Map.put(:waiting, [
+          waiting_snapshot_entry(%{identifier: "LLM-51", title: "First"}),
+          waiting_snapshot_entry(%{identifier: "LLM-12", title: "Second"})
+        ])
+    )
+
+    {:ok, view, _html} = live(build_conn(), "/")
+
+    view
+    |> element(~s|button.queue-card-edit-toggle[phx-value-issue="LLM-51"]|)
+    |> render_click()
+
+    assert has_element?(view, "#queue-edit-default-LLM-51")
+    refute has_element?(view, "#queue-edit-default-LLM-12")
+
+    view
+    |> element(~s|button.queue-card-edit-toggle[phx-value-issue="LLM-12"]|)
+    |> render_click()
+
+    refute has_element?(view, "#queue-edit-default-LLM-51")
+    assert has_element?(view, "#queue-edit-default-LLM-12")
+
+    render_click(view, "dismiss_overlays", %{})
+    refute has_element?(view, "#queue-edit-default-LLM-12")
+    assert view_assigns(view).queue_edit_ids == MapSet.new()
   end
 
   test "empty-state is absent when waiting is nonempty" do

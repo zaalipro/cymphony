@@ -164,20 +164,24 @@ defmodule CymphonyElixir.Orchestrator.QueueDispatchTest do
     assert Enum.map(snapshot.waiting, & &1.identifier) == ["MT-HOST-A", "MT-HOST-B"]
   end
 
-  test "paused ticks keep the last waiting list" do
-    pid = start_queue_orchestrator(:PausedKeep, slots: 0)
-    first = issue("iss-p1", "MT-P1", priority: 2, created_at: ~U[2026-01-01 00:00:00Z])
-    put_issues([first])
-    poll(pid)
-
-    assert Enum.map(GenServer.call(pid, :snapshot).waiting, & &1.identifier) == ["MT-P1"]
-
-    later = issue("iss-p2", "MT-P2", priority: 1, created_at: ~U[2026-01-02 00:00:00Z])
-    put_issues([later])
+  test "paused ticks refresh waiting without dispatching" do
+    pid = start_queue_orchestrator(:PausedRefresh, slots: 1)
+    stale = issue("iss-p1", "MT-P1", priority: 2, created_at: ~U[2026-01-01 00:00:00Z])
+    put_issues([stale])
     :ok = Orchestrator.pause(pid)
     :ok = Orchestrator.run_poll_cycle_for_test(pid)
 
     assert Enum.map(GenServer.call(pid, :snapshot).waiting, & &1.identifier) == ["MT-P1"]
+    assert GenServer.call(pid, :snapshot).running == []
+
+    restored = issue("iss-p2", "MT-P2", priority: 1, created_at: ~U[2026-01-02 00:00:00Z])
+    put_issues([restored])
+    :ok = Orchestrator.run_poll_cycle_for_test(pid)
+
+    snapshot = GenServer.call(pid, :snapshot)
+    assert Enum.map(snapshot.waiting, & &1.identifier) == ["MT-P2"]
+    assert snapshot.running == []
+    assert :sys.get_state(pid).paused
   end
 
   test "fetch and config errors keep the last waiting list" do

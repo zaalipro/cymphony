@@ -820,6 +820,16 @@ html[data-ui-mode="advanced"] .mode-switch-button[data-mode-set="advanced"] {
   overflow: visible;
 }
 
+.project-section > .queue-board {
+  z-index: 4;
+  overflow: visible;
+}
+
+.project-section > .session-row-list,
+.project-section > .retry-row-list {
+  z-index: 1;
+}
+
 .project-section.is-combobox-open,
 .project-section.is-queue-edit-open,
 .project-section.is-queue-dragging,
@@ -913,10 +923,18 @@ html[data-ui-mode="advanced"] .mode-switch-button[data-mode-set="advanced"] {
   font-weight: 600;
 }
 
+.queue-board-hint {
+  margin-left: auto;
+  font-size: var(--text-caption);
+  letter-spacing: 0.04em;
+  color: var(--ink-mute);
+}
+
 .queue-board-list {
   display: grid;
   grid-template-columns: 1fr;
-  gap: 8px;
+  gap: 10px;
+  overflow: visible;
 }
 
 @media (min-width: 720px) {
@@ -935,22 +953,51 @@ html[data-ui-mode="advanced"] .mode-switch-button[data-mode-set="advanced"] {
   position: relative;
   display: grid;
   grid-template-columns: minmax(0, 1fr) auto;
-  gap: 4px 8px;
+  gap: 6px 10px;
   align-items: start;
   background: var(--surface-soft);
   border: 1px solid var(--line);
-  border-radius: var(--radius-row);
-  padding: 6px 8px;
+  border-radius: 14px;
+  padding: 14px 14px 12px;
   overflow: visible;
   cursor: grab;
+  isolation: isolate;
+  z-index: 0;
   transition:
     transform var(--dur-flip) var(--ease),
-    opacity var(--dur-mid) var(--ease-spring);
+    opacity var(--dur-mid) var(--ease-spring),
+    border-color var(--dur-fast) var(--ease),
+    box-shadow var(--dur-mid) var(--ease);
 }
 
 .queue-card:focus-visible {
   outline: 2px solid var(--accent);
   outline-offset: 2px;
+}
+
+.queue-card--next {
+  border-color: rgba(200, 156, 230, 0.55);
+  box-shadow:
+    0 0 0 1px rgba(200, 156, 230, 0.28),
+    0 10px 28px rgba(0, 0, 0, 0.28);
+  background:
+    linear-gradient(180deg, rgba(200, 156, 230, 0.12), rgba(200, 156, 230, 0.02) 42%),
+    var(--surface-soft);
+}
+
+.queue-next-badge {
+  display: inline-flex;
+  align-items: center;
+  flex: 0 0 auto;
+  padding: 3px 7px 2px;
+  border-radius: 999px;
+  background: var(--gradient-cosmic);
+  color: #1a1224;
+  font-size: 9px;
+  font-weight: 800;
+  letter-spacing: 0.14em;
+  text-transform: uppercase;
+  line-height: 1.2;
 }
 
 .queue-card-body {
@@ -961,10 +1008,13 @@ html[data-ui-mode="advanced"] .mode-switch-button[data-mode-set="advanced"] {
   grid-column: 1;
   grid-row: 1;
   min-width: 0;
+  display: flex;
+  align-items: center;
+  gap: 8px;
   font-family: var(--font-mono);
-  font-size: var(--text-caption);
+  font-size: 12px;
   font-weight: 600;
-  letter-spacing: 0.02em;
+  letter-spacing: 0.03em;
   color: var(--ink);
 }
 
@@ -975,7 +1025,7 @@ a.session-row-link.queue-card-link {
 .queue-card-title {
   grid-column: 1 / -1;
   grid-row: 2;
-  font-size: var(--text-body-sm);
+  font-size: var(--text-body);
   color: var(--ink-soft);
   line-height: 1.35;
   display: -webkit-box;
@@ -989,23 +1039,26 @@ button.queue-card-edit-toggle {
   grid-column: 2;
   grid-row: 1;
   appearance: none;
-  border: 1px solid transparent;
-  background: transparent;
-  color: var(--ink-mute);
+  border: 1px solid var(--line);
+  background: var(--surface);
+  color: var(--ink-soft);
   font: inherit;
-  font-size: var(--text-caption);
-  font-weight: 500;
-  letter-spacing: 0.04em;
+  font-size: 10px;
+  font-weight: 600;
+  letter-spacing: 0.08em;
   text-transform: uppercase;
-  padding: 2px 6px;
+  padding: 4px 8px;
   border-radius: var(--radius-pill);
   cursor: pointer;
   line-height: 1.2;
+  z-index: 2;
 }
 
-button.queue-card-edit-toggle:hover {
+button.queue-card-edit-toggle:hover,
+.queue-card.is-editing button.queue-card-edit-toggle {
   color: var(--ink);
-  background: var(--surface-deep);
+  border-color: var(--accent);
+  background: var(--accent-soft);
 }
 
 button.queue-card-edit-toggle:empty {
@@ -1032,17 +1085,16 @@ button.queue-card-edit-toggle:empty::before {
 }
 
 div.queue-card-edit {
-  grid-column: 1 / -1;
-  position: absolute;
-  top: calc(100% + 4px);
-  left: 0;
-  min-width: min(280px, 72vw);
-  z-index: var(--z-popover);
-  background: var(--surface-deep);
+  position: fixed;
+  z-index: var(--z-combobox);
+  min-width: 304px;
+  background: var(--surface);
   border: 1px solid var(--line-strong);
-  border-radius: var(--radius-row);
-  padding: 10px;
-  box-shadow: var(--glow-soft);
+  border-radius: 16px;
+  padding: 12px;
+  box-shadow:
+    0 0 0 1px rgba(254, 252, 251, 0.04),
+    0 22px 50px rgba(0, 0, 0, 0.48);
   animation: detail-fade var(--dur-mid) var(--ease) both;
 }
 
@@ -1053,10 +1105,32 @@ div.queue-card-edit {
 
 form.queue-edit-form {
   display: flex;
-  flex-wrap: wrap;
-  align-items: center;
-  gap: 8px;
+  flex-direction: column;
+  flex-wrap: nowrap;
+  align-items: stretch;
+  gap: 10px;
   margin: 0;
+}
+
+.menu-field {
+  display: flex;
+  flex-direction: column;
+  gap: 5px;
+  min-width: 0;
+}
+
+.menu-field-label {
+  font-size: 10px;
+  font-weight: 600;
+  letter-spacing: 0.1em;
+  text-transform: uppercase;
+  color: var(--ink-mute);
+}
+
+.queue-edit-pin {
+  width: 100%;
+  justify-content: center;
+  margin-top: 2px;
 }
 
 .queue-card.is-dragging {
@@ -1067,7 +1141,7 @@ form.queue-edit-form {
 .queue-card.is-editing,
 .queue-card.is-combobox-open,
 .queue-card:has(.queue-card-edit) {
-  z-index: var(--z-row-open);
+  z-index: var(--z-popover);
 }
 
 .queue-drag-ghost,
@@ -2260,8 +2334,30 @@ form.project-agent-form.inline-form--agent {
 }
 
 /* ============================================================
-   COMBOBOX (custom listbox — Midnight Slate, not OS datalist)
+   SHARED MENU (combobox + native select)
    ============================================================ */
+select {
+  appearance: none;
+  -webkit-appearance: none;
+  background-color: var(--surface-deep);
+  background-image: url("data:image/svg+xml;utf8,<svg xmlns='http://www.w3.org/2000/svg' width='12' height='8' viewBox='0 0 12 8'><path fill='%23b8b9bc' d='M1 2h10L6 7z'/></svg>");
+  background-repeat: no-repeat;
+  background-position: right 10px center;
+  background-size: 10px;
+  border: 1px solid var(--line-strong);
+  border-radius: 10px;
+  color: var(--ink);
+  padding: 7px 28px 7px 10px;
+  font: inherit;
+  font-size: var(--text-body-sm);
+}
+
+select:focus {
+  outline: none;
+  border-color: var(--accent);
+  box-shadow: 0 0 0 1px var(--accent);
+}
+
 .combobox {
   position: relative;
   display: block;
@@ -2275,11 +2371,32 @@ form.project-agent-form.inline-form--agent {
   z-index: var(--z-combobox);
 }
 
+.combobox--menu::after {
+  content: "";
+  position: absolute;
+  top: 50%;
+  right: 10px;
+  width: 8px;
+  height: 8px;
+  border-right: 1.5px solid var(--ink-mute);
+  border-bottom: 1.5px solid var(--ink-mute);
+  transform: translateY(-70%) rotate(45deg);
+  pointer-events: none;
+}
+
+.combobox--menu.combobox--open::after {
+  transform: translateY(-20%) rotate(225deg);
+}
+
 .combobox-input {
   width: 100%;
   min-width: 0;
   color: var(--ink);
   caret-color: var(--ink);
+}
+
+.combobox--menu .combobox-input {
+  padding-right: 28px;
 }
 
 .inline-form .combobox,
@@ -2299,15 +2416,29 @@ form.project-agent-form.inline-form--agent {
 
 .inline-form .combobox-input,
 .model-switcher .combobox-input,
-.agent-switcher .combobox-input {
-  border: none;
-  background: transparent;
+.agent-switcher .combobox-input,
+.effort-switcher .combobox-input,
+.project-agent-form .combobox-input,
+.restart-form .combobox-input {
+  border: 1px solid var(--line);
+  background: var(--surface);
   color: var(--ink);
   font: inherit;
   font-size: var(--text-body-sm);
   font-family: var(--font-mono);
-  padding: 2px 4px;
+  padding: 6px 28px 6px 10px;
+  border-radius: 10px;
   outline: none;
+}
+
+.inline-form .combobox-input:focus,
+.model-switcher .combobox-input:focus,
+.agent-switcher .combobox-input:focus,
+.effort-switcher .combobox-input:focus,
+.project-agent-form .combobox-input:focus,
+.restart-form .combobox-input:focus {
+  border-color: var(--accent);
+  box-shadow: 0 0 0 1px var(--accent);
 }
 
 .settings-drawer .combobox-input,
@@ -2328,20 +2459,23 @@ form.project-agent-form.inline-form--agent {
 
 .combobox-list {
   position: absolute;
-  top: calc(100% + 4px);
+  top: calc(100% + 6px);
   left: 0;
   right: 0;
   z-index: var(--z-combobox);
-  max-height: min(480px, 60vh);
+  max-height: min(360px, 50vh);
   overflow: auto;
   margin: 0;
-  padding: 4px 0;
+  padding: 6px;
   list-style: none;
-  background: var(--surface-deep);
+  background: var(--surface);
   border: 1px solid var(--line-strong);
-  border-radius: 8px;
-  box-shadow: var(--glow-soft);
+  border-radius: 14px;
+  box-shadow:
+    0 0 0 1px rgba(254, 252, 251, 0.04),
+    0 18px 40px rgba(0, 0, 0, 0.42);
   color: var(--ink);
+  backdrop-filter: blur(16px);
 }
 
 .combobox-list[hidden],
@@ -2350,17 +2484,42 @@ form.project-agent-form.inline-form--agent {
 }
 
 .combobox-list [role="option"] {
-  padding: 6px 10px;
+  padding: 8px 10px;
   cursor: pointer;
   color: var(--ink);
   font-size: var(--text-body-sm);
   font-family: var(--font-mono);
-  line-height: 1.4;
+  line-height: 1.35;
+  border-radius: 10px;
 }
 
 .combobox-list [role="option"]:hover,
 .combobox-list [role="option"][aria-selected="true"] {
   background: var(--accent-soft);
+  color: var(--ink);
+}
+
+.queue-card-edit .combobox,
+.queue-card-edit .combobox-input {
+  min-width: 0;
+  width: 100%;
+  flex: 0 0 auto;
+}
+
+.queue-card-edit .combobox-input {
+  border: 1px solid var(--line-strong);
+  background: var(--surface-deep);
+  border-radius: 10px;
+  padding: 8px 28px 8px 10px;
+  font: inherit;
+  font-size: var(--text-body-sm);
+  font-family: var(--font-mono);
+  outline: none;
+}
+
+.queue-card-edit .combobox-input:focus {
+  border-color: var(--accent);
+  box-shadow: 0 0 0 1px var(--accent);
 }
 
 .session-row-detail .combobox-list {

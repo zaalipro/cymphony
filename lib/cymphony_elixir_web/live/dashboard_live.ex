@@ -394,12 +394,17 @@ defmodule CymphonyElixirWeb.DashboardLive do
 
     ids =
       if MapSet.member?(ids, key) do
-        MapSet.delete(ids, key)
+        MapSet.new()
       else
-        MapSet.put(ids, key)
+        MapSet.new([key])
       end
 
     {:noreply, assign(socket, :queue_edit_ids, ids)}
+  end
+
+  @impl true
+  def handle_event("dismiss_overlays", _params, socket) do
+    {:noreply, assign(socket, :queue_edit_ids, MapSet.new())}
   end
 
   @impl true
@@ -523,7 +528,7 @@ defmodule CymphonyElixirWeb.DashboardLive do
   @impl true
   def render(assigns) do
     ~H"""
-    <section class="dashboard-shell">
+    <section id="dashboard-root" class="dashboard-shell" phx-hook="OverlayDismiss">
       <header class="command-bar">
         <div class="command-bar-row command-bar-row--brand">
           <div class="command-bar-brand">
@@ -778,15 +783,18 @@ defmodule CymphonyElixirWeb.DashboardLive do
                 </label>
               </div>
               <div class="advanced-only add-project-advanced">
-                <label class="settings-field-row" for="add-project-agent">
-                  <span class="inline-label">agent</span>
-                  <select id="add-project-agent" name="agent" class="settings-field">
-                    <option value="" selected={@add_project_kind == ""}>default</option>
-                    <%= for k <- Agent.known_kinds() do %>
-                      <option value={k} selected={@add_project_kind == k}><%= k %></option>
-                    <% end %>
-                  </select>
-                </label>
+                <div class="settings-field-row">
+                  <label class="inline-label" for="add-project-agent-input">agent</label>
+                  <.model_combobox
+                    id="add-project-agent"
+                    name="agent"
+                    value={@add_project_kind}
+                    list_id="agent-options-add-project"
+                    options={kind_menu_options(:default)}
+                    class="settings-field"
+                    placeholder="default"
+                  />
+                </div>
                 <div class="model-switcher settings-field-row">
                   <label class="inline-label" for="add-project-model-input">model</label>
                   <.model_combobox
@@ -798,15 +806,18 @@ defmodule CymphonyElixirWeb.DashboardLive do
                     class="settings-field"
                   />
                 </div>
-                <label class="settings-field-row" for="add-project-effort">
-                  <span class="inline-label">effort</span>
-                  <select id="add-project-effort" name="effort" class="settings-field">
-                    <option value="" selected={@add_project_effort in [nil, ""]}>default</option>
-                    <%= for level <- effort_levels(@add_project_kind) do %>
-                      <option value={level} selected={@add_project_effort == level}><%= level %></option>
-                    <% end %>
-                  </select>
-                </label>
+                <div class="settings-field-row">
+                  <label class="inline-label" for="add-project-effort-input">effort</label>
+                  <.model_combobox
+                    id="add-project-effort"
+                    name="effort"
+                    value={@add_project_effort}
+                    list_id="effort-options-add-project"
+                    options={effort_menu_options(@add_project_kind, :default)}
+                    class="settings-field"
+                    placeholder="default"
+                  />
+                </div>
                 <%= if @add_project_kind == "claude" do %>
                   <label class="settings-field-row" for="add-project-provider">
                     <span class="inline-label">provider</span>
@@ -975,16 +986,15 @@ defmodule CymphonyElixirWeb.DashboardLive do
                 >
                   <input type="hidden" name="project" value={project.name} />
                   <div class="agent-switcher">
-                    <label class="inline-label" for={"agent-#{project.name}"}>agent</label>
-                    <select
+                    <label class="inline-label" for={"agent-#{project.name}-input"}>agent</label>
+                    <.model_combobox
                       id={"agent-#{project.name}"}
                       name="agent_kind"
-                      class="inline-input inline-input--narrow"
-                    >
-                      <%= for k <- Agent.known_kinds() do %>
-                        <option value={k} selected={agent_settings.kind == k}><%= k %></option>
-                      <% end %>
-                    </select>
+                      value={agent_settings.kind}
+                      list_id={"agent-options-#{project.name}"}
+                      options={kind_menu_options(false)}
+                      placeholder="agent"
+                    />
                   </div>
 
                   <div class="model-switcher">
@@ -1001,19 +1011,15 @@ defmodule CymphonyElixirWeb.DashboardLive do
                   </div>
 
                   <div class="effort-switcher">
-                    <label class="inline-label" for={"effort-#{project.name}"}>
-                      effort
-                    </label>
-                    <select
+                    <label class="inline-label" for={"effort-#{project.name}-input"}>effort</label>
+                    <.model_combobox
                       id={"effort-#{project.name}"}
                       name="effort"
-                      class="inline-input inline-input--narrow"
-                    >
-                      <option value="" selected={agent_settings.effort == ""}>default</option>
-                      <%= for level <- effort_levels(agent_settings.kind) do %>
-                        <option value={level} selected={agent_settings.effort == level}><%= level %></option>
-                      <% end %>
-                    </select>
+                      value={agent_settings.effort}
+                      list_id={"effort-options-#{project.name}"}
+                      options={effort_menu_options(agent_settings.kind, :default)}
+                      placeholder="default"
+                    />
                   </div>
 
                   <button type="submit" class="subtle-button">Set</button>
@@ -1066,6 +1072,7 @@ defmodule CymphonyElixirWeb.DashboardLive do
                   <span class="queue-board-label simple-only">Up next</span>
                   <span class="queue-board-label advanced-only">Queue</span>
                   <span class="queue-board-count numeric"><%= project_waiting_count(project) %></span>
+                  <span class="queue-board-hint">Leftmost starts next</span>
                 </header>
                 <div
                   id={"queue-board-#{project.name}"}
@@ -1080,7 +1087,7 @@ defmodule CymphonyElixirWeb.DashboardLive do
                     <% queue_spec = queue_run_spec_settings(@queue_run_spec_drafts, project.name, entry) %>
                     <article
                       id={"queue-card-#{project.name}-#{identifier}"}
-                      class={"queue-card" <> if(editing?, do: " is-editing", else: "")}
+                      class={"queue-card" <> if(rank == 0, do: " queue-card--next", else: "") <> if(editing?, do: " is-editing", else: "")}
                       data-issue={identifier}
                       data-issue-id={entry.issue_id}
                       data-rank={rank}
@@ -1088,6 +1095,9 @@ defmodule CymphonyElixirWeb.DashboardLive do
                     >
                       <div class="queue-card-body">
                         <div class="queue-card-id">
+                          <%= if rank == 0 do %>
+                            <span class="queue-next-badge" title="Starts when a slot opens">Next</span>
+                          <% end %>
                           <%= if entry.issue_url do %>
                             <a href={entry.issue_url} target="_blank" rel="noopener" class="session-row-link queue-card-link"><%= identifier %></a>
                           <% else %>
@@ -1106,7 +1116,12 @@ defmodule CymphonyElixirWeb.DashboardLive do
                         </button>
                       </div>
                       <%= if editing? do %>
-                        <div class="queue-card-edit" id={"queue-edit-#{identifier}"}>
+                        <div
+                          class="queue-card-edit"
+                          id={"queue-edit-#{project.name}-#{identifier}"}
+                          phx-hook="QueueEditPanel"
+                          phx-click-away="dismiss_overlays"
+                        >
                           <form
                             class="queue-edit-form"
                             phx-change="preview_queue_run_spec"
@@ -1114,21 +1129,19 @@ defmodule CymphonyElixirWeb.DashboardLive do
                           >
                             <input type="hidden" name="project" value={project.name} />
                             <input type="hidden" name="issue" value={identifier} />
-                            <div class="agent-switcher">
-                              <label class="inline-label" for={"queue-agent-#{identifier}"}>agent</label>
-                              <select
+                            <div class="menu-field">
+                              <label class="menu-field-label" for={"queue-agent-#{identifier}-input"}>Harness</label>
+                              <.model_combobox
                                 id={"queue-agent-#{identifier}"}
                                 name="agent_kind"
-                                class="inline-input inline-input--narrow"
-                              >
-                                <option value="" selected={queue_spec.kind in [nil, ""]}>keep</option>
-                                <%= for k <- Agent.known_kinds() do %>
-                                  <option value={k} selected={queue_spec.kind == k}><%= k %></option>
-                                <% end %>
-                              </select>
+                                value={queue_spec.kind}
+                                list_id={"queue-agent-options-#{identifier}"}
+                                options={kind_menu_options(true)}
+                                placeholder="keep"
+                              />
                             </div>
-                            <div class="model-switcher">
-                              <label class="inline-label" for={"queue-model-#{identifier}-input"}>model</label>
+                            <div class="menu-field">
+                              <label class="menu-field-label" for={"queue-model-#{identifier}-input"}>Model</label>
                               <.model_combobox
                                 id={"queue-model-#{identifier}"}
                                 name="model"
@@ -1138,20 +1151,18 @@ defmodule CymphonyElixirWeb.DashboardLive do
                                 placeholder="default"
                               />
                             </div>
-                            <div class="effort-switcher">
-                              <label class="inline-label" for={"queue-effort-#{identifier}"}>effort</label>
-                              <select
+                            <div class="menu-field">
+                              <label class="menu-field-label" for={"queue-effort-#{identifier}-input"}>Effort</label>
+                              <.model_combobox
                                 id={"queue-effort-#{identifier}"}
                                 name="effort"
-                                class="inline-input inline-input--narrow"
-                              >
-                                <option value="" selected={queue_spec.effort in [nil, ""]}>keep</option>
-                                <%= for level <- effort_levels(queue_spec.suggestion_kind) do %>
-                                  <option value={level} selected={queue_spec.effort == level}><%= level %></option>
-                                <% end %>
-                              </select>
+                                value={queue_spec.effort}
+                                list_id={"queue-effort-options-#{identifier}"}
+                                options={effort_menu_options(queue_spec.suggestion_kind, :keep)}
+                                placeholder="keep"
+                              />
                             </div>
-                            <button type="submit" class="subtle-button">Pin</button>
+                            <button type="submit" class="subtle-button subtle-button--accent queue-edit-pin">Pin</button>
                           </form>
                         </div>
                       <% end %>
@@ -1307,20 +1318,18 @@ defmodule CymphonyElixirWeb.DashboardLive do
                             >
                               <input type="hidden" name="issue" value={entry.issue_identifier} />
                               <div class="agent-switcher">
-                                <label class="inline-label" for={"restart-agent-#{entry.issue_identifier}"}>
+                                <label class="inline-label" for={"restart-agent-#{entry.issue_identifier}-input"}>
                                   Harness
                                 </label>
-                                <select
+                                <.model_combobox
                                   id={"restart-agent-#{entry.issue_identifier}"}
                                   name="agent_kind"
-                                  class="inline-input inline-input--narrow"
+                                  value={session_spec.kind}
+                                  list_id={"restart-agent-options-#{entry.issue_identifier}"}
+                                  options={kind_menu_options(true)}
+                                  placeholder="keep"
                                   title="Harness"
-                                >
-                                  <option value="" selected={session_spec.kind in [nil, ""]}>keep</option>
-                                  <%= for k <- Agent.known_kinds() do %>
-                                    <option value={k} selected={session_spec.kind == k}><%= k %></option>
-                                  <% end %>
-                                </select>
+                                />
                               </div>
                               <%= if session_spec.suggestion_kind == "claude" do %>
                                 <div class="provider-switcher">
@@ -1353,20 +1362,18 @@ defmodule CymphonyElixirWeb.DashboardLive do
                                 />
                               </div>
                               <div class="effort-switcher">
-                                <label class="inline-label" for={"restart-effort-#{entry.issue_identifier}"}>
+                                <label class="inline-label" for={"restart-effort-#{entry.issue_identifier}-input"}>
                                   Effort
                                 </label>
-                                <select
+                                <.model_combobox
                                   id={"restart-effort-#{entry.issue_identifier}"}
                                   name="effort"
-                                  class="inline-input inline-input--narrow"
+                                  value={session_spec.effort}
+                                  list_id={"restart-effort-options-#{entry.issue_identifier}"}
+                                  options={effort_menu_options(session_spec.suggestion_kind, :keep)}
+                                  placeholder="keep"
                                   title="Reasoning effort (keep = unchanged)"
-                                >
-                                  <option value="" selected={session_spec.effort in [nil, ""]}>keep</option>
-                                  <%= for level <- effort_levels(session_spec.suggestion_kind) do %>
-                                    <option value={level} selected={session_spec.effort == level}><%= level %></option>
-                                  <% end %>
-                                </select>
+                                />
                               </div>
                               <button type="submit" class="subtle-button" title="Kill this session and restart it immediately with these overrides">Restart</button>
                             </form>
@@ -1612,6 +1619,18 @@ defmodule CymphonyElixirWeb.DashboardLive do
     :exit, _reason -> []
   end
 
+  defp kind_menu_options(false), do: Enum.map(Agent.known_kinds(), &%{value: &1, label: &1})
+
+  defp kind_menu_options(blank) when blank in [true, :keep, :default] do
+    label = if blank == :default, do: "default", else: "keep"
+    [%{value: "", label: label} | kind_menu_options(false)]
+  end
+
+  defp effort_menu_options(kind, blank) do
+    label = if blank == :default, do: "default", else: "keep"
+    [%{value: "", label: label} | Enum.map(effort_levels(kind), &%{value: &1, label: &1})]
+  end
+
   defp model_combobox(assigns) do
     assigns =
       assigns
@@ -1622,7 +1641,7 @@ defmodule CymphonyElixirWeb.DashboardLive do
       |> assign_new(:options, fn -> [] end)
 
     ~H"""
-    <div id={"combobox-#{@id}"} class="combobox" phx-hook="Combobox">
+    <div id={"combobox-#{@id}"} class="combobox combobox--menu" phx-hook="Combobox">
       <input
         id={"#{@id}-input"}
         type="text"
