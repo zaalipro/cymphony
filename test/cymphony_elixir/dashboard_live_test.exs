@@ -984,6 +984,15 @@ defmodule CymphonyElixir.DashboardLiveTest do
     assert has_element?(view, "#queue-edit-default-LLM-51")
     refute has_element?(view, "#queue-edit-default-LLM-12")
 
+    # The sheet is a viewport-positioned popover: `QueueEditPanel` places it off
+    # the card's rect, and `phx-click-away` is the no-JS half of the same
+    # dismiss. Both must stay on the element — the hook has nothing to anchor to
+    # without the id, and the id alone does not open a popover.
+    assert has_element?(
+             view,
+             ~s|div.queue-card-edit#queue-edit-default-LLM-51[phx-hook="QueueEditPanel"][phx-click-away="dismiss_overlays"]|
+           )
+
     view
     |> element(~s|button.queue-card-edit-toggle[phx-value-issue="LLM-12"]|)
     |> render_click()

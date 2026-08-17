@@ -2162,6 +2162,20 @@ Enablement (extension):
   `layouts.ex` beside `HarnessTail` / `Combobox` (`mounted` / `updated` / `destroyed`;
   `pushEvent reorder_queue`). `Combobox.setChrome` also toggles the closest
   `.queue-card`.
+- `QueueEditPanel` hook mounts on `div#queue-edit-<project>-<identifier>.queue-card-edit`
+  (`layouts.ex`, beside `QueueBoard`). The edit sheet is a popover rather than an inline
+  block, so the board's scroll box cannot clip it: `place()` fixes it to the viewport off
+  the card's `getBoundingClientRect()` (width clamped to 304…360px and to the viewport,
+  flipped above the card when it would overflow the bottom) and runs on `mounted`,
+  `updated`, `resize` and capture-phase `scroll` — `updated` is required because a patch
+  drops the inline styles morphdom does not own. A capture-phase `mousedown` outside the
+  sheet clears `data-drawer` and pushes `dismiss_overlays`, exempting
+  `.queue-card-edit-toggle` (otherwise the click that closes one sheet also swallows the
+  open of the next) and `.combobox-list` / `.combobox-panel`, which render outside the
+  sheet's subtree. `phx-click-away="dismiss_overlays"` on the same element is the
+  server-side half; `OverlayDismiss.keepOpen` likewise exempts `.queue-card-edit`.
+  `mounted` clears `data-drawer`, so opening a card's sheet closes the settings console
+  rather than stacking a popover on top of a scrimmed panel.
 - Refresh behavior: server-side re-render is change-only, the second-by-second clock runs
   in the browser, and `dashboard_refresh_seconds` is the **single** cadence for data-driven
   reloads (see the `dashboard_refresh_seconds` bullet above and Section 8.1).

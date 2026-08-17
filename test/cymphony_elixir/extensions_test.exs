@@ -1315,6 +1315,22 @@ defmodule CymphonyElixir.ExtensionsTest do
       assert html =~ "this._open = this.el.open;"
       assert html =~ "if (this._open && !this.el.open) this.el.open = true;"
 
+      # The queue-card edit sheet is a popover, not an inline block: the hook
+      # pins it to the viewport off the card's rect (and flips it above the card
+      # when it would overflow the bottom), so it cannot be clipped by the
+      # board's own scroll box. It re-places on `updated` because a patch resets
+      # the inline styles morphdom does not own.
+      assert html =~ "QueueEditPanel: {"
+      assert html =~ "var card = this.el.closest('.queue-card');"
+      assert html =~ "this.el.style.position = 'fixed';"
+      assert html =~ "updated() { this.place(); },"
+
+      # Its outside-click dismiss must exempt the toggle that opened it (else the
+      # click that closes one sheet also swallows the open of the next) and the
+      # Combobox panels, which render outside the sheet's own subtree.
+      assert html =~ "if (t.closest('.queue-card-edit-toggle')) return;"
+      assert html =~ "if (t.closest('.combobox-list') || t.closest('.combobox-panel')) return;"
+
       # Rail content + Part B surfaces.
       assert dashboard_css =~ ".rail-vitals {"
       assert dashboard_css =~ ".rail-led--paused {"
