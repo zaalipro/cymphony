@@ -34,7 +34,12 @@ defmodule CymphonyElixir.BurritoCLI do
   catch
     kind, reason ->
       Logger.error("Unhandled CLI error: #{inspect({kind, reason})}")
-      System.halt(1)
+      # `CLI.halt/1`, never `System.halt/1`: this is the only record of a crash
+      # in the shipped binary, `LogFile.configure/0` has already removed the
+      # console handler, and the disk handlers buffer — halting directly drops
+      # the line this just logged and leaves the operator with exit 1 and empty
+      # logs.
+      CLI.halt(1)
   end
 
   @impl true

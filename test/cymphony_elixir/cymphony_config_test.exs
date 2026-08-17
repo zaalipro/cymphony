@@ -96,6 +96,7 @@ defmodule CymphonyElixir.Cymphony.ConfigTest do
       assert parsed.polling.interval_ms == 5000
       assert parsed.agent.max_concurrent_agents == 10
       assert parsed.agent.max_turns == 20
+      assert parsed.agent.stall_timeout_ms == 300_000
       assert parsed.claude.command == "claude"
       assert parsed.claude.output_format == "stream-json"
       assert map["antigravity"]["command"] == "agy"
@@ -108,12 +109,28 @@ defmodule CymphonyElixir.Cymphony.ConfigTest do
         CymphonyConfig.to_schema_map(%{
           "polling_interval_ms" => 1234,
           "max_concurrent_agents" => 7,
+          "stall_timeout_ms" => 1_800_000,
           "workspace_root" => "/custom/root"
         })
 
       assert map["polling"]["interval_ms"] == 1234
       assert map["agent"]["max_concurrent_agents"] == 7
+      assert map["agent"]["stall_timeout_ms"] == 1_800_000
       assert map["workspace"]["root"] == "/custom/root"
+      assert {:ok, %Schema{} = parsed} = Schema.parse(map)
+      assert parsed.agent.stall_timeout_ms == 1_800_000
+    end
+
+    test "only a positive integer stall_timeout_ms overrides the default" do
+      # A typo must not silently disable the watchdog (<= 0 turns it off) or
+      # generate front matter that fails Schema.parse/1.
+      for bad <- [0, -1, "600000", 600_000.0, nil, true, %{}] do
+        map = CymphonyConfig.to_schema_map(%{"stall_timeout_ms" => bad})
+        assert map["agent"]["stall_timeout_ms"] == 300_000
+      end
+
+      assert CymphonyConfig.to_schema_map(%{})["agent"]["stall_timeout_ms"] == 300_000
+      assert CymphonyConfig.to_schema_map(%{"stall_timeout_ms" => 1})["agent"]["stall_timeout_ms"] == 1
     end
 
     test "provider list sets providers + head; single provider sets provider; none omits both" do
@@ -236,6 +253,21 @@ defmodule CymphonyElixir.Cymphony.ConfigTest do
       assert parsed_map["agent"]["model"] == "model: 'single' \"double\" #tag"
 
       assert {:ok, %Schema{}} = Schema.parse(parsed_map)
+    end
+
+    test "a project's stall_timeout_ms reaches the parsed agent settings" do
+      {:ok, path} =
+        WorkflowGenerator.write_temp(%{
+          "name" => "Slow",
+          "linear_project_slug" => "slow",
+          "stall_timeout_ms" => 1_800_000
+        })
+
+      on_exit(fn -> File.rm(path) end)
+
+      assert {:ok, %{config: parsed_map}} = Workflow.load(path)
+      assert {:ok, %Schema{} = settings} = Schema.parse(parsed_map)
+      assert settings.agent.stall_timeout_ms == 1_800_000
     end
   end
 end

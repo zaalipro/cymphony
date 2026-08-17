@@ -49,6 +49,7 @@ defmodule CymphonyElixir.AgentCatalog do
   @codex_fallback_efforts ["minimal", "low", "medium", "high", "xhigh"]
 
   @antigravity_models [
+    %{value: "gemini-3.7-flash", label: "gemini-3.7-flash", description: nil, efforts: nil, default_effort: nil},
     %{value: "gemini-3.7-flash-high", label: "gemini-3.7-flash-high", description: nil, efforts: nil, default_effort: nil},
     %{value: "gemini-3.7-flash-medium", label: "gemini-3.7-flash-medium", description: nil, efforts: nil, default_effort: nil},
     %{value: "gemini-3.6-flash-high", label: "gemini-3.6-flash-high", description: nil, efforts: nil, default_effort: nil},

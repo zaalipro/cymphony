@@ -6,7 +6,7 @@ defmodule CymphonyElixir.StatusDashboard do
   use GenServer
   require Logger
 
-  alias CymphonyElixir.{Config, HttpServer}
+  alias CymphonyElixir.{Config, HttpServer, Text}
   alias CymphonyElixir.Cymphony.UrlFile
   alias CymphonyElixir.Orchestrator
   alias CymphonyElixirWeb.ObservabilityPubSub
@@ -991,16 +991,22 @@ defmodule CymphonyElixir.StatusDashboard do
     issue_id = retry_entry.issue_id || "unknown"
     identifier = retry_entry.identifier || issue_id
     attempt = retry_entry.attempt || 0
-    due_in_ms = retry_entry.due_in_ms || 0
     error = format_retry_error(retry_entry.error)
 
     "│  #{colorize("↻", @ansi_orange)} " <>
       colorize("#{identifier}", @ansi_red) <>
       " " <>
       colorize("attempt=#{attempt}", @ansi_yellow) <>
-      colorize(" in ", @ansi_dim) <>
-      colorize(next_in_words(due_in_ms), @ansi_cyan) <>
+      retry_due_text(retry_entry) <>
       error
+  end
+
+  # A held entry is parked until dispatch resumes; its `due_in_ms` is clamped
+  # to 0 for the whole pause, so "in 0.000s" would read as due right now.
+  defp retry_due_text(%{held: true}), do: colorize(" held", @ansi_dim)
+
+  defp retry_due_text(retry_entry) do
+    colorize(" in ", @ansi_dim) <> colorize(next_in_words(retry_entry.due_in_ms || 0), @ansi_cyan)
   end
 
   defp next_in_words(due_in_ms) when is_integer(due_in_ms) do
@@ -1683,10 +1689,7 @@ defmodule CymphonyElixir.StatusDashboard do
   end
 
   defp sanitize_ansi_and_control_bytes(value) when is_binary(value) do
-    value
-    |> String.replace(Regex.compile!("\\x1B\\[[0-9;]*[A-Za-z]"), "")
-    |> String.replace(Regex.compile!("\\x1B."), "")
-    |> String.replace(Regex.compile!("[\\x00-\\x1F\\x7F]"), "")
+    Text.strip_ansi_and_control(value)
   end
 
   defp humanize_agent_method("thread/started", payload) do

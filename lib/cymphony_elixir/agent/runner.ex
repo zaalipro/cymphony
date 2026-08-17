@@ -11,7 +11,7 @@ defmodule CymphonyElixir.Agent.Runner do
 
   require Logger
 
-  alias CymphonyElixir.{Agent, Config, PathSafety, SSH}
+  alias CymphonyElixir.{Agent, Config, PathSafety, SSH, Text}
   alias CymphonyElixir.Cymphony.ShellProvider
   alias CymphonyElixir.Mcp.ConfigWriter
 
@@ -19,6 +19,8 @@ defmodule CymphonyElixir.Agent.Runner do
   @max_stream_log_bytes 1_000
   @harness_stdout_max 2048
   @port_eof_drain_ms 250
+  @agent_exit_tail_bytes 2048
+  @agent_exit_tail_lines 20
   @shell_env_name_pattern "^[A-Za-z_][A-Za-z0-9_]*$"
 
   @type session :: %{
@@ -442,10 +444,43 @@ defmodule CymphonyElixir.Agent.Runner do
     {:ok, Enum.reverse(lines)}
   end
 
-  defp finalize_collected_output(status, buffer, _acc, _on_message) do
+  defp finalize_collected_output(status, buffer, acc, _on_message) do
     remaining = buffer |> to_string() |> String.trim()
     if remaining != "", do: log_stream_line(remaining)
-    {:error, {:agent_exit, status, remaining}}
+    {:error, {:agent_exit, status, failure_tail(acc, remaining)}}
+  end
+
+  # A CLI that rejects its arguments prints a complete, newline-terminated
+  # error line and exits: by then the line has moved into `acc` and the
+  # leftover buffer is empty. Reporting only the buffer produced
+  # `{:agent_exit, 1, ""}` in the retry queue and in the tracker abandonment
+  # comment, so keep a bounded, sanitized tail of everything the CLI printed.
+  #
+  # Newest line first. `acc` is already newest-first, and every surface that
+  # renders this tail truncates from the *front* (the dashboard retry row at
+  # 120 characters, the terminal dashboard at 96), after a ~50-character
+  # `agent exited: Agent run failed: {:agent_exit, 1, "` prefix. Emitting it in
+  # chronological order put the CLI's own error line — the last thing it
+  # printed, and the whole point of retaining a tail — past every cut, so a
+  # streaming turn showed nothing but its oldest retained noise line.
+  #
+  # `Stream` (not `Enum`) so the sanitizing regexes run on the ~20 lines that
+  # are kept rather than on the entire turn's stdout: `acc` holds every line of
+  # a stream-json transcript, which is routinely tens of megabytes.
+  defp failure_tail(acc, remaining) do
+    [remaining | acc]
+    |> Stream.map(&sanitize_output_line/1)
+    |> Stream.reject(&(&1 == ""))
+    |> Enum.take(@agent_exit_tail_lines)
+    |> Enum.join("\n")
+    |> Text.truncate_trailing_bytes(@agent_exit_tail_bytes)
+  end
+
+  defp sanitize_output_line(line) do
+    line
+    |> to_string()
+    |> Text.strip_ansi_and_control()
+    |> String.trim()
   end
 
   defp emit_harness_stdout(on_message, line) do

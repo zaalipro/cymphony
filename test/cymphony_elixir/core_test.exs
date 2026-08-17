@@ -570,6 +570,51 @@ defmodule CymphonyElixir.CoreTest do
     assert_due_in_range(due_at_ms, 39_500, 40_500)
   end
 
+  test "a crashed agent task records the agent CLI error instead of the raw exception tuple" do
+    issue_id = "issue-crash-message"
+    ref = make_ref()
+    orchestrator_name = Module.concat(__MODULE__, :CrashMessageOrchestrator)
+    {:ok, pid} = Orchestrator.start_link(name: orchestrator_name)
+
+    on_exit(fn ->
+      if Process.alive?(pid) do
+        Process.exit(pid, :normal)
+      end
+    end)
+
+    initial_state = :sys.get_state(pid)
+
+    running_entry = %{
+      pid: self(),
+      ref: ref,
+      identifier: "MT-561",
+      retry_attempt: 0,
+      issue: %Issue{id: issue_id, identifier: "MT-561", state: "In Progress"},
+      started_at: DateTime.utc_now()
+    }
+
+    :sys.replace_state(pid, fn _ ->
+      initial_state
+      |> Map.put(:running, %{issue_id => running_entry})
+      |> Map.put(:claimed, MapSet.new([issue_id]))
+      |> Map.put(:retry_attempts, %{})
+    end)
+
+    exception = %RuntimeError{
+      message: "Agent run failed: {:agent_exit, 1, \"invalid model selection: sonnet-9\"} (issue_id=#{issue_id} issue_identifier=MT-561)"
+    }
+
+    send(pid, {:DOWN, ref, :process, self(), {exception, [{Foo, :bar, 1, []}]}})
+    Process.sleep(50)
+    state = :sys.get_state(pid)
+
+    assert %{identifier: "MT-561", error: error} = state.retry_attempts[issue_id]
+    assert error =~ "invalid model selection: sonnet-9"
+    refute error =~ "RuntimeError"
+    # The dashboard retry row truncates to 120 characters.
+    assert String.slice(error, 0, 120) =~ "invalid model selection: sonnet-9"
+  end
+
   test "first abnormal worker exit waits before retrying" do
     issue_id = "issue-crash-initial"
     ref = make_ref()
@@ -760,6 +805,158 @@ defmodule CymphonyElixir.CoreTest do
              identifier: "MT-561",
              error: "agent exited: :boom"
            } = :sys.get_state(pid).retry_attempts[issue_id]
+  end
+
+  test "a retry timer that fires while paused holds without incrementing its attempt" do
+    issue_id = "issue-paused-retry"
+    orchestrator_name = Module.concat(__MODULE__, :PausedRetryOrchestrator)
+    {:ok, pid} = Orchestrator.start_link(name: orchestrator_name)
+
+    on_exit(fn -> if Process.alive?(pid), do: Process.exit(pid, :normal) end)
+
+    initial_state = :sys.get_state(pid)
+    retry_token = make_ref()
+    due_at_ms = System.monotonic_time(:millisecond)
+
+    :sys.replace_state(pid, fn _ ->
+      initial_state
+      |> Map.put(:paused, true)
+      |> Map.put(:claimed, MapSet.new([issue_id]))
+      |> Map.put(:retry_attempts, %{
+        issue_id => %{
+          attempt: 3,
+          timer_ref: nil,
+          retry_token: retry_token,
+          due_at_ms: due_at_ms,
+          identifier: "MT-570",
+          error: "agent exited: :boom",
+          failures: 2
+        }
+      })
+    end)
+
+    send(pid, {:retry_issue, issue_id, retry_token})
+    Process.sleep(50)
+
+    held = :sys.get_state(pid).retry_attempts[issue_id]
+
+    # Same attempt / failures: a paused cycle must not consume the budget or
+    # push the backoff out. No armed timer, and it still reads as due now.
+    assert %{attempt: 3, failures: 2, held: true, timer_ref: nil, due_at_ms: ^due_at_ms} = held
+    assert held.identifier == "MT-570"
+    assert MapSet.member?(:sys.get_state(pid).claimed, issue_id)
+
+    # A second firing while still paused is idempotent.
+    send(pid, {:retry_issue, issue_id, retry_token})
+    Process.sleep(50)
+    assert %{attempt: 3, failures: 2, held: true} = :sys.get_state(pid).retry_attempts[issue_id]
+
+    snapshot = Orchestrator.snapshot(pid, 1_000)
+    assert [%{issue_id: ^issue_id, attempt: 3, due_in_ms: 0, held: true} = row] = snapshot.retrying
+
+    # `due_in_ms: 0` alone cannot distinguish "parked until resume" from "due
+    # right now", and a presenter deriving an absolute due time from `now + 0`
+    # would move on every load. `held` carries the state, and the payload
+    # therefore has no `due_at` at all.
+    payload = CymphonyElixirWeb.Presenter.state_payload(pid, 1_000)
+    assert [%{"held" => true, "due_at" => nil}] = Jason.decode!(Jason.encode!(payload))["retrying"]
+    assert row.held == true
+  end
+
+  test "a stale retry token is ignored while paused" do
+    issue_id = "issue-paused-stale"
+    orchestrator_name = Module.concat(__MODULE__, :PausedStaleRetryOrchestrator)
+    {:ok, pid} = Orchestrator.start_link(name: orchestrator_name)
+
+    on_exit(fn -> if Process.alive?(pid), do: Process.exit(pid, :normal) end)
+
+    initial_state = :sys.get_state(pid)
+    current_retry_token = make_ref()
+
+    entry = %{
+      attempt: 2,
+      timer_ref: nil,
+      retry_token: current_retry_token,
+      due_at_ms: System.monotonic_time(:millisecond) + 30_000,
+      identifier: "MT-571",
+      error: "agent exited: :boom"
+    }
+
+    :sys.replace_state(pid, fn _ ->
+      initial_state
+      |> Map.put(:paused, true)
+      |> Map.put(:retry_attempts, %{issue_id => entry})
+    end)
+
+    send(pid, {:retry_issue, issue_id, make_ref()})
+    Process.sleep(50)
+
+    assert :sys.get_state(pid).retry_attempts[issue_id] == entry
+  end
+
+  # Driven through handle_call/3 directly: the released retry re-sends
+  # {:retry_issue, …} to `self()`, so asserting on it in the caller's mailbox is
+  # deterministic where a live GenServer would race the assertion.
+  test "resume releases held retries immediately without changing the attempt" do
+    issue_id = "issue-resume-retry"
+    other_id = "issue-resume-armed"
+    held_token = make_ref()
+    armed_token = make_ref()
+
+    armed = %{
+      attempt: 1,
+      timer_ref: nil,
+      retry_token: armed_token,
+      due_at_ms: System.monotonic_time(:millisecond) + 30_000,
+      identifier: "MT-573",
+      error: "agent exited: :boom"
+    }
+
+    state = %Orchestrator.State{
+      paused: true,
+      retry_attempts: %{
+        issue_id => %{
+          attempt: 4,
+          timer_ref: nil,
+          retry_token: held_token,
+          due_at_ms: System.monotonic_time(:millisecond),
+          identifier: "MT-572",
+          error: "agent exited: :boom",
+          failures: 1,
+          held: true
+        },
+        other_id => armed
+      }
+    }
+
+    assert {:reply, :ok, resumed} = Orchestrator.handle_call(:resume, {self(), make_ref()}, state)
+    refute resumed.paused
+
+    released = resumed.retry_attempts[issue_id]
+    assert released.attempt == 4
+    assert released.failures == 1
+    assert released.identifier == "MT-572"
+    assert released.error == "agent exited: :boom"
+    refute Map.has_key?(released, :held)
+    assert is_reference(released.timer_ref)
+    refute released.retry_token == held_token
+    assert released.due_at_ms <= System.monotonic_time(:millisecond)
+
+    # Eligible right away — no fresh backoff wait before the retry is retried.
+    released_token = released.retry_token
+    assert_receive {:retry_issue, ^issue_id, ^released_token}, 1_000
+
+    # Retries that never fired while paused keep their armed schedule untouched.
+    assert resumed.retry_attempts[other_id] == armed
+    refute_received {:retry_issue, ^other_id, _token}
+  end
+
+  test "resume with no held retries leaves the retry queue alone" do
+    state = %Orchestrator.State{paused: true, retry_attempts: %{}}
+
+    assert {:reply, :ok, resumed} = Orchestrator.handle_call(:resume, {self(), make_ref()}, state)
+    refute resumed.paused
+    assert resumed.retry_attempts == %{}
   end
 
   test "manual refresh coalesces repeated requests and ignores superseded ticks" do

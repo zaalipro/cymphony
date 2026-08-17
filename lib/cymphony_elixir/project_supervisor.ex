@@ -141,6 +141,10 @@ defmodule CymphonyElixir.ProjectSupervisor do
   @doc """
   Regenerates the project's temp `WORKFLOW.md` from `config.json` and
   reloads the running `WorkflowStore`.
+
+  The rewrite goes through `WorkflowGenerator.write/2`, so the regenerated file
+  keeps mode `0600` (it carries the Linear API key) even when the original was
+  created by an older build under the process umask.
   """
   @spec rewrite_workflow(String.t()) :: :ok | {:error, :not_found | term()}
   def rewrite_workflow(project_name) when is_binary(project_name) do
@@ -150,8 +154,8 @@ defmodule CymphonyElixir.ProjectSupervisor do
 
       store ->
         with {:ok, config} <- CymphonyConfig.load(),
-             {:ok, project} <- CymphonyConfig.find_project(config, project_name) do
-          File.write!(WorkflowStore.path(store), WorkflowGenerator.generate(project))
+             {:ok, project} <- CymphonyConfig.find_project(config, project_name),
+             :ok <- WorkflowGenerator.write(WorkflowStore.path(store), project) do
           WorkflowStore.force_reload(store)
         end
     end

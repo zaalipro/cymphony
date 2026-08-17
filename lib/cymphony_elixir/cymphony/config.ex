@@ -7,6 +7,8 @@ defmodule CymphonyElixir.Cymphony.Config do
   @config_dir "~/.cymphony"
   @config_file "config.json"
   @default_dashboard_refresh_seconds 3
+  # Owner read/write only: config.json carries the Linear API key in cleartext.
+  @file_mode 0o600
 
   @spec config_dir() :: String.t()
   def config_dir do
@@ -141,24 +143,32 @@ defmodule CymphonyElixir.Cymphony.Config do
           {:ok, map()}
           | {:error, :duplicate_name | :duplicate_slug | :not_connected | :invalid_project | term()}
   def add_project(attrs) when is_map(attrs) do
-    with {:ok, name} <- required_project_string(attrs, "name"),
-         {:ok, slug} <- required_project_string(attrs, "linear_project_slug"),
-         {:ok, config} <- load_or_empty_config(),
-         {:ok, api_key} <- connected_linear_api_key(config),
-         :ok <- reject_duplicate_project(config, name, slug) do
-      project = build_added_project(attrs, name, slug, api_key)
-      persist_added_project(config, project)
-    end
+    with_write_lock(fn ->
+      with {:ok, name} <- required_project_string(attrs, "name"),
+           {:ok, slug} <- required_project_string(attrs, "linear_project_slug"),
+           {:ok, config} <- load_or_empty_config(),
+           {:ok, api_key} <- connected_linear_api_key(config),
+           :ok <- reject_duplicate_project(config, name, slug) do
+        project = build_added_project(attrs, name, slug, api_key)
+        persist_added_project(config, project)
+      end
+    end)
   end
 
   defp persist_linear_api_key(key) do
-    with {:ok, config} <- load_or_empty_config() do
-      updated = stamp_linear_api_key(config, key)
-
-      case save(updated) do
-        :ok -> {:ok, updated}
-        {:error, reason} -> {:error, reason}
+    with_write_lock(fn ->
+      with {:ok, config} <- load_or_empty_config() do
+        save_stamped_linear_api_key(config, key)
       end
+    end)
+  end
+
+  defp save_stamped_linear_api_key(config, key) do
+    updated = stamp_linear_api_key(config, key)
+
+    case save(updated) do
+      :ok -> {:ok, updated}
+      {:error, reason} -> {:error, reason}
     end
   end
 
@@ -304,11 +314,13 @@ defmodule CymphonyElixir.Cymphony.Config do
   @spec update_concurrency(String.t() | nil, pos_integer()) ::
           {:ok, map()} | {:error, term()}
   def update_concurrency(project_name, n) when is_integer(n) and n > 0 do
-    with {:ok, config} <- load(),
-         {:ok, updated} <- apply_concurrency(config, project_name, n),
-         :ok <- save(updated) do
-      {:ok, updated}
-    end
+    with_write_lock(fn ->
+      with {:ok, config} <- load(),
+           {:ok, updated} <- apply_concurrency(config, project_name, n),
+           :ok <- save(updated) do
+        {:ok, updated}
+      end
+    end)
   end
 
   defp apply_concurrency(%{"projects" => projects} = config, project_name, n)
@@ -332,6 +344,73 @@ defmodule CymphonyElixir.Cymphony.Config do
 
   defp apply_concurrency(config, _project_name, n) when is_map(config) do
     {:ok, Map.put(config, "max_concurrent_agents", n)}
+  end
+
+  @doc """
+  Persists the dispatch-pause flag for the named project (every project when
+  `project_name` is `nil`) and saves to disk.
+
+  Stored as the per-project boolean `"dispatch_paused"` so a paused project
+  stays paused across a daemon restart — `Orchestrator.init/1` reads it back
+  before the first poll tick. Returns `{:ok, updated_config}` or an error tuple.
+  """
+  @spec update_dispatch_paused(String.t() | nil, boolean()) ::
+          {:ok, map()} | {:error, term()}
+  def update_dispatch_paused(project_name, paused?) when is_boolean(paused?) do
+    with_write_lock(fn ->
+      with {:ok, config} <- load(),
+           {:ok, updated} <- apply_dispatch_paused(config, project_name, paused?),
+           :ok <- save(updated) do
+        {:ok, updated}
+      end
+    end)
+  end
+
+  defp apply_dispatch_paused(%{"projects" => projects} = config, project_name, paused?)
+       when is_list(projects) do
+    updated_projects =
+      Enum.map(projects, fn project ->
+        if is_nil(project_name) or project["name"] == project_name do
+          Map.put(project, "dispatch_paused", paused?)
+        else
+          project
+        end
+      end)
+
+    {:ok, Map.put(config, "projects", updated_projects)}
+  end
+
+  defp apply_dispatch_paused(config, _project_name, paused?) when is_map(config) do
+    {:ok, Map.put(config, "dispatch_paused", paused?)}
+  end
+
+  @doc """
+  Reads back the persisted dispatch-pause flag for a project.
+
+  Prefers the named project's `"dispatch_paused"` (or the sole project's when
+  `project_name` is `nil`), falling back to the top-level key for a legacy flat
+  config. Anything other than a stored `true` is `false`.
+  """
+  @spec dispatch_paused?(map(), String.t() | nil) :: boolean()
+  def dispatch_paused?(config, project_name) when is_map(config) do
+    case dispatch_paused_project(config, project_name) do
+      {:ok, project} -> Map.get(project, "dispatch_paused") == true
+      :error -> Map.get(config, "dispatch_paused") == true
+    end
+  end
+
+  defp dispatch_paused_project(config, project_name) when is_binary(project_name) do
+    case find_project(config, project_name) do
+      {:ok, project} -> {:ok, project}
+      {:error, :project_not_found} -> :error
+    end
+  end
+
+  defp dispatch_paused_project(config, _project_name) do
+    case projects(config) do
+      [project] when is_map(project) -> {:ok, project}
+      _ -> :error
+    end
   end
 
   @doc """
@@ -374,11 +453,13 @@ defmodule CymphonyElixir.Cymphony.Config do
   """
   @spec update_dashboard_refresh_seconds(term()) :: {:ok, map()} | {:error, term()}
   def update_dashboard_refresh_seconds(n) when is_integer(n) and n > 0 do
-    with {:ok, config} <- load(),
-         updated = Map.put(config, "dashboard_refresh_seconds", n),
-         :ok <- save(updated) do
-      {:ok, updated}
-    end
+    with_write_lock(fn ->
+      with {:ok, config} <- load(),
+           updated = Map.put(config, "dashboard_refresh_seconds", n),
+           :ok <- save(updated) do
+        {:ok, updated}
+      end
+    end)
   end
 
   def update_dashboard_refresh_seconds(_n), do: {:error, :invalid_refresh_interval}
@@ -392,11 +473,13 @@ defmodule CymphonyElixir.Cymphony.Config do
           {:ok, map()} | {:error, term()}
   def update_providers(project_name, providers)
       when is_list(providers) and providers != [] do
-    with {:ok, config} <- load(),
-         {:ok, updated} <- apply_providers(config, project_name, providers),
-         :ok <- save(updated) do
-      {:ok, updated}
-    end
+    with_write_lock(fn ->
+      with {:ok, config} <- load(),
+           {:ok, updated} <- apply_providers(config, project_name, providers),
+           :ok <- save(updated) do
+        {:ok, updated}
+      end
+    end)
   end
 
   def update_providers(_project_name, _providers), do: {:error, :invalid_providers}
@@ -440,11 +523,13 @@ defmodule CymphonyElixir.Cymphony.Config do
   @spec update_agent_settings(String.t() | nil, map()) ::
           :ok | {:error, :invalid_agent_kind | term()}
   def update_agent_settings(project_name, settings) when is_map(settings) do
-    with :ok <- validate_agent_kind(Map.get(settings, "agent")),
-         {:ok, config} <- load(),
-         {:ok, updated} <- apply_agent_settings(config, project_name, settings) do
-      save(updated)
-    end
+    with_write_lock(fn ->
+      with :ok <- validate_agent_kind(Map.get(settings, "agent")),
+           {:ok, config} <- load(),
+           {:ok, updated} <- apply_agent_settings(config, project_name, settings) do
+        save(updated)
+      end
+    end)
   end
 
   defp validate_agent_kind(nil), do: :ok
@@ -501,12 +586,14 @@ defmodule CymphonyElixir.Cymphony.Config do
           {:ok, map()} | {:error, :invalid_queue | term()}
   def update_project_queue(project_name, attrs)
       when (is_binary(project_name) or is_nil(project_name)) and is_map(attrs) do
-    with {:ok, sanitized} <- sanitize_queue_attrs(attrs),
-         {:ok, config} <- load(),
-         {:ok, updated} <- apply_project_queue(config, project_name, sanitized),
-         :ok <- save(updated) do
-      {:ok, updated}
-    end
+    with_write_lock(fn ->
+      with {:ok, sanitized} <- sanitize_queue_attrs(attrs),
+           {:ok, config} <- load(),
+           {:ok, updated} <- apply_project_queue(config, project_name, sanitized),
+           :ok <- save(updated) do
+        {:ok, updated}
+      end
+    end)
   end
 
   def update_project_queue(_project_name, _attrs), do: {:error, :invalid_queue}
@@ -687,22 +774,59 @@ defmodule CymphonyElixir.Cymphony.Config do
 
   def parse_providers_csv(_), do: {:error, :empty}
 
+  @doc """
+  Writes `config` to `config.json` at mode `0600`.
+
+  Staged through a sibling temp file that is chmod'd while still empty and then
+  renamed over the target, the same treatment `WorkflowGenerator.write/2` gives
+  the generated `WORKFLOW.md`:
+
+    * the Linear API key the file carries in cleartext is never on disk under a
+      umask-derived mode, not even for the width of one `File.write/2`;
+    * the rename is atomic, so a concurrent reader (`Orchestrator.init/1`
+      seeding its persisted pause flag, another `update_*` load) never observes
+      a truncated or half-written config, and a failed write leaves the
+      previous file intact.
+  """
   @spec save(map()) :: :ok | {:error, term()}
   def save(config) do
     dir = config_dir()
 
     with :ok <- File.mkdir_p(dir),
          {:ok, json} <- Jason.encode(config, pretty: true) do
-      path = config_path()
+      write_atomically(config_path(), json)
+    end
+  end
 
-      case File.write(path, json) do
-        :ok ->
-          File.chmod(path, 0o600)
-          :ok
+  # Serializes one `load → modify → save` against every other one on the node.
+  #
+  # The writers do not share a process: the dashboard LiveView, the JSON API
+  # controller, and each project's Orchestrator (which persists `queue_order` /
+  # `queue_priority_seen` from its poll tick whenever the waiting set moves) all
+  # run the sequence themselves. Interleaved, the later `save/1` writes back a
+  # config it loaded before the earlier one — silently dropping a freshly
+  # persisted `dispatch_paused` (the daemon stays paused in memory, so nothing
+  # looks wrong until the next restart resumes it) or a drag-reordered queue.
+  #
+  # `:global.trans/2` retries forever rather than returning `:aborted`, and
+  # `:global` drops the locks of a process that dies holding one, so the only
+  # outcome is the wrapped function's own result.
+  defp with_write_lock(fun) do
+    :global.trans({{__MODULE__, :config_write}, self()}, fun)
+  end
 
-        {:error, reason} ->
-          {:error, "Failed to write #{path}: #{inspect(reason)}"}
-      end
+  defp write_atomically(path, json) do
+    staged = "#{path}.tmp-#{:erlang.unique_integer([:positive])}"
+
+    with :ok <- File.write(staged, ""),
+         :ok <- File.chmod(staged, @file_mode),
+         :ok <- File.write(staged, json),
+         :ok <- File.rename(staged, path) do
+      :ok
+    else
+      {:error, reason} ->
+        File.rm(staged)
+        {:error, "Failed to write #{path}: #{inspect(reason)}"}
     end
   end
 
@@ -737,7 +861,8 @@ defmodule CymphonyElixir.Cymphony.Config do
         "model" => Map.get(config, "model"),
         "effort" => Map.get(config, "effort"),
         "max_concurrent_agents" => Map.get(config, "max_concurrent_agents", Defaults.max_concurrent_agents()),
-        "max_turns" => Defaults.max_turns()
+        "max_turns" => Defaults.max_turns(),
+        "stall_timeout_ms" => stall_timeout_ms(config)
       },
       "claude" => agent_section_map(config, "claude"),
       "codex" => agent_section_map(config, "codex"),
@@ -750,6 +875,18 @@ defmodule CymphonyElixir.Cymphony.Config do
   defp agent_kind(config) do
     kind = Map.get(config, "agent")
     if kind in Agent.known_kinds(), do: kind, else: Defaults.agent_kind()
+  end
+
+  # Only a positive integer is honored. A missing key, `0`, a negative number, a
+  # float or a stringified number falls back to the schema default rather than
+  # generating an out-of-range front-matter value: a typo must not silently
+  # disable the stall watchdog (`stall_timeout_ms <= 0` turns it off) or fail
+  # `Schema.parse/1` and take the whole project down.
+  defp stall_timeout_ms(config) do
+    case Map.get(config, "stall_timeout_ms") do
+      value when is_integer(value) and value > 0 -> value
+      _ -> Defaults.stall_timeout_ms()
+    end
   end
 
   defp agent_section_map(config, "claude") do

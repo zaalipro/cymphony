@@ -372,7 +372,8 @@ defmodule CymphonyElixirWeb.Presenter do
       issue_url: issue_field(entry, :url),
       priority: issue_field(entry, :priority),
       attempt: entry.attempt,
-      due_at: due_at_iso8601(entry.due_in_ms),
+      held: held?(entry),
+      due_at: due_at_iso8601(entry),
       error: entry.error,
       worker_host: Map.get(entry, :worker_host),
       workspace_path: Map.get(entry, :workspace_path),
@@ -480,7 +481,8 @@ defmodule CymphonyElixirWeb.Presenter do
   defp retry_issue_payload(retry) do
     %{
       attempt: retry.attempt,
-      due_at: due_at_iso8601(retry.due_in_ms),
+      held: held?(retry),
+      due_at: due_at_iso8601(retry),
       error: retry.error,
       worker_host: Map.get(retry, :worker_host),
       workspace_path: Map.get(retry, :workspace_path)
@@ -537,14 +539,23 @@ defmodule CymphonyElixirWeb.Presenter do
   # jitters by the snapshot round-trip (`due_in_ms` is measured against the
   # orchestrator's monotonic clock, `utc_now/0` is sampled here), so it is a large
   # reduction in flip rate rather than an absolute guarantee.
-  defp due_at_iso8601(due_in_ms) when is_integer(due_in_ms) do
+  # A held entry has no due time at all: dispatch is paused, its timer is
+  # disarmed, and its `due_in_ms` is clamped to 0 forever. Deriving `due_at`
+  # from `now + 0` would hand the dashboard a value that advances one second
+  # per second, so a paused board with a single held retry re-rendered every
+  # project section on every payload load. `held` carries the state instead.
+  defp due_at_iso8601(%{held: true}), do: nil
+
+  defp due_at_iso8601(%{due_in_ms: due_in_ms}) when is_integer(due_in_ms) do
     DateTime.utc_now()
     |> DateTime.add(due_in_ms, :millisecond)
     |> DateTime.truncate(:second)
     |> DateTime.to_iso8601()
   end
 
-  defp due_at_iso8601(_due_in_ms), do: nil
+  defp due_at_iso8601(_entry), do: nil
+
+  defp held?(entry), do: Map.get(entry, :held) == true
 
   defp iso8601(%DateTime{} = datetime) do
     datetime

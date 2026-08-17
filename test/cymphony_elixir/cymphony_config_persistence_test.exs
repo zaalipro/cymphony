@@ -122,6 +122,60 @@ defmodule CymphonyElixir.Cymphony.ConfigPersistenceTest do
     end
   end
 
+  describe "update_dispatch_paused/2 and dispatch_paused?/2" do
+    test "round-trips the flag for the named project only", %{path: path} do
+      write_config!(path, %{"projects" => [%{"name" => "alpha"}, %{"name" => "beta"}]})
+
+      assert {:ok, updated} = CymphonyConfig.update_dispatch_paused("alpha", true)
+
+      assert updated["projects"] == [
+               %{"name" => "alpha", "dispatch_paused" => true},
+               %{"name" => "beta"}
+             ]
+
+      {:ok, reloaded} = CymphonyConfig.load()
+      assert reloaded == updated
+      assert CymphonyConfig.dispatch_paused?(reloaded, "alpha")
+      refute CymphonyConfig.dispatch_paused?(reloaded, "beta")
+
+      assert {:ok, resumed} = CymphonyConfig.update_dispatch_paused("alpha", false)
+      refute CymphonyConfig.dispatch_paused?(resumed, "alpha")
+    end
+
+    test "nil project name updates every project", %{path: path} do
+      write_config!(path, %{"projects" => [%{"name" => "alpha"}, %{"name" => "beta"}]})
+
+      assert {:ok, updated} = CymphonyConfig.update_dispatch_paused(nil, true)
+      assert Enum.all?(updated["projects"], &(&1["dispatch_paused"] == true))
+    end
+
+    test "returns the load error when the file is missing" do
+      assert {:error, msg} = CymphonyConfig.update_dispatch_paused("alpha", true)
+      assert msg =~ "Failed to read"
+    end
+
+    test "applies at the top level when projects is not a list", %{path: path} do
+      write_config!(path, %{"projects" => "legacy", "name" => "flat"})
+
+      assert {:ok, updated} = CymphonyConfig.update_dispatch_paused("ignored", true)
+      assert updated["dispatch_paused"] == true
+      assert updated["projects"] == "legacy"
+      assert CymphonyConfig.dispatch_paused?(updated, "ignored")
+      assert CymphonyConfig.dispatch_paused?(updated, nil)
+    end
+
+    test "reads a sole project's flag when no project name is given" do
+      assert CymphonyConfig.dispatch_paused?(%{"projects" => [%{"name" => "solo", "dispatch_paused" => true}]}, nil)
+    end
+
+    test "is false for a missing, non-boolean, or unknown-project value" do
+      refute CymphonyConfig.dispatch_paused?(%{"projects" => [%{"name" => "alpha"}]}, "alpha")
+      refute CymphonyConfig.dispatch_paused?(%{"projects" => [%{"name" => "alpha", "dispatch_paused" => "yes"}]}, "alpha")
+      refute CymphonyConfig.dispatch_paused?(%{"projects" => [%{"name" => "alpha"}, %{"name" => "beta"}]}, nil)
+      refute CymphonyConfig.dispatch_paused?(%{"projects" => []}, "ghost")
+    end
+  end
+
   describe "dashboard_refresh_seconds/0, /1 and update_dashboard_refresh_seconds/1" do
     test "reads a named top-level value and defaults to 3", %{path: path} do
       write_config!(path, %{

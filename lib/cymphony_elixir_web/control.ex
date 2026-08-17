@@ -32,11 +32,24 @@ defmodule CymphonyElixirWeb.Control do
   def scope(""), do: :all
   def scope(name) when is_binary(name), do: {:project, name}
 
-  @spec pause(scope()) :: :ok | {:error, :not_found}
-  def pause(scope), do: apply_scope(scope, &Orchestrator.pause/1, &noop_persist/1)
+  @doc """
+  Stops dispatching for `scope` and persists `dispatch_paused: true`.
 
-  @spec resume(scope()) :: :ok | {:error, :not_found}
-  def resume(scope), do: apply_scope(scope, &Orchestrator.resume/1, &noop_persist/1)
+  The flag is per project in `config.json`, so a paused project is still paused
+  after a daemon restart (`Orchestrator.init/1` seeds `state.paused` from it
+  before the first poll tick). Running sessions are untouched.
+  """
+  @spec pause(scope()) :: :ok | {:error, :not_found | term()}
+  def pause(scope), do: apply_scope(scope, &Orchestrator.pause/1, &persist_dispatch_paused(&1, true))
+
+  @doc """
+  Resumes dispatching for `scope` and persists `dispatch_paused: false`.
+
+  Retries held while paused are released by the orchestrator and become
+  eligible again without an extra backoff wait or attempt increment.
+  """
+  @spec resume(scope()) :: :ok | {:error, :not_found | term()}
+  def resume(scope), do: apply_scope(scope, &Orchestrator.resume/1, &persist_dispatch_paused(&1, false))
 
   @spec set_concurrency(scope(), pos_integer()) :: :ok | {:error, :not_found}
   def set_concurrency(scope, n) when is_integer(n) and n > 0 do
@@ -258,8 +271,9 @@ defmodule CymphonyElixirWeb.Control do
   def parse_queue_pin(_params), do: :error
 
   # Runs `orch_fun.(pid)` and `persist_fun.(project_name | nil)` for every
-  # orchestrator in scope. `persist_fun` receives the project name (or `nil` for
-  # the legacy single orchestrator) so config writes are keyed correctly.
+  # orchestrator in scope. `persist_fun` receives the project name so config
+  # writes are keyed correctly; only an `:all` scope passes `nil`, which the
+  # config writers read as "every project".
   # Persist errors (`{:error, reason}`) are returned; `:ok` / `{:ok, _}` succeed.
   defp apply_scope(:all, orch_fun, persist_fun) do
     case ProjectSupervisor.list_orchestrators() do
@@ -268,7 +282,7 @@ defmodule CymphonyElixirWeb.Control do
         persist_result(persist_fun.(nil))
 
       orchestrators ->
-        Enum.reduce_while(orchestrators, :ok, &apply_scope_to_orchestrator(&1, &2, orch_fun, persist_fun))
+        Enum.reduce(orchestrators, :ok, &apply_scope_to_orchestrator(&1, &2, orch_fun, persist_fun))
     end
   end
 
@@ -282,7 +296,12 @@ defmodule CymphonyElixirWeb.Control do
         case ProjectSupervisor.list_orchestrators() do
           [] ->
             maybe_call_legacy_orchestrator(orch_fun)
-            persist_result(persist_fun.(nil))
+            # Still keyed by the requested project, never `nil`: `nil` means
+            # "every project" to the config writers, so a per-project Pause in
+            # legacy WORKFLOW.md mode used to write `dispatch_paused: true`
+            # onto every entry in config.json and the whole fleet booted
+            # paused on the next multi-project run.
+            persist_result(persist_fun.(name))
 
           _ ->
             {:error, :not_found}
@@ -290,12 +309,18 @@ defmodule CymphonyElixirWeb.Control do
     end
   end
 
-  defp apply_scope_to_orchestrator({project, pid}, :ok, orch_fun, persist_fun) do
+  # Every orchestrator in scope gets both calls even after one persist fails.
+  # Halting the fold left the projects behind the failure still dispatching,
+  # which for a stop-work control (`pause`) is the opposite of what was asked
+  # for — and both callers reported success anyway. The first persist error is
+  # returned once the whole fan-out has run.
+  defp apply_scope_to_orchestrator({project, pid}, acc, orch_fun, persist_fun) do
     orch_fun.(pid)
+    result = persist_result(persist_fun.(project))
 
-    case persist_result(persist_fun.(project)) do
-      :ok -> {:cont, :ok}
-      {:error, _reason} = error -> {:halt, error}
+    case acc do
+      :ok -> result
+      {:error, _reason} -> acc
     end
   end
 
@@ -308,6 +333,21 @@ defmodule CymphonyElixirWeb.Control do
 
   defp require_project_scope({:project, name}) when is_binary(name) and name != "", do: :ok
   defp require_project_scope(_scope), do: {:error, :invalid_scope}
+
+  # Legacy WORKFLOW.md mode has no config store at all, so there is no durable
+  # pause to write and nothing was lost — reporting `dispatch_pause_not_persisted`
+  # there would fail every toggle of a pause that worked. This matches the
+  # boot-time seed, which stays silent when `config.json` is simply absent and
+  # only warns when it exists but cannot be read
+  # (`Orchestrator.warn_unreadable_pause_seed/2`). A config store that exists
+  # and cannot be written is still an error: that one really does lose the flag.
+  defp persist_dispatch_paused(project, paused?) do
+    if CymphonyConfig.exists?() do
+      CymphonyConfig.update_dispatch_paused(project, paused?)
+    else
+      :ok
+    end
+  end
 
   defp persist_queue_order(project, order) do
     CymphonyConfig.update_project_queue(project, %{"queue_order" => order})
@@ -325,17 +365,13 @@ defmodule CymphonyElixirWeb.Control do
     |> overlay_queue_pin(issue, pin)
   end
 
-  defp loaded_queue_pins(project) do
+  # `set_queue_pin/3` requires a named project scope, and the legacy fallback
+  # now keys its persist by that same name, so `project` is always a binary
+  # here — there is no "all projects" pin merge to handle.
+  defp loaded_queue_pins(project) when is_binary(project) do
     case CymphonyConfig.load() do
       {:ok, config} -> queue_pins_from_config(config, project)
       _ -> %{}
-    end
-  end
-
-  defp queue_pins_from_config(config, nil) do
-    case CymphonyConfig.projects(config) do
-      [first | _] -> as_pin_map(Map.get(first, "queue_pins"))
-      _ -> as_pin_map(Map.get(config, "queue_pins"))
     end
   end
 
@@ -509,8 +545,6 @@ defmodule CymphonyElixirWeb.Control do
   defp persist_result(:ok), do: :ok
   defp persist_result({:ok, _}), do: :ok
   defp persist_result({:error, _} = error), do: error
-
-  defp noop_persist(_project), do: :ok
 
   defp maybe_call_legacy_orchestrator(orch_fun) do
     case live_legacy_orchestrator() do

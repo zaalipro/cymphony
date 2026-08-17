@@ -12,6 +12,7 @@ defmodule CymphonyElixir.Cymphony.Defaults do
   @active_states ["Todo", "In Progress", "Merging", "Rework"]
   @terminal_states ["Closed", "Cancelled", "Canceled", "Duplicate", "Done"]
   @max_turns 20
+  @stall_timeout_ms 300_000
   @output_format "stream-json"
   @polling_interval_ms 5000
   @workspace_root "~/.cymphony/workspaces"
@@ -30,6 +31,16 @@ defmodule CymphonyElixir.Cymphony.Defaults do
 
   @spec max_turns() :: pos_integer()
   def max_turns, do: @max_turns
+
+  @doc """
+  Milliseconds of agent-event silence before the stall watchdog kills a session.
+
+  Matches `Config.Schema`'s `agent.stall_timeout_ms` default so an omitted
+  `config.json` key generates the same value a hand-authored `WORKFLOW.md` would
+  fall back to.
+  """
+  @spec stall_timeout_ms() :: pos_integer()
+  def stall_timeout_ms, do: @stall_timeout_ms
 
   @spec output_format() :: String.t()
   def output_format, do: @output_format

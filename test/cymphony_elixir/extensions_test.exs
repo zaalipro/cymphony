@@ -451,6 +451,7 @@ defmodule CymphonyElixir.ExtensionsTest do
                  "issue_url" => nil,
                  "priority" => nil,
                  "attempt" => 2,
+                 "held" => false,
                  "due_at" => state_payload["retrying"] |> List.first() |> Map.fetch!("due_at"),
                  "error" => "boom",
                  "worker_host" => nil,
@@ -785,6 +786,7 @@ defmodule CymphonyElixir.ExtensionsTest do
 
   describe "pause / resume" do
     test "POST /api/v1/pause sets paused flag and POST /api/v1/resume clears it" do
+      tmp = isolate_config_dir!()
       orchestrator_name = Module.concat(__MODULE__, :PauseOrchestrator)
       {:ok, pid} = CymphonyElixir.Orchestrator.start_link(name: orchestrator_name)
 
@@ -797,12 +799,49 @@ defmodule CymphonyElixir.ExtensionsTest do
 
       snapshot = CymphonyElixir.Orchestrator.snapshot(orchestrator_name, 1_000)
       assert snapshot.polling.paused == true
+      assert stored_dispatch_paused(tmp) == [true]
 
       assert %{status: 202, resp_body: resume_body} = post(build_conn(), "/api/v1/resume", %{})
       assert resume_body =~ ~s("paused":false)
 
       snapshot = CymphonyElixir.Orchestrator.snapshot(orchestrator_name, 1_000)
       assert snapshot.polling.paused == false
+      assert stored_dispatch_paused(tmp) == [false]
+    end
+
+    test "POST /api/v1/pause still answers 202 with ?project= and persists" do
+      tmp = isolate_config_dir!()
+      orchestrator_name = Module.concat(__MODULE__, :PauseScopedOrchestrator)
+
+      {:ok, _pid} =
+        StaticOrchestrator.start_link(
+          name: orchestrator_name,
+          snapshot: static_snapshot(),
+          recipient: self()
+        )
+
+      start_test_endpoint(orchestrator: orchestrator_name, snapshot_timeout_ms: 50)
+
+      assert %{status: 202, resp_body: body} = post(build_conn(), "/api/v1/pause?project=alpha", %{})
+      assert body =~ ~s("paused":true)
+      assert body =~ ~s("project":"alpha")
+      assert_receive {:orchestrator_call, :pause}, 1_000
+      assert stored_dispatch_paused(tmp) == [true]
+    end
+
+    test "a project persisted as paused starts paused and does not dispatch on the first tick" do
+      tmp = isolate_config_dir!(~s({"projects": [{"name": "alpha", "dispatch_paused": true}]}))
+      assert File.exists?(Path.join(tmp, "config.json"))
+
+      {:ok, pid} =
+        CymphonyElixir.Orchestrator.start_link(
+          name: Module.concat(__MODULE__, :PausedBootOrchestrator),
+          project_name: "alpha"
+        )
+
+      on_exit(fn -> if Process.alive?(pid), do: GenServer.stop(pid) end)
+
+      assert CymphonyElixir.Orchestrator.snapshot(pid, 1_000).polling.paused == true
     end
   end
 
@@ -1120,6 +1159,7 @@ defmodule CymphonyElixir.ExtensionsTest do
     end
 
     test "pause_dispatch sends :pause to the orchestrator" do
+      isolate_config_dir!()
       orchestrator_name = Module.concat(__MODULE__, :PauseLiveOrchestrator)
 
       {:ok, _pid} =
@@ -1640,7 +1680,98 @@ defmodule CymphonyElixir.ExtensionsTest do
       assert running["turn_count"] == 3
     end
 
+    test "toggle_project_pause pauses and persists through Control, not the orchestrator directly" do
+      tmp = isolate_config_dir!(~s({"projects": [{"name": "default"}]}))
+      orchestrator_name = Module.concat(__MODULE__, :TogglePauseLiveOrchestrator)
+
+      {:ok, _pid} =
+        StaticOrchestrator.start_link(
+          name: orchestrator_name,
+          snapshot: static_snapshot(),
+          recipient: self()
+        )
+
+      start_test_endpoint(orchestrator: orchestrator_name, snapshot_timeout_ms: 50)
+
+      {:ok, view, _html} = live(build_conn(), "/")
+
+      view |> element(~s|button[phx-click="toggle_project_pause"][phx-value-project="default"]|) |> render_click()
+
+      assert_receive {:orchestrator_call, :pause}, 1_000
+      assert stored_dispatch_paused(tmp) == [true]
+    end
+
+    test "toggle_project_pause resumes an already-paused project" do
+      tmp = isolate_config_dir!(~s({"projects": [{"name": "default", "dispatch_paused": true}]}))
+      orchestrator_name = Module.concat(__MODULE__, :ToggleResumeLiveOrchestrator)
+
+      {:ok, _pid} =
+        StaticOrchestrator.start_link(
+          name: orchestrator_name,
+          snapshot: put_in(static_snapshot(), [:polling, :paused], true),
+          recipient: self()
+        )
+
+      start_test_endpoint(orchestrator: orchestrator_name, snapshot_timeout_ms: 50)
+
+      {:ok, view, _html} = live(build_conn(), "/")
+
+      view |> element(~s|button[phx-click="toggle_project_pause"][phx-value-project="default"]|) |> render_click()
+
+      assert_receive {:orchestrator_call, :resume}, 1_000
+      assert stored_dispatch_paused(tmp) == [false]
+    end
+
+    test "toggle_project_pause flashes when the pause state cannot be persisted" do
+      # An unparseable config store, not a missing one: with no config store at
+      # all there is no durable pause to lose, and pause/resume report success.
+      tmp = isolate_config_dir!()
+      File.write!(Path.join(tmp, "config.json"), "{not json")
+      orchestrator_name = Module.concat(__MODULE__, :TogglePauseErrorOrchestrator)
+
+      {:ok, _pid} =
+        StaticOrchestrator.start_link(
+          name: orchestrator_name,
+          snapshot: static_snapshot(),
+          recipient: self()
+        )
+
+      start_test_endpoint(orchestrator: orchestrator_name, snapshot_timeout_ms: 50)
+
+      {:ok, view, _html} = live(build_conn(), "/")
+
+      html =
+        view |> element(~s|button[phx-click="toggle_project_pause"][phx-value-project="default"]|) |> render_click()
+
+      assert html =~ "Pause state for default applied, but could not be saved"
+      # The orchestrator half did happen, so the board still reloads.
+      assert_receive {:orchestrator_call, :pause}, 1_000
+    end
+
+    test "pause_dispatch flashes an error when the pause cannot be persisted" do
+      tmp = isolate_config_dir!()
+      File.write!(Path.join(tmp, "config.json"), "{not json")
+      orchestrator_name = Module.concat(__MODULE__, :PauseAllErrorOrchestrator)
+
+      {:ok, _pid} =
+        StaticOrchestrator.start_link(
+          name: orchestrator_name,
+          snapshot: static_snapshot(),
+          recipient: self()
+        )
+
+      start_test_endpoint(orchestrator: orchestrator_name, snapshot_timeout_ms: 50)
+
+      {:ok, view, _html} = live(build_conn(), "/")
+
+      html = view |> element(~s|button[phx-click="pause_dispatch"]|) |> render_click()
+
+      assert html =~ "could not be saved to ~/.cymphony/config.json"
+      assert_receive {:orchestrator_call, :pause}, 1_000
+    end
+
     test "resume_dispatch sends :resume to the orchestrator" do
+      isolate_config_dir!()
       orchestrator_name = Module.concat(__MODULE__, :ResumeLiveOrchestrator)
 
       paused_snapshot = put_in(static_snapshot(), [:polling, :paused], true)
@@ -1845,6 +1976,33 @@ defmodule CymphonyElixir.ExtensionsTest do
 
     Application.put_env(:cymphony_elixir, CymphonyElixirWeb.Endpoint, endpoint_config)
     start_supervised!({CymphonyElixirWeb.Endpoint, []})
+  end
+
+  defp stored_dispatch_paused(tmp) do
+    {:ok, cfg} = Jason.decode(File.read!(Path.join(tmp, "config.json")))
+    Enum.map(cfg["projects"], &Map.get(&1, "dispatch_paused"))
+  end
+
+  # pause/resume persist `dispatch_paused`; anything exercising them needs a
+  # throwaway config dir or it rewrites the developer's ~/.cymphony/config.json.
+  defp isolate_config_dir!(json \\ ~s({"projects": [{"name": "alpha"}]})) do
+    tmp = Path.join(System.tmp_dir!(), "cymphony-ext-cfg-#{System.unique_integer([:positive])}")
+    File.mkdir_p!(tmp)
+    File.write!(Path.join(tmp, "config.json"), json)
+    previous = Application.get_env(:cymphony_elixir, :config_dir_override)
+    Application.put_env(:cymphony_elixir, :config_dir_override, tmp)
+
+    on_exit(fn ->
+      if is_binary(previous) do
+        Application.put_env(:cymphony_elixir, :config_dir_override, previous)
+      else
+        Application.delete_env(:cymphony_elixir, :config_dir_override)
+      end
+
+      File.rm_rf!(tmp)
+    end)
+
+    tmp
   end
 
   defp isolate_linear_env do

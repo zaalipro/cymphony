@@ -111,6 +111,7 @@ defmodule CymphonyElixir.AgentCatalogTest do
     slugs = Enum.map(models, & &1.value)
 
     assert slugs == [
+             "gemini-3.7-flash",
              "gemini-3.7-flash-high",
              "gemini-3.7-flash-medium",
              "gemini-3.6-flash-high",

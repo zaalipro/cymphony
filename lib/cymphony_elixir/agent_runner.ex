@@ -27,7 +27,10 @@ defmodule CymphonyElixir.AgentRunner do
 
       {:error, reason} ->
         Logger.error("Agent run failed for #{issue_context(issue)}: #{inspect(reason)}")
-        raise RuntimeError, "Agent run failed for #{issue_context(issue)}: #{inspect(reason)}"
+        # Reason first: this message becomes the retry-queue error text, which
+        # the dashboard truncates, and the issue context is already in the log
+        # line above.
+        raise RuntimeError, "Agent run failed: #{inspect(reason)} (#{issue_context(issue)})"
     end
   end
 
