@@ -625,11 +625,9 @@ defmodule CymphonyElixir.Orchestrator do
     |> Enum.reject(&is_nil/1)
   end
 
-  defp dispatch_waiting_list(%State{waiting: waiting} = state) when is_list(waiting) do
+  defp dispatch_waiting_list(%State{waiting: waiting} = state) do
     walk_waiting_dispatch(state, waiting)
   end
-
-  defp dispatch_waiting_list(%State{} = state), do: state
 
   defp walk_waiting_dispatch(%State{} = state, []), do: state
 
@@ -2389,15 +2387,13 @@ defmodule CymphonyElixir.Orchestrator do
     end
   end
 
-  defp parse_project_queue(project) when is_map(project) do
+  defp parse_project_queue(project) do
     {
       parse_loaded_queue_order(project),
       parse_loaded_queue_pins(project),
       parse_loaded_priority_seen(project)
     }
   end
-
-  defp parse_project_queue(_project), do: empty_queue_fields()
 
   defp parse_loaded_queue_order(project) do
     case Map.fetch(project, "queue_order") do
@@ -2409,20 +2405,21 @@ defmodule CymphonyElixir.Orchestrator do
   defp parse_loaded_queue_pins(project) do
     case Map.get(project, "queue_pins") do
       pins when is_map(pins) ->
-        Enum.reduce(pins, %{}, fn
-          {key, pin}, acc when is_binary(key) and is_map(pin) ->
-            parsed = normalize_pin_map(pin)
-
-            if map_size(parsed) == 0, do: acc, else: Map.put(acc, key, parsed)
-
-          _, acc ->
-            acc
-        end)
+        Enum.reduce(pins, %{}, &put_loaded_queue_pin/2)
 
       _ ->
         %{}
     end
   end
+
+  defp put_loaded_queue_pin({key, pin}, acc) when is_binary(key) and is_map(pin) do
+    case normalize_pin_map(pin) do
+      parsed when map_size(parsed) == 0 -> acc
+      parsed -> Map.put(acc, key, parsed)
+    end
+  end
+
+  defp put_loaded_queue_pin(_entry, acc), do: acc
 
   defp parse_loaded_priority_seen(project) do
     case Map.get(project, "queue_priority_seen") do
@@ -2444,7 +2441,7 @@ defmodule CymphonyElixir.Orchestrator do
     if persist_queue_order?(state, prev_order, prev_seen) do
       persist_project_queue(state.project_name, %{
         "queue_order" => state.queue_order || [],
-        "queue_priority_seen" => state.queue_priority_seen || %{}
+        "queue_priority_seen" => state.queue_priority_seen
       })
     end
 
@@ -2458,10 +2455,7 @@ defmodule CymphonyElixir.Orchestrator do
 
   defp persist_project_queue(project_name, attrs) when is_map(attrs) and map_size(attrs) > 0 do
     case CymphonyConfig.update_project_queue(project_name, attrs) do
-      :ok ->
-        :ok
-
-      {:ok, _} ->
+      {:ok, _config} ->
         :ok
 
       {:error, reason} ->
@@ -2540,14 +2534,12 @@ defmodule CymphonyElixir.Orchestrator do
   defp put_pin_field(pin, _key, :skip), do: pin
   defp put_pin_field(pin, key, value), do: Map.put(pin, key, value)
 
-  defp normalize_pin_map(pin) when is_map(pin) do
+  defp normalize_pin_map(pin) do
     %{}
     |> put_normalized_pin(:agent_kind, pin_field(pin, :agent_kind))
     |> put_normalized_pin(:model, pin_field(pin, :model))
     |> put_normalized_pin(:effort, pin_field(pin, :effort))
   end
-
-  defp normalize_pin_map(_pin), do: %{}
 
   defp put_normalized_pin(pin, _key, nil), do: pin
   defp put_normalized_pin(pin, key, value), do: Map.put(pin, key, value)

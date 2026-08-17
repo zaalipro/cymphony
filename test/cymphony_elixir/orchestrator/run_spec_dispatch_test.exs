@@ -1,6 +1,7 @@
 defmodule CymphonyElixir.Orchestrator.RunSpecDispatchTest do
   use CymphonyElixir.TestSupport
 
+  alias CymphonyElixir.Cymphony.Config, as: CymphonyConfig
   alias CymphonyElixir.Orchestrator
 
   test "dispatch resolves per-issue run spec from labels and directive" do
@@ -356,7 +357,7 @@ defmodule CymphonyElixir.Orchestrator.RunSpecDispatchTest do
     File.mkdir_p!(tmp)
     previous = Application.get_env(:cymphony_elixir, :config_dir_override)
     Application.put_env(:cymphony_elixir, :config_dir_override, tmp)
-    :ok = CymphonyElixir.Cymphony.Config.save(%{"projects" => []})
+    :ok = CymphonyConfig.save(%{"projects" => []})
 
     on_exit(fn ->
       if is_binary(previous) do
@@ -394,7 +395,7 @@ defmodule CymphonyElixir.Orchestrator.RunSpecDispatchTest do
         attrs
       )
 
-    :ok = CymphonyElixir.Cymphony.Config.save(%{"projects" => [project]})
+    :ok = CymphonyConfig.save(%{"projects" => [project]})
     project["name"]
   end
 end

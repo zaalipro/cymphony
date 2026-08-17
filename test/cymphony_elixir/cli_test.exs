@@ -1,5 +1,7 @@
 defmodule CymphonyElixir.CLITest do
-  use ExUnit.Case, async: true
+  # async: false — the cymphony-mode shorthands mutate the global
+  # :config_dir_override.
+  use ExUnit.Case, async: false
 
   alias CymphonyElixir.CLI
 
@@ -151,6 +153,20 @@ defmodule CymphonyElixir.CLITest do
 
   describe "shorthands" do
     setup do
+      # Point config discovery at an empty project list. Without this the
+      # cymphony-mode shorthands read the developer's real ~/.cymphony/config.json
+      # and start a live ProjectSupervisor per configured project — those poll
+      # Linear for real and leak into every later test in the run.
+      tmp = Path.join(System.tmp_dir!(), "cymphony-cli-shorthand-#{System.unique_integer([:positive])}")
+      File.mkdir_p!(tmp)
+      File.write!(Path.join(tmp, "config.json"), Jason.encode!(%{"projects" => []}))
+      Application.put_env(:cymphony_elixir, :config_dir_override, tmp)
+
+      on_exit(fn ->
+        Application.delete_env(:cymphony_elixir, :config_dir_override)
+        File.rm_rf!(tmp)
+      end)
+
       deps = %{
         file_regular?: fn _path -> true end,
         set_workflow_file_path: fn _path -> :ok end,
@@ -302,6 +318,7 @@ defmodule CymphonyElixir.CLIAgentOverrideTest do
   import ExUnit.CaptureIO
 
   alias CymphonyElixir.CLI
+  alias CymphonyElixir.ProjectSupervisor
 
   setup do
     tmp = Path.join(System.tmp_dir!(), "cymphony-cli-agent-#{System.unique_integer([:positive])}")
@@ -327,6 +344,10 @@ defmodule CymphonyElixir.CLIAgentOverrideTest do
     Application.put_env(:cymphony_elixir, :config_dir_override, tmp)
 
     on_exit(fn ->
+      # Cymphony mode starts a supervisor per configured project under the global
+      # ProjectDynamicSupervisor; leaving it running leaks a Linear-polling
+      # orchestrator into every later test.
+      _ = ProjectSupervisor.stop_project("Farm")
       Application.delete_env(:cymphony_elixir, :config_dir_override)
       File.rm_rf!(tmp)
     end)

@@ -1087,6 +1087,23 @@ defmodule CymphonyElixir.ExtensionsTest do
       assert html =~ "data-hidden-sections"
       assert html =~ "data-collapse-toggle"
       assert html =~ "syncPrefControls"
+      assert html =~ "LiveClock"
+      assert html =~ "[data-clock]"
+
+      # Client-side clock formatting must stay byte-identical to the Elixir
+      # formatters in dashboard_live.ex; changing either side must break here.
+      assert html =~ ~s|return mins + 'm ' + (whole - mins * 60) + 's';|
+      assert html =~ ~s|return seconds + 's';|
+      assert html =~ ~s|if (!(seconds > 0)) seconds = 0;|
+      assert html =~ ~s|if (!(ms > 0)) return 'now';|
+
+      # Every LiveView patch morphs the clock container and rewrites the spans
+      # back to the text of the last payload load, so the hook has to repaint on
+      # `updated` as well as on its own interval or the clocks rewind per patch.
+      [_before, live_clock] = String.split(html, "LiveClock: {", parts: 2)
+      [live_clock, _after] = String.split(live_clock, "Combobox: {", parts: 2)
+      assert live_clock =~ "updated() {"
+      assert live_clock =~ "this.tick();"
 
       dashboard_css = response(get(build_conn(), "/dashboard.css"), 200)
       assert dashboard_css =~ ~s(html[data-ui-mode="simple"] .advanced-only)

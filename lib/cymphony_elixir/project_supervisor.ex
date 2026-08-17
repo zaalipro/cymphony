@@ -9,9 +9,13 @@ defmodule CymphonyElixir.ProjectSupervisor do
 
   use Supervisor
 
-  alias CymphonyElixir.{Orchestrator, WorkflowStore}
   alias CymphonyElixir.Cymphony.Config, as: CymphonyConfig
   alias CymphonyElixir.Cymphony.WorkflowGenerator
+  alias CymphonyElixir.{Orchestrator, WorkflowStore}
+
+  @project_roles [:supervisor, :workflow_store, :orchestrator]
+  @unregister_poll_ms 5
+  @unregister_budget_ms 1_000
 
   @type project_spec :: [
           {:name, String.t()}
@@ -153,24 +157,38 @@ defmodule CymphonyElixir.ProjectSupervisor do
     end
   end
 
-  # Registry drops names from its monitor :DOWN, which can still be in-flight
-  # after terminate_child/2 returns. Wait so callers see a clean lookup.
-  defp await_unregistered(project_name, remaining_ms \\ 1_000) do
-    still_registered? =
-      Enum.any?([:supervisor, :workflow_store, :orchestrator], fn role ->
-        match?([_ | _], Registry.lookup(CymphonyElixir.ProjectRegistry, {project_name, role}))
-      end)
+  @doc """
+  Blocks until no `ProjectRegistry` name is left for `project_name`.
 
-    cond do
-      not still_registered? ->
-        :ok
+  Registry drops names while handling the monitor `:DOWN`, which can still be
+  in-flight after `DynamicSupervisor.terminate_child/2` returns, so callers that
+  immediately re-look-up a project could otherwise see a stale pid. Gives up
+  after `remaining_ms` and returns `:ok` either way — the wait is a courtesy,
+  never a failure mode.
+  """
+  @spec await_unregistered(String.t()) :: :ok
+  def await_unregistered(project_name) do
+    await_unregistered(project_name, @unregister_budget_ms)
+  end
 
-      remaining_ms <= 0 ->
-        :ok
-
-      true ->
-        Process.sleep(5)
-        await_unregistered(project_name, remaining_ms - 5)
+  @doc """
+  `await_unregistered/1` with an explicit millisecond budget.
+  """
+  @spec await_unregistered(String.t(), integer()) :: :ok
+  def await_unregistered(project_name, remaining_ms) when remaining_ms > 0 do
+    if registered?(project_name) do
+      Process.sleep(@unregister_poll_ms)
+      await_unregistered(project_name, remaining_ms - @unregister_poll_ms)
+    else
+      :ok
     end
+  end
+
+  def await_unregistered(_project_name, _remaining_ms), do: :ok
+
+  defp registered?(project_name) do
+    Enum.any?(@project_roles, fn role ->
+      match?([_ | _], Registry.lookup(CymphonyElixir.ProjectRegistry, {project_name, role}))
+    end)
   end
 end

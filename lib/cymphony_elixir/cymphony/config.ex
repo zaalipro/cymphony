@@ -374,13 +374,10 @@ defmodule CymphonyElixir.Cymphony.Config do
   """
   @spec update_dashboard_refresh_seconds(term()) :: {:ok, map()} | {:error, term()}
   def update_dashboard_refresh_seconds(n) when is_integer(n) and n > 0 do
-    with {:ok, config} <- load() do
-      updated = Map.put(config, "dashboard_refresh_seconds", n)
-
-      case save(updated) do
-        :ok -> {:ok, updated}
-        {:error, _} = error -> error
-      end
+    with {:ok, config} <- load(),
+         updated = Map.put(config, "dashboard_refresh_seconds", n),
+         :ok <- save(updated) do
+      {:ok, updated}
     end
   end
 
@@ -515,18 +512,21 @@ defmodule CymphonyElixir.Cymphony.Config do
   def update_project_queue(_project_name, _attrs), do: {:error, :invalid_queue}
 
   defp sanitize_queue_attrs(attrs) do
-    Enum.reduce_while(@queue_attr_keys, {:ok, %{}}, fn key, {:ok, acc} ->
-      case Map.fetch(attrs, key) do
-        :error ->
-          {:cont, {:ok, acc}}
+    Enum.reduce_while(@queue_attr_keys, {:ok, %{}}, &sanitize_queue_attr_step(&1, &2, attrs))
+  end
 
-        {:ok, value} ->
-          case sanitize_queue_attr(key, value) do
-            {:ok, sanitized} -> {:cont, {:ok, Map.put(acc, key, sanitized)}}
-            :error -> {:halt, {:error, :invalid_queue}}
-          end
-      end
-    end)
+  defp sanitize_queue_attr_step(key, {:ok, acc}, attrs) do
+    case Map.fetch(attrs, key) do
+      :error -> {:cont, {:ok, acc}}
+      {:ok, value} -> put_sanitized_queue_attr(acc, key, value)
+    end
+  end
+
+  defp put_sanitized_queue_attr(acc, key, value) do
+    case sanitize_queue_attr(key, value) do
+      {:ok, sanitized} -> {:cont, {:ok, Map.put(acc, key, sanitized)}}
+      :error -> {:halt, {:error, :invalid_queue}}
+    end
   end
 
   defp sanitize_queue_attr("queue_order", value), do: sanitize_queue_order(value)
@@ -537,18 +537,22 @@ defmodule CymphonyElixir.Cymphony.Config do
   defp sanitize_queue_order(_order), do: :error
 
   defp sanitize_queue_pins(pins) when is_map(pins) do
-    Enum.reduce_while(pins, {:ok, %{}}, fn {key, pin}, {:ok, acc} ->
-      with {:ok, id} <- sanitize_queue_id(key),
-           {:ok, fields} <- sanitize_pin_fields(pin) do
-        acc = if fields == %{}, do: acc, else: Map.put(acc, id, fields)
-        {:cont, {:ok, acc}}
-      else
-        :error -> {:halt, :error}
-      end
-    end)
+    Enum.reduce_while(pins, {:ok, %{}}, &sanitize_queue_pin_step/2)
   end
 
   defp sanitize_queue_pins(_pins), do: :error
+
+  defp sanitize_queue_pin_step({key, pin}, {:ok, acc}) do
+    with {:ok, id} <- sanitize_queue_id(key),
+         {:ok, fields} <- sanitize_pin_fields(pin) do
+      {:cont, {:ok, put_present_pin(acc, id, fields)}}
+    else
+      :error -> {:halt, :error}
+    end
+  end
+
+  defp put_present_pin(acc, _id, fields) when map_size(fields) == 0, do: acc
+  defp put_present_pin(acc, id, fields), do: Map.put(acc, id, fields)
 
   defp sanitize_queue_priority_seen(seen) when is_map(seen) do
     Enum.reduce_while(seen, {:ok, %{}}, fn {key, value}, {:ok, acc} ->
@@ -564,23 +568,25 @@ defmodule CymphonyElixir.Cymphony.Config do
   defp sanitize_queue_priority_seen(_seen), do: :error
 
   defp collect_queue_ids(values) do
-    Enum.reduce_while(values, {:ok, []}, fn value, {:ok, acc} ->
-      case sanitize_queue_id(value) do
-        {:ok, id} ->
-          {:cont, {:ok, [id | acc]}}
-
-        :error ->
-          if blank_queue_id?(value) do
-            {:cont, {:ok, acc}}
-          else
-            {:halt, :error}
-          end
-      end
-    end)
+    values
+    |> Enum.reduce_while({:ok, []}, &collect_queue_id_step/2)
     |> case do
       {:ok, ids} -> {:ok, Enum.reverse(ids)}
       :error -> :error
     end
+  end
+
+  defp collect_queue_id_step(value, {:ok, acc}) do
+    case sanitize_queue_id(value) do
+      {:ok, id} -> {:cont, {:ok, [id | acc]}}
+      :error -> skip_or_halt_queue_id(value, acc)
+    end
+  end
+
+  # A blank entry is dropped rather than rejecting the whole order, so a stray
+  # empty string in `config.json` cannot make the queue unloadable.
+  defp skip_or_halt_queue_id(value, acc) do
+    if blank_queue_id?(value), do: {:cont, {:ok, acc}}, else: {:halt, :error}
   end
 
   defp blank_queue_id?(value) when is_binary(value), do: String.trim(value) == ""
@@ -615,7 +621,6 @@ defmodule CymphonyElixir.Cymphony.Config do
 
   defp pin_field_value(pin, "model"), do: binary_pin_value(pin, ["model", :model])
   defp pin_field_value(pin, "effort"), do: binary_pin_value(pin, ["effort", :effort])
-  defp pin_field_value(_pin, _key), do: nil
 
   defp binary_pin_value(pin, keys) do
     Enum.find_value(keys, fn key ->

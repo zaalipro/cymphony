@@ -1885,6 +1885,68 @@ Enablement (extension):
   `layouts.ex` beside `HarnessTail` / `Combobox` (`mounted` / `updated` / `destroyed`;
   `pushEvent reorder_queue`). `Combobox.setChrome` also toggles the closest
   `.queue-card`.
+- Refresh behavior: server-side re-render is change-only, and the second-by-second clock
+  runs in the browser. The poll/pubsub cadence itself is unchanged (see the
+  `dashboard_refresh_seconds` bullet above and Section 8.1).
+  - Time-derived text is server-rendered once per payload load, wrapped in a span carrying a
+    clock anchor. An anchor is always a remaining/elapsed **amount**, never an absolute wall
+    time, so client clock skew cannot accumulate: `data-clock="countdown"` +
+    `data-remaining-ms` (poll countdown), `data-clock="due"` + `data-remaining-ms` (retry
+    due-in), `data-clock="elapsed"` + `data-base-seconds` (session runtime, stall duration).
+    The global runtime tile is `elapsed` and adds `data-rate` = number of running sessions,
+    because that total advances one second per running session per wall second. There is no
+    turns suffix on any clock; `data-rate` is the only multiplier the format takes.
+  - One `LiveClock` hook (registered in `layouts.ex` beside `HarnessTail` / `Combobox` /
+    `QueueBoard`) mounts on a single wrapper `div#live-clock` around the dashboard and runs
+    one 1s interval that rewrites only those spans' `textContent`; it clears the interval on
+    `destroyed`. It re-anchors per element per tick by comparing the live data attributes
+    against a snapshot cached on the node, so every payload load re-anchors the clocks. It
+    must also repaint on `updated`: every LiveView patch morphs this container and writes the
+    spans' text back to what the server rendered at the last payload load, so without the
+    `updated` repaint the clocks rewind on each patch (a streaming harness pane patches many
+    times a second) and stay wrong until the next interval. Its
+    formatting must stay byte-identical to the server formatters. A span with a missing or
+    unparseable anchor is skipped, leaving the server-rendered text (`n/a`, `unknown`, `now`)
+    as the no-JS and bad-data fallback. Poll `checking?` ("Checking…") stays server-rendered:
+    it is data, not time.
+  - The 1s runtime tick still schedules the periodic payload refresh but must **not** assign
+    `:now`. `:now` is a clock *anchor*, not a clock: it is assigned at mount and re-anchored
+    by a payload load — the async `{:payload_loaded, seq, payload}` reply and the synchronous
+    reload used by event handlers both go through the same split — but **only when a section
+    a clock reads actually moved** (`:token_totals`, `:running`, `:projects`). `:now` is read
+    inside the per-project comprehension (session runtime, retry due-in), and a HEEx
+    comprehension is a single change-tracked slot: re-anchoring on a load that moved nothing
+    would re-evaluate and re-serialize every project header, queue card, session row and
+    restart form, which is the re-render the section split exists to skip. Server-rendered
+    values are therefore correct as of the last load that moved a clock-bearing section, and
+    the hook takes over between loads. A clock hung off a section outside that set renders a
+    stale amount, so the set must stay in step with the `:now` reads in the template. The
+    poll countdown reads no wall clock at all — `next_poll_in_ms` is already a remaining
+    amount — so it must not be formatted against `:now`.
+  - A loaded payload is fanned into one assign per section (`:counts`, `:token_totals`,
+    `:rate_limits`, `:polling`, `:projects`, `:running`, `:retrying`, `:completions`,
+    `:payload_error`). There is no monolithic `:payload` assign, because nested `@payload.x`
+    reads mark the whole template dirty on every load. A section whose value did not change
+    is not reassigned, so LiveView change tracking skips it. `generated_at` gets no assign
+    (it moves on every load and is rendered nowhere). The comparison also ignores a running
+    entry's `tokens_per_second`, which the presenter re-derives from the wall clock on every
+    load (tokens over seconds-since-start) and which would otherwise make `:running` and
+    `:projects` differ on every refresh while an agent runs; any other movement still assigns
+    the whole fresh section, drifted rate included. The accepted trade-off is that the
+    rendered per-session `t/s` chip holds the value from the last load that moved a real
+    field: while an agent sits in a long tool call the chip does not decay, and it catches up
+    the moment anything else about the session moves. A retry's `due_at` must be computed so
+    it does not drift for the same reason: `now + due_in_ms` truncated **after** the offset is
+    applied, not a truncated clock plus whole seconds. That names the same absolute second
+    across loads as long as the snapshot round-trip does not straddle a second boundary — it
+    is a large reduction in flip rate, not a guarantee; `due_in_ms` is measured against the
+    orchestrator's monotonic clock and `now` is sampled later in the presenter. A section
+    missing from the payload falls back to the default payload (error snapshots, older
+    snapshot shapes). Both the async and the synchronous load path go through the same split;
+    `payload_seq` guarding is unchanged.
+  - Acceptance: an idle dashboard ships no per-second diff, and a poll whose only movement is
+    `generated_at` reassigns no section and does not re-anchor `:now` — only `:token_samples`
+    (throughput window) moves.
 
 #### 13.7.2 JSON REST API (`/api/v1/*`)
 
@@ -2693,6 +2755,22 @@ Unless otherwise noted, Sections 17.1 through 17.7 are `Core Conformance`. Bulle
   not affect correctness
 - If humanized event summaries are implemented, they cover key wrapper/agent event classes without
   changing orchestrator behavior
+- If the LiveView dashboard is implemented (Section 13.7.1 refresh behavior):
+  - a runtime tick that is not yet due to refresh moves no assign and renders identical HTML;
+    the tick that *is* due still schedules the payload load (and so moves `:payload_seq` and
+    `:last_payload_refresh`)
+  - re-delivering a byte-identical payload, and a payload whose only movement is
+    `generated_at`, reassigns no section and does not re-anchor `:now` (only
+    `:token_samples` moves)
+  - a payload whose only movement is a wall-clock-derived field the server re-derives on
+    every load (a running entry's `tokens_per_second`) reassigns no section either
+  - a payload that moves one section leaves the other section assigns alone
+  - a payload that only moves the poll countdown leaves `:now` and the per-project section
+    alone; a payload that moves a clock-bearing section re-anchors `:now`
+  - time-derived spans carry their `data-clock` anchor as a remaining/elapsed amount, and
+    drop the anchor attribute entirely when the amount is unknown so the server-rendered
+    text survives
+  - the client clock formatter and the server formatters produce identical strings
 
 ### 17.7 CLI and Host Lifecycle
 

@@ -529,9 +529,17 @@ defmodule CymphonyElixirWeb.Presenter do
   defp summarize_message(nil), do: nil
   defp summarize_message(message), do: StatusDashboard.humanize_agent_message(message)
 
+  # Add the offset in milliseconds and truncate once, so the result is
+  # `floor(due_at)`. Truncating the clock first and adding whole seconds
+  # afterwards made the answer flip between two adjacent seconds depending on the
+  # sub-second part of `utc_now/0`, which made an unchanged retry queue look
+  # changed to the dashboard on roughly every other refresh. This form only
+  # jitters by the snapshot round-trip (`due_in_ms` is measured against the
+  # orchestrator's monotonic clock, `utc_now/0` is sampled here), so it is a large
+  # reduction in flip rate rather than an absolute guarantee.
   defp due_at_iso8601(due_in_ms) when is_integer(due_in_ms) do
     DateTime.utc_now()
-    |> DateTime.add(div(due_in_ms, 1_000), :second)
+    |> DateTime.add(due_in_ms, :millisecond)
     |> DateTime.truncate(:second)
     |> DateTime.to_iso8601()
   end

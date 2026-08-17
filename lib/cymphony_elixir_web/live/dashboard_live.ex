@@ -12,6 +12,9 @@ defmodule CymphonyElixirWeb.DashboardLive do
   @version Mix.Project.config()[:version]
   @runtime_tick_ms 1_000
   @harness_tail_cap 400
+  # Section defaults for the disconnected render and for payloads that omit a
+  # section. `waiting: []` has no assign of its own (waiting rows live inside each
+  # project entry) but stays here because SPEC §13.3 pins it on the default payload.
   @default_payload %{
     counts: %{running: 0, retrying: 0, waiting: 0, by_state: %{}, by_kind: %{}},
     running: [],
@@ -20,8 +23,34 @@ defmodule CymphonyElixirWeb.DashboardLive do
     token_totals: %{input_tokens: 0, output_tokens: 0, total_tokens: 0, seconds_running: 0},
     rate_limits: nil,
     polling: nil,
-    projects: []
+    projects: [],
+    recent_completed: [],
+    error: nil
   }
+
+  # Each payload section gets its own assign so LiveView change tracking can skip
+  # the sections that did not move. Nested `@payload.x` reads mark the whole
+  # template dirty on every refresh, which is the churn this splits apart.
+  # `:generated_at` is deliberately absent: it changes on every load and is
+  # rendered nowhere.
+  @payload_sections [
+    counts: :counts,
+    token_totals: :token_totals,
+    rate_limits: :rate_limits,
+    polling: :polling,
+    projects: :projects,
+    running: :running,
+    retrying: :retrying,
+    completions: :recent_completed,
+    payload_error: :error
+  ]
+
+  # The sections whose rendering reads `:now`: the global runtime tile
+  # (`@token_totals` + `@running`), the stall banner (`@running`) and the
+  # per-project comprehension (`@projects`, for session runtime and retry
+  # due-in). Keep this in step with the `@now` reads in `render/1` — a clock
+  # hung off a section that is not listed here would render a stale amount.
+  @clock_sections [:token_totals, :running, :projects]
 
   @impl true
   def mount(_params, _session, socket) do
@@ -35,7 +64,11 @@ defmodule CymphonyElixirWeb.DashboardLive do
 
     socket =
       socket
-      |> assign(:payload, initial_payload)
+      |> assign_payload_sections(initial_payload)
+      # `assign_payload_sections/2` re-anchors `:now` only when a clock-bearing
+      # section moved. At mount every section is absent so it always fires, but
+      # pin the assign here as well: `:now` has to exist for the first render
+      # whatever `@clock_sections` ends up listing.
       |> assign(:now, DateTime.utc_now())
       |> assign(:stalled_alert_dismissed, false)
       |> assign(:expanded_issue_ids, MapSet.new())
@@ -323,7 +356,7 @@ defmodule CymphonyElixirWeb.DashboardLive do
 
   @impl true
   def handle_event("toggle_project_pause", %{"project" => project_name}, socket) do
-    case toggle_project_pause(socket.assigns.payload, project_name) do
+    case toggle_project_pause(socket.assigns.projects, project_name) do
       :ok ->
         {:noreply, reload_payload_now(socket)}
 
@@ -346,7 +379,7 @@ defmodule CymphonyElixirWeb.DashboardLive do
   @impl true
   def handle_event("set_issue_run_spec", %{"issue" => issue_identifier} = params, socket) do
     entry =
-      Enum.find(socket.assigns.payload.running, &(&1.issue_identifier == issue_identifier)) || %{}
+      Enum.find(socket.assigns.running, &(&1.issue_identifier == issue_identifier)) || %{}
 
     issue_id = Map.get(entry, :issue_id)
 
@@ -430,22 +463,26 @@ defmodule CymphonyElixirWeb.DashboardLive do
         {:noreply, put_flash(socket, :error, "Queue pin needs at least one of agent, model, or effort")}
 
       true ->
-        case persist_queue_pin(project_name, String.trim(issue), pin) do
-          :ok ->
-            {:noreply, reload_payload_now(put_flash(socket, :info, "#{issue}: queue pin saved"))}
+        {:noreply, apply_queue_pin(socket, project_name, issue, pin)}
+    end
+  end
 
-          {:error, :invalid_scope} ->
-            {:noreply, put_flash(socket, :error, "Queue pin requires a project")}
+  defp apply_queue_pin(socket, project_name, issue, pin) do
+    case persist_queue_pin(project_name, String.trim(issue), pin) do
+      :ok ->
+        reload_payload_now(put_flash(socket, :info, "#{issue}: queue pin saved"))
 
-          {:error, :not_found} ->
-            {:noreply, put_flash(socket, :error, "Project not found: #{project_name}")}
+      {:error, :invalid_scope} ->
+        put_flash(socket, :error, "Queue pin requires a project")
 
-          {:error, _reason} ->
-            {:noreply, put_flash(socket, :error, "Could not persist queue pin")}
+      {:error, :not_found} ->
+        put_flash(socket, :error, "Project not found: #{project_name}")
 
-          :error ->
-            {:noreply, put_flash(socket, :error, "Invalid queue pin")}
-        end
+      {:error, _reason} ->
+        put_flash(socket, :error, "Could not persist queue pin")
+
+      :error ->
+        put_flash(socket, :error, "Invalid queue pin")
     end
   end
 
@@ -462,6 +499,11 @@ defmodule CymphonyElixirWeb.DashboardLive do
     {:noreply, clear_flash(socket)}
   end
 
+  # The tick only schedules the periodic payload refresh. It deliberately does not
+  # touch `:now`: re-assigning it every second re-rendered every time-derived string
+  # in the template. The LiveClock hook advances those spans in the browser instead,
+  # and `:now` is re-anchored by a payload load that moved a clock-bearing section
+  # (see `maybe_reanchor_clocks/2`).
   @impl true
   def handle_info(:runtime_tick, socket) do
     schedule_runtime_tick()
@@ -479,7 +521,7 @@ defmodule CymphonyElixirWeb.DashboardLive do
         socket
       end
 
-    {:noreply, assign(socket, :now, DateTime.utc_now())}
+    {:noreply, socket}
   end
 
   @impl true
@@ -491,8 +533,7 @@ defmodule CymphonyElixirWeb.DashboardLive do
 
       {:noreply,
        socket
-       |> assign(:payload, payload)
-       |> assign(:now, DateTime.utc_now())
+       |> assign_payload_sections(payload)
        |> assign(:token_samples, token_samples)
        |> update(:agent_setting_drafts, &prune_agent_drafts(&1, payload))}
     end
@@ -528,6 +569,10 @@ defmodule CymphonyElixirWeb.DashboardLive do
   @impl true
   def render(assigns) do
     ~H"""
+    <%!-- LiveView allows a single phx-hook per element and #dashboard-root already
+    runs OverlayDismiss, so the one client-side clock ticker lives on this wrapper.
+    It is a plain block box inside .app-shell, so it changes no layout. --%>
+    <div id="live-clock" phx-hook="LiveClock">
     <section id="dashboard-root" class="dashboard-shell" phx-hook="OverlayDismiss">
       <header class="command-bar">
         <div class="command-bar-row command-bar-row--brand">
@@ -542,7 +587,7 @@ defmodule CymphonyElixirWeb.DashboardLive do
               <span class="status-badge-dot"></span>
               Connecting
             </span>
-            <%= if @payload[:error] do %>
+            <%= if @payload_error do %>
               <span class="status-badge status-badge-offline status-badge-payload">
                 <span class="status-badge-dot"></span>
                 Unavailable
@@ -575,9 +620,9 @@ defmodule CymphonyElixirWeb.DashboardLive do
           </div>
         </div>
 
-        <%= unless @payload[:error] do %>
+        <%= unless @payload_error do %>
           <div class="command-bar-row simple-mode-summary simple-only" aria-live="polite">
-            <%= case autonomy_state(@payload) do %>
+            <%= case autonomy_state(@projects, @polling) do %>
               <% :unknown -> %>
                 <span class="autonomy-indicator autonomy-indicator--unknown">
                   <span class="autonomy-indicator-dot" aria-hidden="true"></span>
@@ -606,34 +651,42 @@ defmodule CymphonyElixirWeb.DashboardLive do
           </div>
         <% end %>
 
-        <%= unless @payload[:error] do %>
+        <%= unless @payload_error do %>
           <div class="command-bar-row command-bar-row--metrics section--metrics">
             <div class="metric-pill">
               <span class="metric-pill-label simple-only">Working</span>
               <span class="metric-pill-label advanced-only">Run</span>
-              <span class="metric-pill-value numeric"><%= @payload.counts.running %></span>
+              <span class="metric-pill-value numeric"><%= @counts.running %></span>
             </div>
             <div class="metric-pill">
               <span class="metric-pill-label simple-only">Waiting</span>
               <span class="metric-pill-label advanced-only">Retry</span>
-              <span class="metric-pill-value numeric"><%= @payload.counts.retrying %></span>
+              <span class="metric-pill-value numeric"><%= @counts.retrying %></span>
             </div>
             <div class="metric-pill metric-pill--queue section--queue advanced-only">
               <span class="metric-pill-label">Queue</span>
-              <span class="metric-pill-value numeric"><%= Map.get(@payload.counts, :waiting, 0) %></span>
+              <span class="metric-pill-value numeric"><%= Map.get(@counts, :waiting, 0) %></span>
             </div>
             <div class="metric-pill">
               <span class="metric-pill-label simple-only">Usage</span>
               <span class="metric-pill-label advanced-only">Tokens</span>
-              <span class="metric-pill-value numeric"><%= format_int(@payload.token_totals.total_tokens) %></span>
+              <span class="metric-pill-value numeric"><%= format_int(@token_totals.total_tokens) %></span>
               <span class="metric-pill-detail numeric advanced-only" title="input / output">
-                in <%= format_int(@payload.token_totals.input_tokens) %> · out <%= format_int(@payload.token_totals.output_tokens) %>
+                in <%= format_int(@token_totals.input_tokens) %> · out <%= format_int(@token_totals.output_tokens) %>
               </span>
             </div>
             <div class="metric-pill">
               <span class="metric-pill-label simple-only">Time active</span>
               <span class="metric-pill-label advanced-only">Runtime</span>
-              <span class="metric-pill-value numeric"><%= format_runtime_seconds(total_runtime_seconds(@payload, @now)) %></span>
+              <%!-- Both the anchor and the text recompute the amount inline. A template
+              variable would taint these dynamics and make them render unconditionally,
+              which is exactly the per-render churn the clock anchors exist to avoid. --%>
+              <span
+                class="metric-pill-value numeric"
+                data-clock="elapsed"
+                data-base-seconds={total_runtime_seconds(@token_totals, @running, @now)}
+                data-rate={length(@running)}
+              ><%= format_runtime_seconds(total_runtime_seconds(@token_totals, @running, @now)) %></span>
             </div>
             <div class="metric-pill metric-pill--throughput advanced-only">
               <span class="metric-pill-label">Tput</span>
@@ -642,19 +695,19 @@ defmodule CymphonyElixirWeb.DashboardLive do
             </div>
             <div class="metric-pill metric-pill--states section--states advanced-only">
               <span class="metric-pill-label">States</span>
-              <span class="metric-pill-value"><%= format_count_breakdown(Map.get(@payload.counts, :by_state, %{})) %></span>
+              <span class="metric-pill-value"><%= format_count_breakdown(Map.get(@counts, :by_state, %{})) %></span>
             </div>
             <div class="metric-pill metric-pill--kinds section--kinds advanced-only">
               <span class="metric-pill-label">Kinds</span>
-              <span class="metric-pill-value"><%= format_count_breakdown(Map.get(@payload.counts, :by_kind, %{})) %></span>
+              <span class="metric-pill-value"><%= format_count_breakdown(Map.get(@counts, :by_kind, %{})) %></span>
             </div>
 
-            <%= if @payload.polling do %>
+            <%= if @polling do %>
               <div class="metric-pill metric-pill--ops section--polling">
                 <span class="metric-pill-label simple-only">Automation</span>
                 <span class="metric-pill-label advanced-only">Polling</span>
                 <span class="metric-pill-value simple-only">
-                  <%= case autonomy_state(@payload) do %>
+                  <%= case autonomy_state(@projects, @polling) do %>
                     <% :unknown -> %>
                       unavailable
                     <% :paused -> %>
@@ -662,31 +715,31 @@ defmodule CymphonyElixirWeb.DashboardLive do
                     <% {:partial, active_count, project_count} -> %>
                       <%= active_count %> / <%= project_count %> active
                     <% :on -> %>
-                      <%= if @payload.polling.checking? do %>
+                      <%= if @polling.checking? do %>
                         <span class="ops-pulse">Checking…</span>
                       <% else %>
-                        next <%= format_poll_countdown(@payload.polling.next_poll_in_ms, @now) %>
+                        next <span data-clock="countdown" data-remaining-ms={poll_remaining_ms(@polling.next_poll_in_ms)}><%= format_poll_countdown(@polling.next_poll_in_ms) %></span>
                       <% end %>
                   <% end %>
                 </span>
                 <span class="metric-pill-value advanced-only">
                   <%= cond do %>
-                    <% Map.get(@payload.polling, :paused, false) -> %>
+                    <% Map.get(@polling, :paused, false) -> %>
                       <span class="ops-pulse">Paused</span>
-                    <% @payload.polling.checking? -> %>
+                    <% @polling.checking? -> %>
                       <span class="ops-pulse">Checking…</span>
                     <% true -> %>
-                      next <%= format_poll_countdown(@payload.polling.next_poll_in_ms, @now) %>
+                      next <span data-clock="countdown" data-remaining-ms={poll_remaining_ms(@polling.next_poll_in_ms)}><%= format_poll_countdown(@polling.next_poll_in_ms) %></span>
                   <% end %>
                 </span>
-                <%= if @payload.polling.poll_interval_ms do %>
-                  <span class="metric-pill-detail numeric advanced-only">every <%= div(@payload.polling.poll_interval_ms, 1_000) %>s</span>
+                <%= if @polling.poll_interval_ms do %>
+                  <span class="metric-pill-detail numeric advanced-only">every <%= div(@polling.poll_interval_ms, 1_000) %>s</span>
                 <% end %>
               </div>
             <% end %>
 
-            <%= if @payload.rate_limits do %>
-              <%= case Presenter.format_rate_limits_for_web(@payload.rate_limits) do %>
+            <%= if @rate_limits do %>
+              <%= case Presenter.format_rate_limits_for_web(@rate_limits) do %>
                 <% nil -> %>
                 <% formatted -> %>
                   <div class="metric-pill metric-pill--ops section--ratelimits advanced-only">
@@ -841,8 +894,8 @@ defmodule CymphonyElixirWeb.DashboardLive do
           <h3 class="settings-group-title simple-only">Automation</h3>
           <h3 class="settings-group-title advanced-only">Orchestrator</h3>
 
-          <%= if @payload[:polling] do %>
-            <%= if autonomy_state(@payload) == :paused do %>
+          <%= if @polling do %>
+            <%= if autonomy_state(@projects, @polling) == :paused do %>
               <button type="button" class="subtle-button subtle-button--accent settings-submit" phx-click="resume_dispatch">Resume all</button>
             <% else %>
               <button type="button" class="subtle-button settings-submit" phx-click="pause_dispatch">Pause all</button>
@@ -913,23 +966,24 @@ defmodule CymphonyElixirWeb.DashboardLive do
         <div class="alert-banner alert-error"><%= err %></div>
       <% end %>
 
-      <%= if @payload[:error] do %>
+      <%= if @payload_error do %>
         <section class="error-card">
           <h2 class="error-title">Snapshot unavailable</h2>
           <p class="error-copy">
-            <strong><%= @payload.error.code %>:</strong> <%= @payload.error.message %>
+            <strong><%= @payload_error.code %>:</strong> <%= @payload_error.message %>
           </p>
         </section>
       <% else %>
 
-        <% stalled_entries = stalled_running_entries(@payload.running) %>
+        <% stalled_entries = stalled_running_entries(@running) %>
         <%= if stalled_entries != [] and not @stalled_alert_dismissed do %>
           <div class="alert-banner">
             <div class="alert-content">
               <strong>Stalled agents detected:</strong>
               <%= stalled_entries |> Enum.map(& &1.issue_identifier) |> Enum.join(", ") %>
               <%= if length(stalled_entries) == 1 do %>
-                has been stalled for <%= format_stall_duration(hd(stalled_entries).last_event_at, @now) %>.
+                <% stalled_at = hd(stalled_entries).last_event_at %>
+                has been stalled for <span data-clock="elapsed" data-base-seconds={stall_seconds(stalled_at, @now)}><%= format_stall_duration(stalled_at, @now) %></span>.
               <% else %>
                 have been stalled.
               <% end %>
@@ -938,7 +992,7 @@ defmodule CymphonyElixirWeb.DashboardLive do
           </div>
         <% end %>
 
-        <%= for project <- (@payload[:projects] || []) do %>
+        <%= for project <- @projects do %>
           <% agent_settings = project_agent_settings(@agent_setting_drafts, project) %>
           <article class={project_section_class(project, @queue_edit_ids)}>
             <header class="project-section-header">
@@ -1228,7 +1282,7 @@ defmodule CymphonyElixirWeb.DashboardLive do
                       </div>
 
                       <div class="session-row-runtime numeric">
-                        <%= format_runtime_seconds(runtime_seconds_from_started_at(entry.started_at, @now)) %>
+                        <span data-clock="elapsed" data-base-seconds={runtime_seconds_from_started_at(entry.started_at, @now)}><%= format_runtime_seconds(runtime_seconds_from_started_at(entry.started_at, @now)) %></span>
                       </div>
 
                       <div class="session-row-tokens numeric" title={"In #{format_int(entry.tokens.input_tokens)} / Out #{format_int(entry.tokens.output_tokens)}"}>
@@ -1450,7 +1504,7 @@ defmodule CymphonyElixirWeb.DashboardLive do
                     <div class="retry-row-attempt">
                       <span class="chip chip--warn">Attempt <%= entry.attempt %></span>
                       <%= if entry.due_at do %>
-                        <span class="muted">due <%= format_retry_countdown(entry.due_at, @now) %></span>
+                        <span class="muted">due <span data-clock="due" data-remaining-ms={retry_remaining_ms(entry.due_at, @now)}><%= format_retry_countdown(entry.due_at, @now) %></span></span>
                       <% end %>
                     </div>
                     <div class="retry-row-error advanced-only">
@@ -1474,13 +1528,13 @@ defmodule CymphonyElixirWeb.DashboardLive do
           </article>
         <% end %>
 
-        <%= if @payload[:recent_completed] && @payload.recent_completed != [] do %>
+        <%= if @completions != [] do %>
           <section class="section-card section--completions">
             <div class="section-header">
               <div>
                 <h2 class="section-title">Recent completions</h2>
-                <p class="section-copy simple-only"><%= length(@payload.recent_completed) %> recently finished tasks.</p>
-                <p class="section-copy advanced-only">Last <%= length(@payload.recent_completed) %> agent runs. Cleared on daemon restart.</p>
+                <p class="section-copy simple-only"><%= length(@completions) %> recently finished tasks.</p>
+                <p class="section-copy advanced-only">Last <%= length(@completions) %> agent runs. Cleared on daemon restart.</p>
               </div>
               <button
                 type="button"
@@ -1492,7 +1546,7 @@ defmodule CymphonyElixirWeb.DashboardLive do
             </div>
 
             <div class="session-row-list">
-              <%= for entry <- @payload.recent_completed do %>
+              <%= for entry <- @completions do %>
                 <article class="session-row session-row--completed">
                   <div class="session-row-summary">
                     <span class="session-row-disclosure" aria-hidden="true">✓</span>
@@ -1527,6 +1581,7 @@ defmodule CymphonyElixirWeb.DashboardLive do
         <% end %>
       <% end %>
     </section>
+    </div>
     """
   end
 
@@ -1555,13 +1610,82 @@ defmodule CymphonyElixirWeb.DashboardLive do
 
     socket
     |> assign(:payload_seq, seq)
-    |> assign(:payload, payload)
+    |> assign_payload_sections(payload)
     |> assign(:token_samples, token_samples)
     |> assign(:last_payload_refresh, System.monotonic_time(:millisecond))
     |> update(:agent_setting_drafts, &prune_agent_drafts(&1, payload))
   end
 
   defp next_payload_seq(socket), do: (socket.assigns[:payload_seq] || 0) + 1
+
+  # Fan a freshly loaded payload out into one assign per section, skipping the
+  # sections whose value did not change. Sections missing from the payload (error
+  # snapshots, older orchestrator shapes) fall back to `@default_payload`.
+  defp assign_payload_sections(socket, payload) do
+    updated =
+      Enum.reduce(@payload_sections, socket, fn {assign_key, payload_key}, acc ->
+        assign_changed_section(acc, assign_key, payload_section(payload, payload_key))
+      end)
+
+    maybe_reanchor_clocks(updated, socket)
+  end
+
+  # `:now` is the anchor every server-rendered clock is derived from, and it is
+  # read inside the per-project comprehension. A HEEx comprehension is a single
+  # change-tracked slot: touching `:now` re-evaluates and re-serializes every
+  # project header, queue card, session row and restart form, which is exactly
+  # the work the section split exists to skip. So `:now` moves only when a
+  # section a clock actually reads moved — never on a load that changed nothing
+  # (or that only moved the poll countdown, which carries its own remaining-ms
+  # anchor and needs no wall clock).
+  defp maybe_reanchor_clocks(socket, previous) do
+    if Enum.any?(@clock_sections, &section_moved?(previous, socket, &1)),
+      do: assign(socket, :now, DateTime.utc_now()),
+      else: socket
+  end
+
+  defp section_moved?(previous, socket, key) do
+    Map.get(previous.assigns, key, :__absent__) != Map.fetch!(socket.assigns, key)
+  end
+
+  defp assign_changed_section(socket, key, value) do
+    case socket.assigns do
+      %{^key => current} ->
+        if section_signature(current) == section_signature(value),
+          do: socket,
+          else: assign(socket, key, value)
+
+      _assigns ->
+        assign(socket, key, value)
+    end
+  end
+
+  # A running entry's `tokens_per_second` is re-derived from the wall clock on
+  # every load (tokens divided by seconds-since-start), so it drifts on its own
+  # between two otherwise identical snapshots. Comparing it would make
+  # `:running` and `:projects` differ on every single refresh and the skip above
+  # would never fire while an agent is running — which is precisely when the
+  # dashboard is busiest. Compare without it; the moment any real field moves the
+  # whole fresh section lands in the assign, drifted rate included.
+  #
+  # The trade-off is visible: because a match keeps the *previous* section value,
+  # the rendered `t/s` chip holds the rate from the last load that moved a real
+  # field, so it does not decay while an agent sits in a long tool call. That is
+  # deliberate — re-rendering the whole board to animate a number the server
+  # derives from nothing but the clock is the churn this exists to remove.
+  defp section_signature(entries) when is_list(entries), do: Enum.map(entries, &entry_signature/1)
+
+  defp section_signature(section), do: section
+
+  defp entry_signature(%{} = entry) do
+    entry
+    |> Map.delete(:tokens_per_second)
+    |> Map.replace_lazy(:running, &section_signature/1)
+  end
+
+  defp payload_section(payload, key) do
+    Map.get(payload, key, Map.fetch!(@default_payload, key))
+  end
 
   # A successful submit keeps a confirmed draft so the immediate render shows
   # the submitted values; once the payload reflects them the draft is redundant
@@ -1703,16 +1827,12 @@ defmodule CymphonyElixirWeb.DashboardLive do
     """
   end
 
-  defp combobox_trigger_label(value, options, placeholder) do
-    cond do
-      value in [nil, ""] ->
-        placeholder
+  defp combobox_trigger_label(value, _options, placeholder) when value in [nil, ""], do: placeholder
 
-      true ->
-        case Enum.find(options, &(combobox_option_value(&1) == value)) do
-          nil -> value
-          option -> combobox_option_label(option)
-        end
+  defp combobox_trigger_label(value, options, _placeholder) do
+    case Enum.find(options, &(combobox_option_value(&1) == value)) do
+      nil -> value
+      option -> combobox_option_label(option)
     end
   end
 
@@ -1758,10 +1878,10 @@ defmodule CymphonyElixirWeb.DashboardLive do
     Endpoint.config(:orchestrator) || CymphonyElixir.Orchestrator
   end
 
-  defp toggle_project_pause(payload, project_name) do
+  defp toggle_project_pause(projects, project_name) do
     case CymphonyElixir.ProjectSupervisor.lookup(project_name, :orchestrator) do
       pid when is_pid(pid) ->
-        project = Enum.find(payload[:projects] || [], &(&1.name == project_name))
+        project = Enum.find(projects, &(&1.name == project_name))
         currently_paused = project && Map.get(project, :paused, false)
         action = if currently_paused, do: :resume, else: :pause
         spawn_orchestrator_pause_action(pid, action)
@@ -1788,11 +1908,11 @@ defmodule CymphonyElixirWeb.DashboardLive do
     Endpoint.config(:snapshot_timeout_ms) || 15_000
   end
 
-  defp completed_runtime_seconds(payload) do
-    get_in(payload, [:token_totals, :seconds_running]) || 0
+  defp completed_runtime_seconds(token_totals) do
+    Map.get(token_totals, :seconds_running) || 0
   end
 
-  defp autonomy_state(%{projects: [_project | _rest] = projects}) do
+  defp autonomy_state([_project | _rest] = projects, _polling) do
     project_count = length(projects)
     paused_count = Enum.count(projects, &Map.get(&1, :paused, false))
 
@@ -1803,9 +1923,9 @@ defmodule CymphonyElixirWeb.DashboardLive do
     end
   end
 
-  defp autonomy_state(%{polling: %{paused: true}}), do: :paused
-  defp autonomy_state(%{polling: %{}}), do: :on
-  defp autonomy_state(_payload), do: :unknown
+  defp autonomy_state(_projects, %{paused: true}), do: :paused
+  defp autonomy_state(_projects, %{}), do: :on
+  defp autonomy_state(_projects, _polling), do: :unknown
 
   defp session_run_spec_settings(drafts, entry) do
     default_kind = Map.get(entry, :agent_kind) || ""
@@ -1852,7 +1972,7 @@ defmodule CymphonyElixirWeb.DashboardLive do
   end
 
   defp put_issue_run_spec_draft(socket, issue_identifier, kind, params) do
-    entry = find_running_entry(socket.assigns.payload, issue_identifier)
+    entry = find_running_entry(socket.assigns.running, issue_identifier)
     current = session_run_spec_settings(socket.assigns.issue_run_spec_drafts, entry)
     agent_changed? = current.kind != kind
 
@@ -1947,10 +2067,10 @@ defmodule CymphonyElixirWeb.DashboardLive do
   defp put_queue_run_spec_draft(socket, project_name, issue, kind, params) do
     if kind == "" or Agent.known_kind?(kind) do
       project =
-        Enum.find(socket.assigns.payload[:projects] || [], &(&1.name == project_name)) ||
+        Enum.find(socket.assigns.projects, &(&1.name == project_name)) ||
           %{name: project_name}
 
-      entry = find_waiting_entry(socket.assigns.payload, project_name, issue)
+      entry = find_waiting_entry(socket.assigns.projects, project_name, issue)
       current = queue_run_spec_settings(socket.assigns.queue_run_spec_drafts, project, entry)
       inherited = inherited_queue_run_spec(project, entry)
       agent_changed? = current.kind != kind
@@ -1983,8 +2103,8 @@ defmodule CymphonyElixirWeb.DashboardLive do
     end
   end
 
-  defp find_waiting_entry(payload, project_name, identifier) do
-    project = Enum.find(Map.get(payload, :projects) || [], &(&1.name == project_name)) || %{}
+  defp find_waiting_entry(projects, project_name, identifier) do
+    project = Enum.find(projects, &(&1.name == project_name)) || %{}
 
     Enum.find(project_waiting(project), &(&1.issue_identifier == identifier)) ||
       %{issue_identifier: identifier}
@@ -2008,27 +2128,27 @@ defmodule CymphonyElixirWeb.DashboardLive do
   defp maybe_skip_keep(map, _key, _value), do: map
 
   defp persist_queue_order(project_name, raw_order) do
-    cond do
-      not is_binary(project_name) or String.trim(project_name) == "" ->
-        {:error, :invalid_scope}
-
-      true ->
-        with {:ok, order} <- parse_queue_order_param(raw_order) do
-          orch_result = call_project_orchestrator(project_name, {:reorder_queue, order})
-          control_or_orch(Control, :set_queue_order, [{:project, project_name}, order], orch_result)
-        end
+    if blank_project_scope?(project_name) do
+      {:error, :invalid_scope}
+    else
+      with {:ok, order} <- parse_queue_order_param(raw_order) do
+        orch_result = call_project_orchestrator(project_name, {:reorder_queue, order})
+        control_or_orch(Control, :set_queue_order, [{:project, project_name}, order], orch_result)
+      end
     end
   end
 
   defp persist_queue_pin(project_name, issue_key, pin) do
-    cond do
-      not is_binary(project_name) or String.trim(project_name) == "" ->
-        {:error, :invalid_scope}
-
-      true ->
-        orch_result = call_project_orchestrator(project_name, {:set_queue_pin, issue_key, pin})
-        control_or_orch(Control, :set_queue_pin, [{:project, project_name}, issue_key, pin], orch_result)
+    if blank_project_scope?(project_name) do
+      {:error, :invalid_scope}
+    else
+      orch_result = call_project_orchestrator(project_name, {:set_queue_pin, issue_key, pin})
+      control_or_orch(Control, :set_queue_pin, [{:project, project_name}, issue_key, pin], orch_result)
     end
+  end
+
+  defp blank_project_scope?(project_name) do
+    not is_binary(project_name) or String.trim(project_name) == ""
   end
 
   defp parse_queue_order_param(raw) do
@@ -2101,22 +2221,22 @@ defmodule CymphonyElixirWeb.DashboardLive do
         list -> list
       end
 
-    payload = socket.assigns.payload
-
     projects =
-      Enum.map(payload[:projects] || [], fn project ->
-        if project.name == project_name do
-          waiting = project_waiting(project)
-          by_id = Map.new(waiting, &{&1.issue_identifier, &1})
-          reordered = Enum.flat_map(order, fn id -> List.wrap(Map.get(by_id, id)) end)
-          leftover = Enum.reject(waiting, &(&1.issue_identifier in order))
-          Map.put(project, :waiting, reordered ++ leftover)
-        else
-          project
-        end
+      Enum.map(socket.assigns.projects, fn project ->
+        if project.name == project_name,
+          do: reorder_project_waiting(project, order),
+          else: project
       end)
 
-    assign(socket, :payload, Map.put(payload, :projects, projects))
+    assign(socket, :projects, projects)
+  end
+
+  defp reorder_project_waiting(project, order) do
+    waiting = project_waiting(project)
+    by_id = Map.new(waiting, &{&1.issue_identifier, &1})
+    reordered = Enum.flat_map(order, &List.wrap(Map.get(by_id, &1)))
+    leftover = Enum.reject(waiting, &(&1.issue_identifier in order))
+    Map.put(project, :waiting, reordered ++ leftover)
   end
 
   defp call_project_orchestrator(project_name, message) do
@@ -2147,7 +2267,7 @@ defmodule CymphonyElixirWeb.DashboardLive do
 
   defp preview_project_agent(socket, project_name, kind, params) do
     project =
-      Enum.find(socket.assigns.payload[:projects] || [], &(&1.name == project_name)) ||
+      Enum.find(socket.assigns.projects, &(&1.name == project_name)) ||
         %{name: project_name}
 
     current = project_agent_settings(socket.assigns.agent_setting_drafts, project)
@@ -2182,9 +2302,9 @@ defmodule CymphonyElixirWeb.DashboardLive do
   defp preview_agent_persist_error(project_name, :not_found), do: "Project not found: #{project_name}"
   defp preview_agent_persist_error(_project_name, _reason), do: "Could not persist agent settings"
 
-  defp total_runtime_seconds(payload, now) do
-    completed_runtime_seconds(payload) +
-      Enum.reduce(payload.running, 0, fn entry, total ->
+  defp total_runtime_seconds(token_totals, running, now) do
+    completed_runtime_seconds(token_totals) +
+      Enum.reduce(running, 0, fn entry, total ->
         total + runtime_seconds_from_started_at(entry.started_at, now)
       end)
   end
@@ -2281,45 +2401,61 @@ defmodule CymphonyElixirWeb.DashboardLive do
     end
   end
 
-  defp format_poll_countdown(nil, _now), do: "n/a"
-
-  defp format_poll_countdown(ms, %DateTime{}) when is_integer(ms) do
+  # `next_poll_in_ms` is already a remaining amount, so this needs no wall clock:
+  # reading `@now` here would only add a false dependency on an assign that has
+  # nothing to do with the countdown.
+  defp format_poll_countdown(ms) when is_integer(ms) do
     seconds = max(div(ms, 1_000), 0)
     "#{seconds}s"
   end
 
-  defp format_poll_countdown(_ms, _now), do: "n/a"
+  defp format_poll_countdown(_ms), do: "n/a"
+
+  # Anchor for the LiveClock hook: milliseconds left, never an absolute time.
+  # nil drops the attribute so the hook leaves the server-rendered text alone.
+  defp poll_remaining_ms(ms) when is_integer(ms), do: max(ms, 0)
+  defp poll_remaining_ms(_ms), do: nil
 
   defp stalled_running_entries(running) do
     Enum.filter(running, & &1.stalled)
   end
 
-  defp format_stall_duration(%DateTime{} = last_event_at, %DateTime{} = now) do
-    seconds = DateTime.diff(now, last_event_at, :second)
-    format_runtime_seconds(seconds)
+  defp stall_seconds(%DateTime{} = last_event_at, %DateTime{} = now) do
+    DateTime.diff(now, last_event_at, :second)
   end
 
-  defp format_stall_duration(last_event_at, %DateTime{} = now) when is_binary(last_event_at) do
+  defp stall_seconds(last_event_at, %DateTime{} = now) when is_binary(last_event_at) do
     case DateTime.from_iso8601(last_event_at) do
-      {:ok, parsed, _offset} -> format_stall_duration(parsed, now)
-      _ -> "unknown"
+      {:ok, parsed, _offset} -> stall_seconds(parsed, now)
+      _ -> nil
     end
   end
 
-  defp format_stall_duration(_, _), do: "unknown"
+  defp stall_seconds(_last_event_at, _now), do: nil
 
-  defp format_retry_countdown(due_at, now) when is_binary(due_at) do
+  defp format_stall_duration(last_event_at, now) do
+    case stall_seconds(last_event_at, now) do
+      nil -> "unknown"
+      seconds -> format_runtime_seconds(seconds)
+    end
+  end
+
+  defp retry_remaining_ms(due_at, %DateTime{} = now) when is_binary(due_at) do
     case DateTime.from_iso8601(due_at) do
-      {:ok, parsed, _offset} ->
-        diff = DateTime.diff(parsed, now, :second)
-        if diff > 0, do: format_runtime_seconds(diff), else: "now"
-
-      _ ->
-        "n/a"
+      {:ok, parsed, _offset} -> DateTime.diff(parsed, now, :second) * 1_000
+      _ -> nil
     end
   end
 
-  defp format_retry_countdown(_, _), do: "n/a"
+  defp retry_remaining_ms(_due_at, _now), do: nil
+
+  defp format_retry_countdown(due_at, now) do
+    case retry_remaining_ms(due_at, now) do
+      nil -> "n/a"
+      ms when ms > 0 -> format_runtime_seconds(div(ms, 1_000))
+      _ms -> "now"
+    end
+  end
 
   defp update_token_samples(samples, payload) do
     now_ms = System.monotonic_time(:millisecond)
@@ -2437,8 +2573,8 @@ defmodule CymphonyElixirWeb.DashboardLive do
 
   defp send_issue_command(socket, issue_identifier, command) do
     entry =
-      Enum.find(socket.assigns.payload.running, &(&1.issue_identifier == issue_identifier)) ||
-        Enum.find(socket.assigns.payload.retrying, &(&1.issue_identifier == issue_identifier)) ||
+      Enum.find(socket.assigns.running, &(&1.issue_identifier == issue_identifier)) ||
+        Enum.find(socket.assigns.retrying, &(&1.issue_identifier == issue_identifier)) ||
         %{}
 
     issue_id = Map.get(entry, :issue_id)
@@ -2495,7 +2631,7 @@ defmodule CymphonyElixirWeb.DashboardLive do
   defp maybe_override_agent_kind(map, _value), do: map
 
   defp expand_harness_tail(socket, identifier) do
-    entry = find_running_entry(socket.assigns.payload, identifier)
+    entry = find_running_entry(socket.assigns.running, identifier)
     issue_id = Map.get(entry, :issue_id)
 
     if is_binary(issue_id) and issue_id != "" do
@@ -2530,8 +2666,8 @@ defmodule CymphonyElixirWeb.DashboardLive do
     assign(socket, :harness_tails, Map.delete(socket.assigns.harness_tails, identifier))
   end
 
-  defp find_running_entry(payload, identifier) do
-    Enum.find(Map.get(payload, :running, []), &(&1.issue_identifier == identifier)) || %{}
+  defp find_running_entry(running, identifier) do
+    Enum.find(running, &(&1.issue_identifier == identifier)) || %{}
   end
 
   defp format_count_breakdown(counts) when is_map(counts) do
@@ -2618,7 +2754,6 @@ defmodule CymphonyElixirWeb.DashboardLive do
         case Control.list_linear_projects() do
           {:ok, list} when is_list(list) -> list
           {:error, reason} -> {:error, reason}
-          other -> {:error, other}
         end
 
       send(pid, {:linear_projects_loaded, result})

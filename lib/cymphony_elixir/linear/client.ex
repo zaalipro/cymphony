@@ -614,7 +614,9 @@ defmodule CymphonyElixir.Linear.Client do
 
   defp map_linear_key_request_error(reason), do: {:error, reason}
 
-  defp decode_viewer_validation(body) when is_map(body) do
+  # `graphql/3` only ever hands back a decoded JSON object, so there is no
+  # non-map clause here: dialyzer proves it unreachable.
+  defp decode_viewer_validation(body) do
     cond do
       linear_graphql_auth_error?(body) ->
         {:error, :unauthorized}
@@ -626,8 +628,6 @@ defmodule CymphonyElixir.Linear.Client do
         {:error, :invalid}
     end
   end
-
-  defp decode_viewer_validation(_body), do: {:error, :invalid}
 
   defp viewer_id_from_body(%{"data" => %{"viewer" => %{"id" => id}}}) when is_binary(id) do
     case String.trim(id) do
@@ -647,27 +647,34 @@ defmodule CymphonyElixir.Linear.Client do
 
     case graphql(@projects_query, variables, opts) do
       {:ok, body} ->
-        with {:ok, projects, page_info} <- decode_projects_page(body) do
-          updated_acc = Enum.reverse(projects, acc)
-
-          case next_project_page_cursor(page_info) do
-            {:ok, next_cursor} ->
-              fetch_accessible_projects(opts, next_cursor, updated_acc, page + 1)
-
-            :done ->
-              {:ok, Enum.reverse(updated_acc)}
-
-            {:error, reason} ->
-              {:error, reason}
-          end
-        end
+        collect_projects_page(body, opts, acc, page)
 
       {:error, reason} ->
         map_linear_key_request_error(reason)
     end
   end
 
-  defp decode_projects_page(body) when is_map(body) do
+  defp collect_projects_page(body, opts, acc, page) do
+    with {:ok, projects, page_info} <- decode_projects_page(body) do
+      advance_projects_page(page_info, opts, Enum.reverse(projects, acc), page)
+    end
+  end
+
+  defp advance_projects_page(page_info, opts, acc, page) do
+    case next_project_page_cursor(page_info) do
+      {:ok, next_cursor} ->
+        fetch_accessible_projects(opts, next_cursor, acc, page + 1)
+
+      :done ->
+        {:ok, Enum.reverse(acc)}
+
+      {:error, reason} ->
+        {:error, reason}
+    end
+  end
+
+  # Same as `decode_viewer_validation/1`: the body is always a decoded object.
+  defp decode_projects_page(body) do
     cond do
       linear_graphql_auth_error?(body) ->
         {:error, :unauthorized}
@@ -684,8 +691,6 @@ defmodule CymphonyElixir.Linear.Client do
         {:error, :linear_unknown_payload}
     end
   end
-
-  defp decode_projects_page(_body), do: {:error, :linear_unknown_payload}
 
   defp normalize_linear_project(%{"id" => id, "name" => name, "slugId" => slug_id})
        when is_binary(id) and is_binary(name) and is_binary(slug_id) do

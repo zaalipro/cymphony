@@ -15,6 +15,8 @@ defmodule CymphonyElixir.DashboardLiveTest do
   import Phoenix.LiveViewTest
 
   alias CymphonyElixir.Agent
+  alias CymphonyElixir.Cymphony.Config, as: CymphonyConfig
+  alias CymphonyElixirWeb.Presenter
 
   @endpoint CymphonyElixirWeb.Endpoint
 
@@ -152,7 +154,7 @@ defmodule CymphonyElixir.DashboardLiveTest do
     |> element(~s|button[phx-click="toggle_logs"][phx-value-issue="MT-HTTP"]|)
     |> render_click()
 
-    payload_before = view_assigns(view).payload
+    payload_before = view_payload(view)
     refresh_before = view_assigns(view).last_payload_refresh
 
     send(view.pid, %{
@@ -173,7 +175,7 @@ defmodule CymphonyElixir.DashboardLiveTest do
     assert html =~ ~s(data-seq="2")
 
     assigns = view_assigns(view)
-    assert assigns.payload == payload_before
+    assert view_payload(view) == payload_before
     assert assigns.last_payload_refresh == refresh_before
     assert assigns.harness_tails["MT-HTTP"].last_seq == 2
     assert length(assigns.harness_tails["MT-HTTP"].lines) == 2
@@ -220,7 +222,7 @@ defmodule CymphonyElixir.DashboardLiveTest do
     drafts = view_assigns(view).agent_setting_drafts
     assert drafts["default"].kind == "antigravity"
 
-    project_name = hd(view_assigns(view).payload.projects).name
+    project_name = hd(view_assigns(view).projects).name
 
     render_change(view, "preview_project_agent", %{
       "project" => project_name,
@@ -238,9 +240,15 @@ defmodule CymphonyElixir.DashboardLiveTest do
     start_dashboard()
     {:ok, view, _html} = live(build_conn(), "/")
 
-    payload = view_assigns(view).payload
+    payload = view_payload(view)
     [entry | rest] = payload.running
-    entry = Map.put(entry, :tokens_per_second, 12.34)
+
+    # Tokens and the derived rate move together, as they do on a real load: a
+    # rate that drifts on its own is ignored by the change-only section split.
+    entry =
+      entry
+      |> Map.put(:tokens, %{entry.tokens | total_tokens: 37})
+      |> Map.put(:tokens_per_second, 12.34)
 
     patched = %{
       payload
@@ -350,7 +358,7 @@ defmodule CymphonyElixir.DashboardLiveTest do
 
     render(view)
 
-    {:ok, config} = CymphonyElixir.Cymphony.Config.load()
+    {:ok, config} = CymphonyConfig.load()
 
     seeded =
       Map.put(config, "projects", [
@@ -361,7 +369,7 @@ defmodule CymphonyElixir.DashboardLiveTest do
         }
       ])
 
-    assert :ok = CymphonyElixir.Cymphony.Config.save(seeded)
+    assert :ok = CymphonyConfig.save(seeded)
 
     render_submit(view, "add_project", %{
       "name" => "Farm",
@@ -446,7 +454,7 @@ defmodule CymphonyElixir.DashboardLiveTest do
     assert has_element?(view, ~s|form[phx-submit="set_project_agent"] input[name="agent_kind"][value="codex"]|)
 
     preview_assigns = view_assigns(view)
-    preview_payload = preview_assigns.payload
+    preview_payload = view_payload(view)
     [preview_project | preview_rest] = preview_payload.projects
     assert preview_project.agent_kind == "claude"
 
@@ -473,7 +481,7 @@ defmodule CymphonyElixir.DashboardLiveTest do
     seq_after = view_assigns(view).payload_seq
     assert seq_after > seq_before
 
-    payload = view_assigns(view).payload
+    payload = view_payload(view)
     [project | rest] = payload.projects
     assert project.agent_kind == "claude"
 
@@ -531,9 +539,9 @@ defmodule CymphonyElixir.DashboardLiveTest do
     start_dashboard(recipient: self())
     {:ok, view, _html} = live(build_conn(), "/")
 
-    {:ok, config} = CymphonyElixir.Cymphony.Config.load()
+    {:ok, config} = CymphonyConfig.load()
     projects = Enum.map(config["projects"], &Map.put(&1, "provider", "cv1"))
-    assert :ok = CymphonyElixir.Cymphony.Config.save(Map.put(config, "projects", projects))
+    assert :ok = CymphonyConfig.save(Map.put(config, "projects", projects))
 
     assert has_element?(view, ~s|form[phx-submit="set_project_providers"] #providers-default|)
 
@@ -564,7 +572,7 @@ defmodule CymphonyElixir.DashboardLiveTest do
     assert has_element?(view, ~s|form[phx-submit="set_project_agent"] input[name="agent_kind"][value="claude"]|)
 
     refute_received {:orchestrator_call, {:set_providers, _}}
-    {:ok, persisted} = CymphonyElixir.Cymphony.Config.load()
+    {:ok, persisted} = CymphonyConfig.load()
     assert Enum.any?(persisted["projects"], &(&1["provider"] == "cv1"))
   end
 
@@ -572,7 +580,7 @@ defmodule CymphonyElixir.DashboardLiveTest do
     start_dashboard()
     {:ok, view, _html} = live(build_conn(), "/")
 
-    payload = view_assigns(view).payload
+    payload = view_payload(view)
     [project | rest] = payload.projects
 
     send(
@@ -640,7 +648,7 @@ defmodule CymphonyElixir.DashboardLiveTest do
     start_dashboard()
     {:ok, view, _html} = live(build_conn(), "/")
 
-    payload = view_assigns(view).payload
+    payload = view_payload(view)
     [entry | rest] = payload.running
     entry = entry |> Map.put(:provider, "cz2") |> Map.put(:agent_kind, "codex")
 
@@ -662,8 +670,8 @@ defmodule CymphonyElixir.DashboardLiveTest do
 
   test "preview_add_project shows provider only for claude" do
     start_dashboard()
-    {:ok, config} = CymphonyElixir.Cymphony.Config.load()
-    assert :ok = CymphonyElixir.Cymphony.Config.save(Map.put(config, "linear_api_key", "lin_api_fake"))
+    {:ok, config} = CymphonyConfig.load()
+    assert :ok = CymphonyConfig.save(Map.put(config, "linear_api_key", "lin_api_fake"))
 
     {:ok, view, _html} = live(build_conn(), "/")
 
@@ -715,7 +723,7 @@ defmodule CymphonyElixir.DashboardLiveTest do
     assert view_assigns(view).payload_refresh_ms == 3_000
     assert has_element?(view, ~s|#drawer-refresh-interval[value="3"]|)
 
-    {:ok, initial_config} = CymphonyElixir.Cymphony.Config.load()
+    {:ok, initial_config} = CymphonyConfig.load()
     refute Map.get(initial_config, "dashboard_refresh_seconds")
 
     view
@@ -726,7 +734,7 @@ defmodule CymphonyElixir.DashboardLiveTest do
     assert view_assigns(view).payload_refresh_ms == 7_000
     assert render(view) =~ "Dashboard refresh set to 7s"
 
-    {:ok, updated} = CymphonyElixir.Cymphony.Config.load()
+    {:ok, updated} = CymphonyConfig.load()
     assert updated["dashboard_refresh_seconds"] == 7
     assert is_list(updated["projects"])
 
@@ -933,6 +941,391 @@ defmodule CymphonyElixir.DashboardLiveTest do
     assert has_element?(view, "p.empty-state")
   end
 
+  test "time-derived values carry LiveClock anchors instead of absolute wall times" do
+    start_dashboard()
+
+    {:ok, view, html} = live(build_conn(), "/")
+
+    assert html =~ ~s(<div id="live-clock" phx-hook="LiveClock">)
+
+    # Poll countdown anchors on remaining milliseconds and matches the server text.
+    assert html =~ ~s(<span data-clock="countdown" data-remaining-ms="5000">5s</span>)
+
+    # Global runtime, per-session runtime and retry due-in all anchor on amounts.
+    assert has_element?(view, ~s|span.metric-pill-value[data-clock="elapsed"][data-base-seconds][data-rate="1"]|)
+    assert has_element?(view, ~s|.session-row-runtime span[data-clock="elapsed"][data-base-seconds]|)
+    assert has_element?(view, ~s|span[data-clock="due"][data-remaining-ms]|)
+  end
+
+  test "the stalled banner anchors on elapsed seconds" do
+    start_dashboard()
+
+    {:ok, view, _html} = live(build_conn(), "/")
+
+    payload = view_payload(view)
+    [entry | rest] = payload.running
+    stalled_at = DateTime.add(DateTime.utc_now(), -125, :second)
+
+    stalled =
+      entry
+      |> Map.put(:stalled, true)
+      |> Map.put(:last_event_at, DateTime.to_iso8601(stalled_at))
+
+    send(view.pid, {:payload_loaded, view_assigns(view).payload_seq, %{payload | running: [stalled | rest]}})
+
+    html = render(view)
+
+    # The anchor is the elapsed amount as of the render, and the visible text is
+    # that same amount formatted the way the LiveClock hook formats it.
+    seconds = DateTime.diff(view_assigns(view).now, stalled_at, :second)
+    assert seconds >= 125
+
+    assert html =~
+             ~s(<span data-clock="elapsed" data-base-seconds="#{seconds}">#{div(seconds, 60)}m #{rem(seconds, 60)}s</span>)
+  end
+
+  test "clock spans drop their anchor when the amount is unknown, keeping the server text" do
+    start_dashboard()
+
+    {:ok, view, _html} = live(build_conn(), "/")
+
+    payload = view_payload(view)
+    [entry | rest] = payload.running
+    stalled = entry |> Map.put(:stalled, true) |> Map.put(:last_event_at, "not-a-timestamp")
+
+    projects =
+      Enum.map(payload.projects, fn project ->
+        %{project | retrying: Enum.map(project.retrying, &Map.put(&1, :due_at, "not-a-timestamp"))}
+      end)
+
+    unclocked = %{
+      payload
+      | running: [stalled | rest],
+        projects: projects,
+        polling: %{payload.polling | next_poll_in_ms: nil}
+    }
+
+    send(view.pid, {:payload_loaded, view_assigns(view).payload_seq, unclocked})
+
+    html = render(view)
+
+    # No anchor attribute at all, so the hook skips the span and the
+    # server-rendered text is what a JS-off (or bad-data) browser keeps showing.
+    assert html =~ ~s(<span data-clock="elapsed">unknown</span>)
+    assert html =~ ~s(<span data-clock="due">n/a</span>)
+    assert html =~ ~s(<span data-clock="countdown">n/a</span>)
+  end
+
+  test "the runtime tile anchors on completed seconds and advances once per running session" do
+    start_dashboard(snapshot: Map.put(static_snapshot(), :running, []))
+
+    {:ok, _view, html} = live(build_conn(), "/")
+
+    assert html =~ ~s(data-base-seconds="42.5")
+    assert html =~ ~s(data-rate="0")
+  end
+
+  test "runtime_tick no longer re-renders time strings" do
+    start_dashboard()
+
+    {:ok, view, _html} = live(build_conn(), "/")
+
+    html_before = render(view)
+    assigns_before = view_assigns(view)
+    payload_before = view_payload(view)
+
+    send(view.pid, :runtime_tick)
+
+    assert render(view) == html_before
+
+    assigns_after = view_assigns(view)
+    assert assigns_after.now == assigns_before.now
+    assert view_payload(view) == payload_before
+    assert assigns_after.last_payload_refresh == assigns_before.last_payload_refresh
+
+    # Identical HTML alone is weak: the second-resolution strings only move once
+    # a second. The real acceptance is that *no* assign moved, because LiveView
+    # only ships a diff for assigns it marked as changed — so the tick costs zero
+    # websocket traffic, not merely zero visible change.
+    assert changed_assign_keys(assigns_before, assigns_after) == []
+  end
+
+  test "runtime_tick still drives the periodic payload refresh" do
+    start_dashboard()
+
+    {:ok, view, _html} = live(build_conn(), "/")
+
+    view
+    |> form(~s|form[phx-submit="set_refresh_interval"]|, %{value: "1"})
+    |> render_submit()
+
+    assigns_before = view_assigns(view)
+
+    assert wait_until(fn ->
+             assigns = view_assigns(view)
+
+             assigns.last_payload_refresh > assigns_before.last_payload_refresh and
+               assigns.payload_seq > assigns_before.payload_seq
+           end)
+  end
+
+  test "a payload load re-anchors :now only when a clock-bearing section moved" do
+    start_dashboard()
+
+    {:ok, view, _html} = live(build_conn(), "/")
+
+    payload = view_payload(view)
+    now_before = view_assigns(view).now
+
+    # Nothing moved. `:now` is read inside the per-project comprehension (session
+    # runtime, retry due-in), and a HEEx comprehension is one change-tracked
+    # slot: re-anchoring here would re-evaluate and re-serialize every project
+    # header, queue card, session row and restart form — the exact re-render the
+    # section split exists to skip.
+    send(view.pid, {:payload_loaded, view_assigns(view).payload_seq, payload})
+    render(view)
+
+    assert view_assigns(view).now == now_before
+
+    # A real move: the sections re-render anyway, so the clocks they carry have
+    # to be anchored as of *this* render, not as of the last one.
+    [entry | rest] = payload.running
+    moved = %{entry | tokens: %{entry.tokens | total_tokens: entry.tokens.total_tokens + 1}}
+    patched = %{payload | running: [moved | rest], projects: patch_running(payload.projects, moved)}
+
+    send(view.pid, {:payload_loaded, view_assigns(view).payload_seq, patched})
+    render(view)
+
+    assert DateTime.compare(view_assigns(view).now, now_before) == :gt
+  end
+
+  test "the payload is split into one assign per section, with no monolithic payload assign" do
+    start_dashboard()
+
+    {:ok, view, _html} = live(build_conn(), "/")
+
+    assigns = view_assigns(view)
+
+    refute Map.has_key?(assigns, :payload)
+
+    assert assigns.counts.running == 1
+    assert assigns.counts.retrying == 1
+    assert assigns.token_totals.total_tokens == 12
+    assert assigns.rate_limits == %{"primary" => %{"remaining" => 11}}
+    assert assigns.polling.next_poll_in_ms == 5_000
+    assert [%{name: "default"}] = assigns.projects
+    assert [%{issue_identifier: "MT-HTTP"}] = assigns.running
+    assert [%{issue_identifier: "MT-RETRY"}] = assigns.retrying
+    assert assigns.completions == []
+    assert assigns.payload_error == nil
+  end
+
+  test "re-delivering an identical payload leaves every section assign and the render untouched" do
+    # No running/retrying rows: the render then carries no wall-clock-derived
+    # value, so an unchanged payload must produce byte-identical HTML.
+    orchestrator = start_dashboard(snapshot: static_snapshot() |> Map.put(:running, []) |> Map.put(:retrying, []))
+
+    {:ok, view, _html} = live(build_conn(), "/")
+
+    # The throughput sparkline is seeded from the mount token sample and grows a
+    # column on the first load, so take the baseline after one payload load.
+    send(view.pid, {:payload_loaded, view_assigns(view).payload_seq, Presenter.state_payload(orchestrator, 1_000)})
+    render(view)
+
+    assigns_before = view_assigns(view)
+    payload_before = view_payload(view)
+    html_before = render(view)
+
+    # Rebuilt from the orchestrator rather than echoed back out of the view's own
+    # assigns, so the sections have to come out equal on their own — echoing the
+    # assigns would make the assertions below true by construction.
+    send(view.pid, {:payload_loaded, assigns_before.payload_seq, Presenter.state_payload(orchestrator, 1_000)})
+
+    assert render(view) == html_before
+    assert view_payload(view) == payload_before
+
+    # `:token_samples` grows the throughput window; nothing else may move. Not
+    # one payload section, and not `:now` either — the per-project comprehension
+    # reads `:now`, so re-anchoring it would re-serialize every project subtree
+    # and put the whole board back on the wire for a poll that changed nothing.
+    assert changed_assign_keys(assigns_before, view_assigns(view)) -- [:token_samples] == []
+  end
+
+  test "a poll whose only movement is generated_at leaves every section assign untouched" do
+    # This is the shape of a real idle poll: the orchestrator snapshot is
+    # re-read every few seconds and comes back with a fresh `generated_at` and
+    # otherwise identical sections. Under the old monolithic `@payload` assign
+    # that alone re-rendered the whole template.
+    orchestrator = start_dashboard(snapshot: static_snapshot() |> Map.put(:running, []) |> Map.put(:retrying, []))
+
+    {:ok, view, _html} = live(build_conn(), "/")
+
+    send(view.pid, {:payload_loaded, view_assigns(view).payload_seq, Presenter.state_payload(orchestrator, 1_000)})
+    render(view)
+
+    assigns_before = view_assigns(view)
+    html_before = render(view)
+
+    payload = Map.put(Presenter.state_payload(orchestrator, 1_000), :generated_at, "2026-08-16T00:00:00.000000Z")
+    send(view.pid, {:payload_loaded, assigns_before.payload_seq, payload})
+
+    assert render(view) == html_before
+    assert changed_assign_keys(assigns_before, view_assigns(view)) -- [:token_samples] == []
+  end
+
+  test "a poll that only moves the countdown leaves :now and the per-project section alone" do
+    start_dashboard()
+
+    {:ok, view, _html} = live(build_conn(), "/")
+
+    payload = view_payload(view)
+    assigns_before = view_assigns(view)
+
+    # The poll countdown is the one thing that moves on an otherwise idle poll.
+    # It carries its own `data-remaining-ms` anchor and reads no wall clock, so
+    # it must not drag `:now` — and through `:now`, the whole per-project
+    # comprehension — onto the wire with it.
+    ticked = %{payload | polling: %{payload.polling | next_poll_in_ms: 4_000}}
+
+    send(view.pid, {:payload_loaded, assigns_before.payload_seq, ticked})
+    render(view)
+
+    assigns = view_assigns(view)
+
+    assert assigns.polling.next_poll_in_ms == 4_000
+    assert assigns.now == assigns_before.now
+    assert assigns.projects == assigns_before.projects
+    assert changed_assign_keys(assigns_before, assigns) -- [:polling, :token_samples] == []
+  end
+
+  test "a payload that only moves one section leaves the other section assigns alone" do
+    start_dashboard()
+
+    {:ok, view, _html} = live(build_conn(), "/")
+
+    payload = view_payload(view)
+    counts = %{payload.counts | running: 41}
+
+    send(view.pid, {:payload_loaded, view_assigns(view).payload_seq, %{payload | counts: counts}})
+
+    render(view)
+    assigns = view_assigns(view)
+
+    assert assigns.counts.running == 41
+    assert assigns.projects == payload.projects
+    assert assigns.running == payload.running
+    assert assigns.retrying == payload.retrying
+    assert assigns.polling == payload.polling
+    assert assigns.rate_limits == payload.rate_limits
+    assert assigns.token_totals == payload.token_totals
+  end
+
+  test "a poll where only the wall-clock-derived rate moved leaves the entry sections alone" do
+    start_dashboard()
+
+    {:ok, view, _html} = live(build_conn(), "/")
+
+    payload = view_payload(view)
+    [entry | rest] = payload.running
+
+    # What an idle poll actually looks like for a running agent: the tokens did
+    # not move, but `tokens_per_second` divides them by a wider window every
+    # load, so it drifts on its own. Without this being ignored, `:running` and
+    # `:projects` would be reassigned on every single refresh and the whole
+    # per-project section would re-render — the churn the split exists to remove.
+    drifted = Map.update!(entry, :tokens_per_second, &(&1 + 1.5))
+    refute drifted == entry
+
+    assigns_before = view_assigns(view)
+
+    patched = %{payload | running: [drifted | rest], projects: patch_running(payload.projects, drifted)}
+
+    send(view.pid, {:payload_loaded, assigns_before.payload_seq, patched})
+
+    render(view)
+    assigns = view_assigns(view)
+
+    assert assigns.running == assigns_before.running
+    assert assigns.projects == assigns_before.projects
+
+    # The frozen rate is the deliberate trade-off: the row keeps the `t/s` from
+    # the last load that moved a real field rather than re-rendering the whole
+    # board to show a rate the server re-derived from nothing but the clock.
+    assert changed_assign_keys(assigns_before, assigns) -- [:token_samples] == []
+  end
+
+  test "an error payload resets every section to its default" do
+    start_dashboard()
+
+    {:ok, view, _html} = live(build_conn(), "/")
+
+    send(
+      view.pid,
+      {:payload_loaded, view_assigns(view).payload_seq,
+       %{
+         generated_at: "2026-08-16T00:00:00Z",
+         error: %{code: "snapshot_timeout", message: "Snapshot timed out"}
+       }}
+    )
+
+    html = render(view)
+    assert html =~ "Snapshot unavailable"
+    assert html =~ "snapshot_timeout"
+    assert has_element?(view, ".status-badge-payload.status-badge-offline", "Unavailable")
+
+    assigns = view_assigns(view)
+    assert assigns.payload_error == %{code: "snapshot_timeout", message: "Snapshot timed out"}
+    assert assigns.counts == %{running: 0, retrying: 0, waiting: 0, by_state: %{}, by_kind: %{}}
+    assert assigns.token_totals == %{input_tokens: 0, output_tokens: 0, total_tokens: 0, seconds_running: 0}
+    assert assigns.rate_limits == nil
+    assert assigns.polling == nil
+    assert assigns.projects == []
+    assert assigns.running == []
+    assert assigns.retrying == []
+    assert assigns.completions == []
+  end
+
+  test "a stale payload load cannot overwrite the split section assigns" do
+    start_dashboard()
+
+    {:ok, view, _html} = live(build_conn(), "/")
+
+    payload = view_payload(view)
+    stale_seq = view_assigns(view).payload_seq - 1
+
+    send(view.pid, {:payload_loaded, stale_seq, %{payload | counts: %{payload.counts | running: 99}}})
+
+    render(view)
+    assert view_assigns(view).counts == payload.counts
+  end
+
+  # Assign keys whose value moved between two snapshots of the socket. LiveView
+  # only re-evaluates (and only ships a diff for) assigns it marked as changed,
+  # so an empty list is the server-side proxy for "no websocket traffic".
+  defp changed_assign_keys(before_assigns, after_assigns) do
+    before_assigns
+    |> Map.merge(after_assigns)
+    |> Map.keys()
+    |> Enum.reject(&(Map.fetch(before_assigns, &1) == Map.fetch(after_assigns, &1)))
+    |> Enum.sort()
+  end
+
+  defp wait_until(fun), do: wait_until(fun, System.monotonic_time(:millisecond) + 3_000)
+
+  defp wait_until(fun, deadline) do
+    cond do
+      fun.() ->
+        true
+
+      System.monotonic_time(:millisecond) >= deadline ->
+        false
+
+      true ->
+        :timer.sleep(25)
+        wait_until(fun, deadline)
+    end
+  end
+
   defp start_dashboard(opts \\ []) do
     isolate_cymphony_home()
     stub_linear_graphql(fn _payload, _headers -> {:error, :stub_unused} end)
@@ -1113,6 +1506,24 @@ defmodule CymphonyElixir.DashboardLiveTest do
       %{socket: %{assigns: assigns}} -> assigns
       %{assigns: assigns} -> assigns
     end
+  end
+
+  # The LiveView keeps one assign per payload section instead of a single
+  # `:payload` map, so rebuild the payload shape the `{:payload_loaded, seq,
+  # payload}` contract still carries.
+  defp view_payload(view) do
+    assigns = view_assigns(view)
+
+    %{
+      counts: assigns.counts,
+      running: assigns.running,
+      retrying: assigns.retrying,
+      token_totals: assigns.token_totals,
+      rate_limits: assigns.rate_limits,
+      polling: assigns.polling,
+      projects: assigns.projects,
+      recent_completed: assigns.completions
+    }
   end
 
   defp patch_running(projects, entry) do
