@@ -1114,6 +1114,34 @@ defmodule CymphonyElixirWeb.Layouts do
                     this.pushEvent('dismiss_overlays', {});
                   }
                 },
+                // A native `<details>` keeps its open state in a DOM attribute the
+                // server never renders, and morphdom removes every attribute the
+                // server did not send — so any patch snapped the narrow-viewport
+                // jump menu shut mid-read. Below 900px the rail is gone and this
+                // is the only section-jump control, so the browser-owned flag has
+                // to be restored around the morph, like the Combobox does for its
+                // panel. Clicking a link closes it (native `<details>` would not).
+                JumpMenu: {
+                  mounted() {
+                    this._onPick = this.onPick.bind(this);
+                    this.el.addEventListener('click', this._onPick);
+                  },
+                  beforeUpdate() {
+                    this._open = this.el.open;
+                  },
+                  updated() {
+                    if (this._open && !this.el.open) this.el.open = true;
+                  },
+                  destroyed() {
+                    if (this.el) this.el.removeEventListener('click', this._onPick);
+                  },
+                  onPick(e) {
+                    var target = e.target;
+                    if (target && target.closest && target.closest('.jump-menu-link')) {
+                      this.el.open = false;
+                    }
+                  }
+                },
                 // Purely decorative scroll-spy: paints `aria-current` on the rail
                 // link whose section is nearest the top strip. No server traffic,
                 // no assign — without this hook the rail simply has no persistent
@@ -1295,7 +1323,16 @@ defmodule CymphonyElixirWeb.Layouts do
             // Esc closes the settings console. A delegated listener, not a hook:
             // the drawer's open state is an attribute on <html>, outside the
             // LiveView container, so nothing here can be patched away.
+            //
+            // The innermost overlay wins: a Combobox open *inside* the console
+            // (the add-project slug/agent/model/effort pickers) handles Escape
+            // itself and calls preventDefault(), and the keydown then bubbles to
+            // here. Without this guard one Escape dismissed both the dropdown and
+            // the whole console. It mirrors `OverlayDismiss.keepOpen`, which
+            // already exempts an open Combobox from the pointer-dismiss path —
+            // keyboard and pointer dismissal have to agree.
             document.addEventListener('keydown', function(e) {
+              if (e.defaultPrevented) return;
               if (e.key === 'Escape' &&
                   document.documentElement.getAttribute('data-drawer') === 'open') {
                 document.documentElement.removeAttribute('data-drawer');

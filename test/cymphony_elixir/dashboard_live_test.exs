@@ -871,6 +871,11 @@ defmodule CymphonyElixir.DashboardLiveTest do
     assert has_element?(view, ".command-bar .theme-toggle.topbar-only-narrow")
     assert has_element?(view, ~s|.command-bar details.jump-menu.topbar-only-narrow .jump-menu-summary|, "Jump to")
     assert has_element?(view, ~s|.jump-menu-panel .jump-menu-link[href="#project-default"]|, "default")
+
+    # `open` is browser-owned and never server-rendered, so morphdom strips it on
+    # every patch. Below 900px this is the only section-jump control, so it needs
+    # a hook to carry the flag across the morph — the rail's anchors are gone.
+    assert has_element?(view, ~s|details#jump-menu.jump-menu[phx-hook="JumpMenu"]|)
   end
 
   test "fleet-empty replaces the board only once a connected payload has no projects" do
@@ -1467,8 +1472,13 @@ defmodule CymphonyElixir.DashboardLiveTest do
 
     # Rebuilt from the orchestrator rather than echoed back out of the view's own
     # assigns, so the sections have to come out equal on their own — echoing the
-    # assigns would make the assertions below true by construction.
-    send(view.pid, {:payload_loaded, assigns_before.payload_seq, Presenter.state_payload(orchestrator, 1_000)})
+    # assigns would make the assertions below true by construction. The poll
+    # countdown is advanced on top of it because a live orchestrator re-derives
+    # it from the wall clock on every snapshot: "identical payload" in production
+    # never includes an identical countdown, and the fixture freezes it.
+    reloaded = Presenter.state_payload(orchestrator, 1_000)
+    reloaded = %{reloaded | polling: %{reloaded.polling | next_poll_in_ms: 1_842}}
+    send(view.pid, {:payload_loaded, assigns_before.payload_seq, reloaded})
 
     assert render(view) == html_before
     assert view_payload(view) == payload_before
@@ -1502,7 +1512,7 @@ defmodule CymphonyElixir.DashboardLiveTest do
     assert changed_assign_keys(assigns_before, view_assigns(view)) -- [:token_samples] == []
   end
 
-  test "a poll that only moves the countdown leaves :now and the per-project section alone" do
+  test "a poll that only moves the countdown reassigns nothing at all" do
     start_dashboard()
 
     {:ok, view, _html} = live(build_conn(), "/")
@@ -1515,10 +1525,11 @@ defmodule CymphonyElixir.DashboardLiveTest do
 
     assigns_before = view_assigns(view)
 
-    # The poll countdown is the one thing that moves on an otherwise idle poll.
-    # It carries its own `data-remaining-ms` anchor and reads no wall clock, so
-    # it must not drag `:now` — and through `:now`, the whole per-project
-    # comprehension — onto the wire with it.
+    # The poll countdown is the one thing that moves on every real orchestrator
+    # snapshot: it is re-derived as `max(0, next_poll_due_at_ms - now_ms)`. It is
+    # a `data-clock="countdown"` anchor the browser advances on its own, so an
+    # integer-to-integer tick must not reassign `:polling` — reassigning it meant
+    # no production payload load could ever ship an empty diff.
     ticked = %{payload | polling: %{payload.polling | next_poll_in_ms: 4_000}}
 
     send(view.pid, {:payload_loaded, assigns_before.payload_seq, ticked})
@@ -1526,10 +1537,43 @@ defmodule CymphonyElixir.DashboardLiveTest do
 
     assigns = view_assigns(view)
 
-    assert assigns.polling.next_poll_in_ms == 4_000
+    assert assigns.polling == assigns_before.polling
     assert assigns.now == assigns_before.now
     assert assigns.projects == assigns_before.projects
-    assert changed_assign_keys(assigns_before, assigns) -- [:polling, :token_samples] == []
+    assert changed_assign_keys(assigns_before, assigns) -- [:token_samples] == []
+  end
+
+  test "a poll that stops scheduling, or starts checking, still reassigns :polling" do
+    start_dashboard()
+
+    {:ok, view, _html} = live(build_conn(), "/")
+
+    payload = view_payload(view)
+    send(view.pid, {:payload_loaded, view_assigns(view).payload_seq, payload})
+    render(view)
+
+    # `nil` is not countdown drift: it means no poll is scheduled, which drops
+    # the anchor attribute and renders `n/a`. That has to land.
+    unscheduled = %{payload | polling: %{payload.polling | next_poll_in_ms: nil}}
+    send(view.pid, {:payload_loaded, view_assigns(view).payload_seq, unscheduled})
+    render(view)
+
+    assert view_assigns(view).polling.next_poll_in_ms == nil
+
+    # `checking?` flips true on every tick and false again when the cycle ends,
+    # and it is in the signature — which is what lands the refreshed countdown
+    # twice per poll despite the drift being ignored.
+    checking = %{payload | polling: %{payload.polling | checking?: true, next_poll_in_ms: nil}}
+    send(view.pid, {:payload_loaded, view_assigns(view).payload_seq, checking})
+    render(view)
+
+    assert view_assigns(view).polling.checking? == true
+
+    resumed = %{payload | polling: %{payload.polling | checking?: false, next_poll_in_ms: 29_000}}
+    send(view.pid, {:payload_loaded, view_assigns(view).payload_seq, resumed})
+    render(view)
+
+    assert view_assigns(view).polling.next_poll_in_ms == 29_000
   end
 
   test "a payload that only moves one section leaves the other section assigns alone" do
@@ -1884,7 +1928,15 @@ defmodule CymphonyElixir.DashboardLiveTest do
 
     idle_bytes =
       measure_diff_bytes(view, fn ->
-        send(view.pid, {:payload_loaded, view_assigns(view).payload_seq, view_payload(view)})
+        # "No real change" has to mean what it means against a live orchestrator,
+        # where the poll countdown is re-derived from the wall clock on every
+        # snapshot. Echoing a frozen fixture back would prove nothing: it would
+        # pass even if the countdown reassigned `:polling` on every load, which
+        # is exactly the leak this pins shut.
+        payload = view_payload(view)
+        ticked = %{payload | polling: %{payload.polling | next_poll_in_ms: 3_137}}
+
+        send(view.pid, {:payload_loaded, view_assigns(view).payload_seq, ticked})
       end)
 
     # An unchanged load must produce an *empty* diff — LiveView skips the morph

@@ -53,6 +53,23 @@ defmodule CymphonyElixir.ExtensionsTest do
     def graphql(query, variables, _opts), do: graphql(query, variables)
   end
 
+  # A *reachable* orchestrator that cannot answer. This is what
+  # `snapshot_unavailable` is for, and it is now distinct from a daemon with no
+  # orchestrator at all — which is an empty fleet, not a failure, and comes back
+  # as a normal payload with `projects: []`.
+  defmodule DownOrchestrator do
+    use GenServer
+
+    def start_link(opts) do
+      GenServer.start_link(__MODULE__, :ok, opts)
+    end
+
+    def init(:ok), do: {:ok, :ok}
+
+    def handle_call(:snapshot, _from, state), do: {:reply, :unavailable, state}
+    def handle_call(:request_refresh, _from, state), do: {:reply, :unavailable, state}
+  end
+
   defmodule SlowOrchestrator do
     use GenServer
 
@@ -545,6 +562,7 @@ defmodule CymphonyElixir.ExtensionsTest do
 
   test "phoenix observability api preserves 405, 404, and unavailable behavior" do
     unavailable_orchestrator = Module.concat(__MODULE__, :UnavailableOrchestrator)
+    {:ok, _pid} = DownOrchestrator.start_link(name: unavailable_orchestrator)
     start_test_endpoint(orchestrator: unavailable_orchestrator, snapshot_timeout_ms: 5)
 
     assert json_response(post(build_conn(), "/api/v1/state", %{}), 405) ==
@@ -580,6 +598,32 @@ defmodule CymphonyElixir.ExtensionsTest do
                  "message" => "Orchestrator is unavailable"
                }
              }
+  end
+
+  test "a fleet with no orchestrator at all is an empty payload, not an error" do
+    # The registry is empty and the legacy name is not registered: nothing is
+    # broken, there is simply nothing to run. Reporting `snapshot_unavailable`
+    # here left the dashboard's "No projects / connect Linear" card unreachable
+    # in production — the only payload a zero-project daemon could produce took
+    # the error branch instead.
+    start_test_endpoint(
+      orchestrator: Module.concat(__MODULE__, :NoOrchestratorAtAll),
+      snapshot_timeout_ms: 5
+    )
+
+    payload = json_response(get(build_conn(), "/api/v1/state"), 200)
+
+    refute Map.has_key?(payload, "error")
+    assert payload["projects"] == []
+    assert payload["running"] == []
+    assert payload["retrying"] == []
+    assert payload["recent_completed"] == []
+    assert payload["polling"] == nil
+    assert payload["rate_limits"] == nil
+    assert payload["counts"]["running"] == 0
+    assert payload["counts"]["retrying"] == 0
+    assert payload["counts"]["waiting"] == 0
+    assert payload["token_totals"]["total_tokens"] == 0
   end
 
   test "phoenix observability api preserves snapshot timeout behavior" do
@@ -738,16 +782,33 @@ defmodule CymphonyElixir.ExtensionsTest do
   end
 
   test "dashboard liveview renders an unavailable state without crashing" do
-    start_test_endpoint(
-      orchestrator: Module.concat(__MODULE__, :MissingDashboardOrchestrator),
-      snapshot_timeout_ms: 5
-    )
+    orchestrator_name = Module.concat(__MODULE__, :BrokenDashboardOrchestrator)
+    {:ok, _pid} = DownOrchestrator.start_link(name: orchestrator_name)
+    start_test_endpoint(orchestrator: orchestrator_name, snapshot_timeout_ms: 5)
 
     {:ok, view, html} = live(build_conn(), "/")
     assert html =~ "Snapshot unavailable"
     assert html =~ "snapshot_unavailable"
     assert has_element?(view, ".status-badge-payload.status-badge-offline", "Unavailable")
     refute has_element?(view, ".status-badge-payload.status-badge-live")
+    refute html =~ "fleet-empty"
+  end
+
+  test "dashboard liveview shows the fleet-empty card when no orchestrator is running" do
+    # The production shape of a zero-project fleet, end to end: empty registry,
+    # no legacy orchestrator, real `Presenter.state_payload/2`. It must reach the
+    # "No projects" card, not the red error card.
+    start_test_endpoint(
+      orchestrator: Module.concat(__MODULE__, :MissingDashboardOrchestrator),
+      snapshot_timeout_ms: 5
+    )
+
+    {:ok, view, html} = live(build_conn(), "/")
+
+    refute html =~ "snapshot_unavailable"
+    assert has_element?(view, "section.section-card.fleet-empty .fleet-empty-label", "No projects")
+    assert has_element?(view, ".fleet-empty-action[data-drawer-toggle]", "Open settings")
+    assert has_element?(view, ".status-badge-payload.status-badge-live")
   end
 
   describe "recent completions" do
@@ -1216,12 +1277,23 @@ defmodule CymphonyElixir.ExtensionsTest do
 
       # Esc closes the console; the listener is delegated, not a hook, because
       # the open flag is an attribute on <html> outside the LiveView container.
+      # It yields to an inner overlay that already consumed the key — the
+      # Combobox's own Escape handler calls preventDefault(), and without this
+      # guard one Escape dismissed both the dropdown and the whole console.
       assert html =~ "if (e.key === 'Escape' &&"
       assert html =~ ~s|document.documentElement.getAttribute('data-drawer') === 'open'|
+      assert html =~ "if (e.defaultPrevented) return;"
 
       # The rail's scroll-spy is additive: every anchor works without it.
       assert html =~ "RailNav: {"
       assert html =~ ~s|link.setAttribute('aria-current', 'true')|
+
+      # The narrow-viewport jump menu is a native <details>; its `open` attribute
+      # is browser-owned and the server never renders it, so morphdom strips it
+      # on every patch. JumpMenu snapshots it before the morph and restores it.
+      assert html =~ "JumpMenu: {"
+      assert html =~ "this._open = this.el.open;"
+      assert html =~ "if (this._open && !this.el.open) this.el.open = true;"
 
       # Rail content + Part B surfaces.
       assert dashboard_css =~ ".rail-vitals {"

@@ -2123,7 +2123,9 @@ html[data-theme="light"][data-drawer="open"] body::after {
   text-wrap: pretty;
 }
 
-/* One control + its one explanatory line: the console's repeating unit. */
+/* One control + its one explanatory line: the Automation/Orchestrator group's
+   repeating unit. The Linear, Projects, Experience and Display groups hang their
+   help copy off the group instead and do not use this wrapper. */
 .settings-control-row {
   display: flex;
   flex-direction: column;

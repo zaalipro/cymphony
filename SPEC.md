@@ -2015,22 +2015,35 @@ Enablement (extension):
   without it.
 - At ≥900px the rail owns the mode switch and theme toggle; the top strip keeps duplicate
   copies marked `.topbar-only-narrow` that are painted only below 900px, plus a native
-  `details.jump-menu` project-jump disclosure (no JS). The delegated layout script syncs every
-  instance, so the copies never disagree.
+  `details#jump-menu.jump-menu` project-jump disclosure. Its `open` attribute is browser-owned
+  and never server-rendered, so morphdom strips it on every patch: the `JumpMenu` hook
+  snapshots it in `beforeUpdate()` and restores it in `updated()`, and closes the menu when a
+  link inside it is clicked. Below 900px this is the only section-jump control, so a patch may
+  not close it mid-read; without JS it still opens and closes, it just cannot survive a patch.
+  The delegated layout script syncs every duplicated instance, so the copies never disagree.
 - Responsive breakpoints are 1200 / 900 / 640: full rail, 64px condensed rail (names become
   `title` tooltips; the rail's mode switch hides because no label fits — the console keeps it),
   and no rail (the top strip regains the brand and the jump menu) respectively.
 - When a **connected** payload has no projects and no error, the board is replaced by
   `section.section-card.fleet-empty` — "No projects", one sentence, and an accent
   `[data-drawer-toggle]` button. The disconnected first render never shows it: `projects: []`
-  is also the default payload, and a dead render has not earned the claim.
+  is also the default payload, and a dead render has not earned the claim. A daemon with no
+  orchestrator anywhere must actually *produce* that payload — see the empty-fleet rule under
+  `GET /api/v1/state` — or the card is unreachable and the operator gets an error card with no
+  call to action instead.
 - Settings drawer (`aside.settings-drawer`) is scrimmed while open: `html[data-drawer="open"]
   body::after` is a real fixed element box, so it intercepts clicks (a box-shadow scrim would
   let them through). The click target becomes `<body>`, which `OverlayDismiss` treats as
   outside, so the console closes and nothing underneath activates. `Escape` closes it too, via
   a delegated `keydown` listener in `layouts.ex` — not a hook, because the open flag is an
-  attribute on `<html>`, outside the LiveView container. Each console control is one
-  `div.settings-control-row` = control + exactly one `p.settings-help` line; the refresh row's
+  attribute on `<html>`, outside the LiveView container. That listener must yield to an
+  overlay that already consumed the key (`e.defaultPrevented`): a Combobox open inside the
+  console handles `Escape` itself, and one keypress may not dismiss both it and the console.
+  Every console control carries an explanatory `p.settings-help` line; the
+  Automation/Orchestrator controls are additionally wrapped one-per-`div.settings-control-row`
+  = control + exactly one `p.settings-help` line, so `.settings-control-row +
+  .settings-control-row` rules a hairline between them. The Linear, Projects, Experience and
+  Display groups keep their help copy as a group-level sibling. The refresh row's
   copy must distinguish it from Linear polling. Primary actions (Connect, Add project, Resume
   all, queue Pin) carry `.subtle-button--accent`; Pause all and Restart stay quiet.
 - Settings drawer (`aside.settings-drawer`) includes, after Experience and before Automation,
@@ -2075,12 +2088,13 @@ Enablement (extension):
     refresh, and must not change orchestrator poll timing. No pubsub event may shorten this
     interval. Open dashboards keep their current interval until remount or a successful
     `set_refresh_interval`.
-- Per-project header agent `<select>` uses a stable id `agent-<project>` (never embed the
-  current kind or effort). Changing to a known kind persists immediately (kind only;
+- The per-project header agent control is a Combobox whose hidden input carries the stable id
+  `agent-<project>` (its label points at `agent-<project>-trigger`); the id never embeds the
+  current kind or effort. Changing to a known kind persists immediately (kind only;
   model/effort wait for header **Set**). Header **Set** and `POST /api/v1/agent` persist
   kind+model+effort, rewrite the project's generated `WORKFLOW.md`, and overlay
   `config.json` so `snapshot.agent_kind` survives the next refresh. Dashboard payload
-  reloads are generation-tokened so an in-flight stale snapshot cannot revert the select
+  reloads are generation-tokened so an in-flight stale snapshot cannot revert the selection
   after persist.
 - Header and expanded-session **model** controls are a labeled `.model-switcher` Combobox
   (type-to-filter suggestions; not `<datalist>`). Header wrapping form remains
@@ -2221,6 +2235,17 @@ Enablement (extension):
       value is lossless because every real reschedule also moves `attempt`, `held`, or
       `error`.
 
+    One volatile value lives on a **section** rather than on an entry and needs its own rule:
+    `polling.next_poll_in_ms`, the countdown the orchestrator re-derives as
+    `max(0, next_poll_due_at_ms - now_ms)` on every snapshot. Comparing it verbatim reassigns
+    `:polling` on every payload load, so *no* load can ever ship an empty diff and every
+    refresh interval costs a full-container morph. Collapse an integer countdown in the
+    `:polling` comparison so only `checking?`, `paused`, `poll_interval_ms` — and `nil`, which
+    means no poll is scheduled and renders `n/a` without an anchor — can move the section. It
+    is lossless: the countdown is a `data-clock="countdown"` anchor the browser advances
+    itself, and `checking?` flips true on every tick and false again when the cycle ends,
+    landing the refreshed countdown twice per poll.
+
     Any other movement still assigns the whole fresh section, drifted values included. The
     accepted trade-off is that the rendered per-session `t/s` chip and the expanded row's
     `@ <timestamp>` hold the value from the last load that moved a real field: while an agent
@@ -2257,7 +2282,10 @@ Enablement (extension):
     state change a payload load ships an **empty** diff (an empty diff is skipped entirely by
     the client, which is what leaves every input and every open dropdown alone) and reassigns
     no section, does not re-anchor `:now`, and moves only the throughput sample window, which
-    no dynamic reads. A poll whose only movement is `generated_at` does the same. A
+    no dynamic reads. A poll whose only movement is `generated_at` does the same, and so does
+    one whose only movement is the poll countdown. "No real state change" has to be tested
+    with the countdown **advanced**: a live orchestrator moves it on every snapshot, so an
+    acceptance payload echoed back from a frozen fixture proves nothing. A
     `dashboard_refresh_seconds` of 20 means at most one data re-render per 20s.
 
 #### 13.7.2 JSON REST API (`/api/v1/*`)
@@ -2273,6 +2301,14 @@ Minimum endpoints:
   - `counts.waiting` is the sum of per-project `waiting` lengths (`waiting_count`).
     Each project object includes `waiting` (list) + `waiting_count`. Default payload /
     fixtures include `waiting: []` and `counts.waiting`.
+  - **Empty fleet is not an error.** When the project registry holds no orchestrators *and*
+    the legacy orchestrator name is not registered, there is nothing to snapshot and nothing
+    is wrong: return a normal payload with `projects: []`, zeroed `counts`/`token_totals`,
+    empty `running`/`retrying`/`recent_completed`, and `polling`/`rate_limits` `null` — no
+    `error` key. `snapshot_unavailable` stays reserved for an orchestrator that exists and
+    cannot answer (including a registry with projects whose snapshots all failed), and
+    `snapshot_timeout` for one that did not answer in time. Reporting a zero-project daemon
+    as `snapshot_unavailable` also made the dashboard's fleet-empty card unreachable.
   - Suggested response shape:
 
     ```json
@@ -2503,8 +2539,9 @@ optional `?project=<name>` scope):
   runtime agent settings and persists to `~/.cymphony/config.json`; **rewrites the
   project's generated `WORKFLOW.md` and overlays `config.json` agent/model/effort so
   `snapshot.agent_kind` survives the next dashboard/API refresh**. Dashboard header
-  **Set** and change-to-save (kind-only persist on the project agent `<select>`) follow
-  the same rewrite + overlay path. Applies to subsequent dispatches. Error when
+  **Set** and change-to-save (kind-only persist on the project agent Combobox, whose hidden
+  input carries `#agent-<project>`) follow the same rewrite + overlay path. Applies to
+  subsequent dispatches. Error when
   none of those keys are present or `kind` is not a known kind:
   `"body must include at least one of kind/model/effort; kind must be one of: claude, codex, antigravity"`.
 - `POST /api/v1/refresh-interval` is documented with the minimum endpoints above
@@ -3146,9 +3183,10 @@ Unless otherwise noted, Sections 17.1 through 17.7 are `Core Conformance`. Bulle
     `:payload_seq` and `:last_payload_refresh` do not move, and a burst of updates costs one
     load per configured interval
   - an idle board still resyncs once the idle-resync deadline passes with nothing dirty
-  - re-delivering a byte-identical payload **with sessions running**, and a payload whose
-    only movement is `generated_at`, reassigns no section, does not re-anchor `:now`, and
-    ships an empty diff to the client
+  - re-delivering a payload **with sessions running** that differs only in values the server
+    re-derives from the wall clock — `generated_at`, and a poll countdown that has ticked
+    down — reassigns no section, does not re-anchor `:now`, and ships an empty diff to the
+    client
   - a payload whose only movement is a volatile entry field the server re-derives or pokes on
     every load (`tokens_per_second`, `last_event_at`, `due_at`, including inside a project's
     nested `retrying` list) reassigns no section either
@@ -3157,12 +3195,19 @@ Unless otherwise noted, Sections 17.1 through 17.7 are `Core Conformance`. Bulle
   - a draft written by a `phx-change` preview survives a payload load that lands mid-edit,
     and a successful submit clears it
   - a payload that moves one section leaves the other section assigns alone
-  - a payload that only moves the poll countdown leaves `:now` and the per-project section
-    alone; a payload that moves a clock-bearing section re-anchors `:now`
+  - a payload that only moves the poll countdown between two integers reassigns nothing at
+    all — not `:polling`, not `:now`, not the per-project section — while one that drops the
+    countdown to `nil`, or flips `checking?`, still reassigns `:polling`; a payload that moves
+    a clock-bearing section re-anchors `:now`
   - time-derived spans carry their `data-clock` anchor as a remaining/elapsed amount, and
     drop the anchor attribute entirely when the amount is unknown so the server-rendered
     text survives
   - the client clock formatter and the server formatters produce identical strings
+  - a connected dashboard with no orchestrator registered anywhere renders the fleet-empty
+    card, not the snapshot-error card, straight out of `Presenter.state_payload/2`; an
+    orchestrator that exists and cannot answer still renders the error card
+  - the narrow-viewport jump menu keeps its `open` attribute across a LiveView patch
+  - `Escape` inside an open Combobox in the settings console closes only the dropdown
 
 ### 17.7 CLI and Host Lifecycle
 

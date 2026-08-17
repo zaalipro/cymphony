@@ -754,8 +754,12 @@ defmodule CymphonyElixirWeb.DashboardLive do
               <span class="brand-tagline advanced-only">Operations</span>
             </div>
             <%!-- Below 900px the rail is gone, so the same anchors come back as a
-            native disclosure — no JS, no hook, no server state. --%>
-            <details class="jump-menu topbar-only-narrow">
+            native disclosure — no server state. The `open` attribute is set by
+            the browser and the server never renders it, so morphdom strips it on
+            every patch: `JumpMenu` snapshots it before the morph and puts it
+            back, the way `Combobox` does for its panel. Without JS the menu still
+            opens and closes; it just cannot survive a patch. --%>
+            <details class="jump-menu topbar-only-narrow" id="jump-menu" phx-hook="JumpMenu">
               <summary class="jump-menu-summary">Jump to</summary>
               <nav class="jump-menu-panel" aria-label="Jump to section">
                 <a class="jump-menu-link" href="#dashboard-top">Overview</a>
@@ -2001,7 +2005,7 @@ defmodule CymphonyElixirWeb.DashboardLive do
   defp assign_changed_section(socket, key, value) do
     case socket.assigns do
       %{^key => current} ->
-        if section_signature(current) == section_signature(value),
+        if section_signature(key, current) == section_signature(key, value),
           do: socket,
           else: assign(socket, key, value)
 
@@ -2039,9 +2043,35 @@ defmodule CymphonyElixirWeb.DashboardLive do
   # `@ <timestamp>` holds the value from the last load that moved a real field.
   @volatile_entry_keys [:tokens_per_second, :last_event_at, :due_at]
 
+  # `polling.next_poll_in_ms` is the same class of noise one level up. Unlike the
+  # keys above it lives on a *section* map rather than on a list entry, so
+  # `@volatile_entry_keys` never reaches it: the orchestrator re-derives it as
+  # `max(0, next_poll_due_at_ms - now_ms)` from a per-call monotonic reading, so
+  # it moves on literally every snapshot. Comparing it verbatim reassigned
+  # `:polling` on every single payload load, which meant no load could ever ship
+  # an empty diff — the acceptance this whole split exists for — and every
+  # `dashboard_refresh_seconds` cost a full `#dashboard-root` morph.
+  #
+  # Holding the previous value is lossless. The countdown is rendered inside a
+  # `data-clock="countdown"` span whose anchor is a remaining amount, and the
+  # LiveClock hook advances it in the browser (clamping at `0s` once it runs past
+  # the end). Every poll cycle flips `checking?` true on the tick and false again
+  # when the cycle ends, and `checking?` *is* in the signature, so the fresh
+  # section — refreshed countdown included — lands twice per poll.
+  #
+  # Only integer-to-integer drift is collapsed: `nil` means no poll is scheduled
+  # at all, which drops the anchor and renders `n/a`, so it stays news.
+  defp section_signature(:polling, %{} = polling),
+    do: Map.replace_lazy(polling, :next_poll_in_ms, &countdown_signature/1)
+
+  defp section_signature(_key, section), do: section_signature(section)
+
   defp section_signature(entries) when is_list(entries), do: Enum.map(entries, &entry_signature/1)
 
   defp section_signature(section), do: section
+
+  defp countdown_signature(ms) when is_integer(ms), do: :counting
+  defp countdown_signature(ms), do: ms
 
   defp entry_signature(%{} = entry) do
     entry
