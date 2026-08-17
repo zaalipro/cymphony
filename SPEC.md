@@ -1608,7 +1608,8 @@ Pipeline:
    for harness ticks.
 6. The orchestrator treats `:harness_heartbeat` as a timestamp-only stall poke:
    it updates `running_entry.last_agent_timestamp` and does **not**
-   `append_log_event`, `notify_dashboard`, or `broadcast_issue_update`.
+   `append_log_event`, `notify_dashboard`, or `broadcast_issue_update`. The dashboard must
+   not treat the resulting `last_event_at` movement as a change either (Section 13.7.1).
    `:harness_stdout` / `:harness_heartbeat` must never appear in the 50-event
    `log_events` ring. On every path that removes a running entry (success, kill,
    fail, abandon) the orchestrator calls `HarnessStream.drop(issue_id)`.
@@ -1971,9 +1972,9 @@ Enablement (extension):
     (`name=linear_project_slug`; **not** a native `<select>`). Options come from the
     operator's accessible Linear projects (label `name (slug_id)`, value `slug_id`) and
     type-to-filter. Also: name input `#add-project-name`, optional GitHub URL
-    `#add-project-github`, and advanced-only agent / `.model-switcher` Combobox / native
-    effort `<select>` / provider fields. `preview_add_project` drafts those advanced
-    fields. Submit appends the project to `config.json`, writes a temp `WORKFLOW.md`,
+    `#add-project-github`, and advanced-only agent / `.model-switcher` Combobox / effort
+    Combobox / provider fields. `preview_add_project` drafts the slug, name, github and those
+    advanced fields, and a successful add resets all of them. Submit appends the project to `config.json`, writes a temp `WORKFLOW.md`,
     and starts the project supervisor immediately — no daemon restart. Duplicate
     name/slug is an operator-visible error.
   - Drawer fields only (`#linear-api-key`, add-project slug/name/github/agent/model/effort/provider,
@@ -1986,8 +1987,9 @@ Enablement (extension):
     `~/.cymphony/config.json` `dashboard_refresh_seconds` (positive integer, minimum 1;
     default `3` when missing/unreadable). This is the dashboard payload refresh cadence
     only — it is **not** `polling.interval_ms`, must not rewrite `WORKFLOW.md` for Linear
-    refresh, and must not change orchestrator poll timing. Open dashboards keep their
-    current interval until remount or a successful `set_refresh_interval`.
+    refresh, and must not change orchestrator poll timing. No pubsub event may shorten this
+    interval. Open dashboards keep their current interval until remount or a successful
+    `set_refresh_interval`.
 - Per-project header agent `<select>` uses a stable id `agent-<project>` (never embed the
   current kind or effort). Changing to a known kind persists immediately (kind only;
   model/effort wait for header **Set**). Header **Set** and `POST /api/v1/agent` persist
@@ -1999,9 +2001,9 @@ Enablement (extension):
   (type-to-filter suggestions; not `<datalist>`). Header wrapping form remains
   `form.project-agent-form` (`phx-change="preview_project_agent"`,
   `phx-submit="set_project_agent"`) so **Set** still sends kind+model+effort. Inner pills:
-  `.agent-switcher` (`#agent-<project>` native select), `.model-switcher` (Combobox),
-  `.effort-switcher` (native `#effort-<project>` select), and **Set**. Effort stays a
-  native `<select>`. Session restart is `form.restart-form` (`phx-change="preview_issue_run_spec"`,
+  `.agent-switcher` (Combobox whose hidden input carries `#agent-<project>`),
+  `.model-switcher` (Combobox), `.effort-switcher` (Combobox whose hidden input carries
+  `#effort-<project>`), and **Set**. Session restart is `form.restart-form` (`phx-change="preview_issue_run_spec"`,
   `phx-submit="set_issue_run_spec"`) with labeled Harness / Provider / Model Combobox /
   Effort pills — not one cramped pill. Harness stdout `section#harness-tail-<id>` is
   unchanged.
@@ -2056,9 +2058,25 @@ Enablement (extension):
   `layouts.ex` beside `HarnessTail` / `Combobox` (`mounted` / `updated` / `destroyed`;
   `pushEvent reorder_queue`). `Combobox.setChrome` also toggles the closest
   `.queue-card`.
-- Refresh behavior: server-side re-render is change-only, and the second-by-second clock
-  runs in the browser. The poll/pubsub cadence itself is unchanged (see the
-  `dashboard_refresh_seconds` bullet above and Section 8.1).
+- Refresh behavior: server-side re-render is change-only, the second-by-second clock runs
+  in the browser, and `dashboard_refresh_seconds` is the **single** cadence for data-driven
+  reloads (see the `dashboard_refresh_seconds` bullet above and Section 8.1).
+  - A pubsub `:observability_updated` event sets a `:payload_dirty` flag only. It must not
+    reload and must not re-stamp `:last_payload_refresh`. The orchestrator broadcasts twice
+    per Linear poll (`polling.interval_ms`, default 5000) plus once per agent event, so
+    reloading on the message made the *poll* interval the refresh interval, and re-stamping
+    the window on every broadcast disabled the configured gate outright. `:payload_dirty`
+    must not be read by the render, or it becomes the next always-dirty assign.
+  - The 1s runtime tick performs one coalesced reload when the window elapsed **and**
+    (`:payload_dirty` **or** at least 30s since the last load). The 30s idle resync is a
+    safety net for a dropped broadcast and for fields nothing broadcasts about
+    (`last_agent_timestamp`, the poll countdown). Leading edge: an event that lands after
+    the window already elapsed reloads on the next tick (≤1s). The reload clears the flag.
+  - User-initiated events reload immediately through the synchronous reload path, which
+    also clears the flag. The async orchestrator commands (`kill_issue`, `retry_issue`,
+    `set_issue_run_spec`, `refresh_now`) ask for that reload from their own task **after**
+    the `GenServer.call`, so the repaint is immediate and correctly ordered; they used to
+    depend on the orchestrator's broadcast for it.
   - Time-derived text is server-rendered once per payload load, wrapped in a span carrying a
     clock anchor. An anchor is always a remaining/elapsed **amount**, never an absolute wall
     time, so client clock skew cannot accumulate: `data-clock="countdown"` +
@@ -2099,25 +2117,58 @@ Enablement (extension):
     `:payload_error`). There is no monolithic `:payload` assign, because nested `@payload.x`
     reads mark the whole template dirty on every load. A section whose value did not change
     is not reassigned, so LiveView change tracking skips it. `generated_at` gets no assign
-    (it moves on every load and is rendered nowhere). The comparison also ignores a running
-    entry's `tokens_per_second`, which the presenter re-derives from the wall clock on every
-    load (tokens over seconds-since-start) and which would otherwise make `:running` and
-    `:projects` differ on every refresh while an agent runs; any other movement still assigns
-    the whole fresh section, drifted rate included. The accepted trade-off is that the
-    rendered per-session `t/s` chip holds the value from the last load that moved a real
-    field: while an agent sits in a long tool call the chip does not decay, and it catches up
-    the moment anything else about the session moves. A retry's `due_at` must be computed so
-    it does not drift for the same reason: `now + due_in_ms` truncated **after** the offset is
-    applied, not a truncated clock plus whole seconds. That names the same absolute second
-    across loads as long as the snapshot round-trip does not straddle a second boundary — it
-    is a large reduction in flip rate, not a guarantee; `due_in_ms` is measured against the
-    orchestrator's monotonic clock and `now` is sampled later in the presenter. A section
-    missing from the payload falls back to the default payload (error snapshots, older
-    snapshot shapes). Both the async and the synchronous load path go through the same split;
-    `payload_seq` guarding is unchanged.
-  - Acceptance: an idle dashboard ships no per-second diff, and a poll whose only movement is
-    `generated_at` reassigns no section and does not re-anchor `:now` — only `:token_samples`
-    (throughput window) moves.
+    (it moves on every load and is rendered nowhere). The comparison drops a set of
+    volatile keys from every entry and recurses into a project's `:running` **and** its
+    `:retrying`:
+    - `tokens_per_second`, which the presenter re-derives from the wall clock on every load
+      (tokens over seconds-since-start) and which would otherwise make `:running` and
+      `:projects` differ on every refresh while an agent runs.
+    - `last_event_at`, which the 2s harness heartbeat pokes. The heartbeat is defined as a
+      timestamp-only stall poke (Section 10) and carries no operator-visible news;
+      `last_event`, `last_message`, `log_events` and `tokens` stay in the comparison, so
+      anything real still lands the fresh section wholesale.
+    - `due_at`, an absolute time re-derived from `now + due_in_ms`. Holding the previous
+      value is lossless because every real reschedule also moves `attempt`, `held`, or
+      `error`.
+
+    Any other movement still assigns the whole fresh section, drifted values included. The
+    accepted trade-off is that the rendered per-session `t/s` chip and the expanded row's
+    `@ <timestamp>` hold the value from the last load that moved a real field: while an agent
+    sits in a long tool call they do not decay, and they catch up the moment anything else
+    about the session moves. A retry's `due_at` is still computed so it does not drift —
+    `now + due_in_ms` truncated **after** the offset is applied, not a truncated clock plus
+    whole seconds — because it is rendered; the change comparison no longer depends on it. A
+    section missing from the payload falls back to the default payload (error snapshots,
+    older snapshot shapes). Both the async and the synchronous load path go through the same
+    split; `payload_seq` guarding is unchanged.
+  - Every user-editable control must render from a draft assign once the operator touches it.
+    A DOM patch rewrites `input.value` from the server value for every input it walks and
+    spares only the *focused*, non-hidden one, so an undrafted control is reset by the next
+    patch — and a patch landing between blur and click submits the stale value. Drafts cover
+    the per-project concurrency and providers inputs, the drawer's global concurrency and
+    refresh interval, the add-project slug/name/github/agent/model/effort/provider fields,
+    and the existing agent / session / queue run-spec drafts. A draft is written by a
+    `phx-change` preview and cleared on successful submit, so an external API write becomes
+    visible in the control again. Text/number inputs debounce (400ms) so a keystroke does not
+    cost a round trip and a whole-container patch. Two things get `phx-update="ignore"`
+    instead of a draft, because the server has no correct value to render for them: the
+    Linear API key form (the key must never reach assigns) and the client-owned preference
+    controls (density radios, section/column checkboxes, completions-limit select, both mode
+    switches), which are pure localStorage state.
+  - The Combobox hook owns its open state across patches. A patch re-applies the panel's
+    server-rendered `hidden`, strips the open-chrome classes, rewrites the search value and
+    every option's `hidden` / `aria-selected`, and blurs the search input by hiding an
+    ancestor of it. The hook must snapshot query, active option **value**, focus and caret
+    before the patch and restore them after it — open the panel first, then set the search
+    value, re-filter, re-highlight by value (the option list itself may have changed), and
+    refocus only if the search was focused before. It must never fall back to closing, which
+    clears the typed filter.
+  - Acceptance: an idle dashboard ships no per-second diff; with sessions running and no real
+    state change a payload load ships an **empty** diff (an empty diff is skipped entirely by
+    the client, which is what leaves every input and every open dropdown alone) and reassigns
+    no section, does not re-anchor `:now`, and moves only the throughput sample window, which
+    no dynamic reads. A poll whose only movement is `generated_at` does the same. A
+    `dashboard_refresh_seconds` of 20 means at most one data re-render per 20s.
 
 #### 13.7.2 JSON REST API (`/api/v1/*`)
 
@@ -2336,6 +2387,9 @@ Minimum endpoints:
     `dashboard_refresh_seconds` (beside `projects`, never inside a project map).
   - `202` `{"dashboard_refresh_seconds": N}`.
   - `422` `{"error":{"code":"invalid_refresh_interval","message":"..."}}`.
+  - `422` `{"error":{"code":"refresh_interval_not_persisted","message":"..."}}` when the
+    value could not be written to the config store. Answering `202` there claimed success for
+    a setting that reverts on the next restart.
 
 Optional operational-control endpoints (extension; all return `202 Accepted` and accept an
 optional `?project=<name>` scope):
@@ -2996,13 +3050,22 @@ Unless otherwise noted, Sections 17.1 through 17.7 are `Core Conformance`. Bulle
   changing orchestrator behavior
 - If the LiveView dashboard is implemented (Section 13.7.1 refresh behavior):
   - a runtime tick that is not yet due to refresh moves no assign and renders identical HTML;
-    the tick that *is* due still schedules the payload load (and so moves `:payload_seq` and
-    `:last_payload_refresh`)
-  - re-delivering a byte-identical payload, and a payload whose only movement is
-    `generated_at`, reassigns no section and does not re-anchor `:now` (only
-    `:token_samples` moves)
-  - a payload whose only movement is a wall-clock-derived field the server re-derives on
-    every load (a running entry's `tokens_per_second`) reassigns no section either
+    the tick that *is* due, with the payload marked dirty, still schedules the payload load
+    (and so moves `:payload_seq` and `:last_payload_refresh`)
+  - a pubsub update inside the refresh window marks the payload dirty and reloads nothing:
+    `:payload_seq` and `:last_payload_refresh` do not move, and a burst of updates costs one
+    load per configured interval
+  - an idle board still resyncs once the idle-resync deadline passes with nothing dirty
+  - re-delivering a byte-identical payload **with sessions running**, and a payload whose
+    only movement is `generated_at`, reassigns no section, does not re-anchor `:now`, and
+    ships an empty diff to the client
+  - a payload whose only movement is a volatile entry field the server re-derives or pokes on
+    every load (`tokens_per_second`, `last_event_at`, `due_at`, including inside a project's
+    nested `retrying` list) reassigns no section either
+  - an operator-initiated command (`kill_issue`, `retry_issue`, `refresh_now`,
+    `set_issue_run_spec`) reloads the payload without waiting for the refresh window
+  - a draft written by a `phx-change` preview survives a payload load that lands mid-edit,
+    and a successful submit clears it
   - a payload that moves one section leaves the other section assigns alone
   - a payload that only moves the poll countdown leaves `:now` and the per-project section
     alone; a payload that moves a clock-bearing section re-anchors `:now`

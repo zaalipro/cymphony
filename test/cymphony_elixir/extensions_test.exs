@@ -719,11 +719,22 @@ defmodule CymphonyElixir.ExtensionsTest do
       Keyword.put(state, :snapshot, updated_snapshot)
     end)
 
+    # A pubsub broadcast no longer reloads on the spot — it marks the payload
+    # dirty and the next due runtime tick coalesces it into one load, so the
+    # orchestrator's 2-broadcasts-per-poll cadence can no longer override
+    # `dashboard_refresh_seconds`. Shorten the interval so the tick is due.
+    view
+    |> form(~s|form[phx-submit="set_refresh_interval"]|, %{value: "1"})
+    |> render_submit()
+
     StatusDashboard.notify_update()
 
-    assert_eventually(fn ->
-      render(view) =~ "agent message content streaming: structured update"
-    end)
+    assert_eventually(
+      fn ->
+        render(view) =~ "agent message content streaming: structured update"
+      end,
+      120
+    )
   end
 
   test "dashboard liveview renders an unavailable state without crashing" do
@@ -1140,9 +1151,24 @@ defmodule CymphonyElixir.ExtensionsTest do
       # back to the text of the last payload load, so the hook has to repaint on
       # `updated` as well as on its own interval or the clocks rewind per patch.
       [_before, live_clock] = String.split(html, "LiveClock: {", parts: 2)
-      [live_clock, _after] = String.split(live_clock, "Combobox: {", parts: 2)
+      [live_clock, combobox] = String.split(live_clock, "Combobox: {", parts: 2)
       assert live_clock =~ "updated() {"
       assert live_clock =~ "this.tick();"
+
+      # A patch re-applies the panel's server-rendered `hidden`, strips
+      # `combobox--open`, rewrites the search value and the option flags, and
+      # blurs the search box by hiding its ancestor. The hook has to snapshot
+      # that state before the morph and put it back after, or an open dropdown
+      # vanishes mid-selection with the typed filter gone.
+      [combobox, _rest] = String.split(combobox, "QueueBoard: {", parts: 2)
+      assert combobox =~ "beforeUpdate() {"
+      assert combobox =~ "this.setOpen(true);"
+      assert combobox =~ "this.filter(r.query);"
+      assert combobox =~ "this.search.setSelectionRange("
+      # The old `updated()` inferred "still open" from document.activeElement —
+      # already false by then — and fell through to close(), which clears the
+      # typed filter.
+      refute combobox =~ "else this.close();"
 
       dashboard_css = response(get(build_conn(), "/dashboard.css"), 200)
       assert dashboard_css =~ ~s(html[data-ui-mode="simple"] .advanced-only)
@@ -1619,6 +1645,32 @@ defmodule CymphonyElixir.ExtensionsTest do
                    "message" => "refresh interval 'value' must be a positive integer"
                  }
                }
+    end
+
+    test "POST /api/v1/refresh-interval reports a persist failure instead of claiming success" do
+      tmp = Path.join(System.tmp_dir!(), "cymphony-refresh-api-fail-#{System.unique_integer([:positive])}")
+      File.mkdir_p!(tmp)
+      Application.put_env(:cymphony_elixir, :config_dir_override, tmp)
+
+      on_exit(fn ->
+        Application.delete_env(:cymphony_elixir, :config_dir_override)
+        File.rm_rf!(tmp)
+      end)
+
+      orchestrator_name = Module.concat(__MODULE__, :RefreshIntervalPersistFailOrchestrator)
+
+      {:ok, _pid} =
+        StaticOrchestrator.start_link(name: orchestrator_name, snapshot: static_snapshot())
+
+      start_test_endpoint(orchestrator: orchestrator_name, snapshot_timeout_ms: 50)
+
+      # No `config.json` to read-modify-write. An interval that was not written
+      # reverts on the next restart, so 202 was a lie — `/api/v1/pause` already
+      # answers `dispatch_pause_not_persisted` in the same situation.
+      assert %{"error" => %{"code" => "refresh_interval_not_persisted", "message" => message}} =
+               json_response(post(build_conn(), "/api/v1/refresh-interval", %{"value" => 8}), 422)
+
+      assert is_binary(message)
     end
 
     test "GET /api/v1/refresh-interval is 405 not issue_not_found" do

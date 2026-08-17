@@ -11,6 +11,10 @@ defmodule CymphonyElixirWeb.DashboardLive do
 
   @version Mix.Project.config()[:version]
   @runtime_tick_ms 1_000
+  # Safety net for the dirty-gated reload below: a dropped broadcast, or a field
+  # nothing broadcasts about (`last_agent_timestamp`, the poll countdown), must
+  # not freeze the board forever.
+  @idle_resync_ms 30_000
   @harness_tail_cap 400
   # Section defaults for the disconnected render and for payloads that omit a
   # section. `waiting: []` has no assign of its own (waiting rows live inside each
@@ -77,9 +81,11 @@ defmodule CymphonyElixirWeb.DashboardLive do
       |> assign(:issue_run_spec_drafts, %{})
       |> assign(:queue_edit_ids, MapSet.new())
       |> assign(:queue_run_spec_drafts, %{})
-      |> assign(:token_samples, update_token_samples([], initial_payload))
+      |> assign(:field_drafts, %{})
+      |> assign_token_throughput(update_token_samples([], initial_payload))
       |> assign(:version, @version)
       |> assign(:last_payload_refresh, last_refresh)
+      |> assign(:payload_dirty, false)
       |> assign(:payload_refresh_seconds, refresh_seconds)
       |> assign(:payload_refresh_ms, refresh_seconds * 1000)
       |> assign(:linear_status, Control.linear_status())
@@ -90,6 +96,9 @@ defmodule CymphonyElixirWeb.DashboardLive do
       |> assign(:add_project_model, "")
       |> assign(:add_project_effort, "")
       |> assign(:add_project_provider, "")
+      |> assign(:add_project_slug, "")
+      |> assign(:add_project_name, "")
+      |> assign(:add_project_github, "")
       |> assign(:payload_seq, 0)
 
     if connected? do
@@ -151,13 +160,31 @@ defmodule CymphonyElixirWeb.DashboardLive do
 
   @impl true
   def handle_event("refresh_now", _params, socket) do
+    pid = self()
+
     Task.Supervisor.start_child(CymphonyElixir.TaskSupervisor, fn ->
       _ = CymphonyElixir.Orchestrator.request_refresh(orchestrator())
+      send(pid, :reload_payload_now)
     end)
 
     Process.send_after(self(), :clear_flash, 3_000)
     {:noreply, put_flash(socket, :info, "Refresh requested — checking Linear now...")}
   end
+
+  # Any control whose rendered value can differ from the last payload while the
+  # operator is mid-edit renders from `:field_drafts` instead of the payload.
+  # Without it, morphdom rewrites `input.value` from the server value on every
+  # patch (it only spares the *focused*, non-hidden input), so a number typed
+  # into concurrency/providers/refresh vanished on the next refresh — and a
+  # patch landing between the blur and the click submitted the old value.
+  @impl true
+  def handle_event("preview_field", %{"field" => key, "value" => value}, socket)
+      when is_binary(key) and is_binary(value) do
+    {:noreply, update(socket, :field_drafts, &Map.put(&1, key, value))}
+  end
+
+  @impl true
+  def handle_event("preview_field", _params, socket), do: {:noreply, socket}
 
   @impl true
   def handle_event("pause_dispatch", _params, socket) do
@@ -180,7 +207,12 @@ defmodule CymphonyElixirWeb.DashboardLive do
       {:ok, n} ->
         Control.set_concurrency(:all, n)
 
-        {:noreply, reload_payload_now(put_flash(socket, :info, "Concurrency set to #{n}; persisted to ~/.cymphony/config.json"))}
+        socket =
+          socket
+          |> clear_field_draft("global-concurrency")
+          |> put_flash(:info, "Concurrency set to #{n}; persisted to ~/.cymphony/config.json")
+
+        {:noreply, reload_payload_now(socket)}
 
       :error ->
         {:noreply, put_flash(socket, :error, "Concurrency must be a positive integer")}
@@ -197,6 +229,7 @@ defmodule CymphonyElixirWeb.DashboardLive do
              socket
              |> assign(:payload_refresh_seconds, n)
              |> assign(:payload_refresh_ms, n * 1000)
+             |> clear_field_draft("refresh-interval")
              |> put_flash(:info, "Dashboard refresh set to #{n}s; persisted to ~/.cymphony/config.json")}
 
           {:error, _reason} ->
@@ -218,7 +251,12 @@ defmodule CymphonyElixirWeb.DashboardLive do
       {:ok, n} ->
         case Control.set_concurrency({:project, project_name}, n) do
           :ok ->
-            {:noreply, reload_payload_now(put_flash(socket, :info, "#{project_name}: concurrency set to #{n}"))}
+            socket =
+              socket
+              |> clear_field_draft("concurrency:#{project_name}")
+              |> put_flash(:info, "#{project_name}: concurrency set to #{n}")
+
+            {:noreply, reload_payload_now(socket)}
 
           {:error, :not_found} ->
             {:noreply, put_flash(socket, :error, "Project not found: #{project_name}")}
@@ -239,7 +277,12 @@ defmodule CymphonyElixirWeb.DashboardLive do
       {:ok, list} ->
         case Control.set_providers({:project, project_name}, list) do
           :ok ->
-            {:noreply, reload_payload_now(put_flash(socket, :info, "#{project_name}: providers set to #{Enum.join(list, ", ")}"))}
+            socket =
+              socket
+              |> clear_field_draft("providers:#{project_name}")
+              |> put_flash(:info, "#{project_name}: providers set to #{Enum.join(list, ", ")}")
+
+            {:noreply, reload_payload_now(socket)}
 
           {:error, :not_found} ->
             {:noreply, put_flash(socket, :error, "Project not found: #{project_name}")}
@@ -250,11 +293,16 @@ defmodule CymphonyElixirWeb.DashboardLive do
     end
   end
 
+  # An empty kind still has to record a draft (`preview_issue_run_spec` and
+  # `put_queue_run_spec_draft` already do). A project with no persisted
+  # `agent_kind` renders `kind: ""`, so picking a *model* posted `agent_kind=""`
+  # and the whole preview was dropped — the next patch then reverted the model
+  # the operator had just chosen. Persisting stays gated on a known kind.
   @impl true
   def handle_event("preview_project_agent", %{"project" => project_name} = params, socket) do
     case params["value"] || params["agent_kind"] do
       kind when is_binary(kind) ->
-        if Agent.known_kind?(kind) do
+        if kind == "" or Agent.known_kind?(kind) do
           {:noreply, preview_project_agent(socket, project_name, kind, params)}
         else
           {:noreply, socket}
@@ -332,6 +380,7 @@ defmodule CymphonyElixirWeb.DashboardLive do
         {:noreply,
          socket
          |> assign(:add_project_error, nil)
+         |> reset_add_project_draft()
          |> put_flash(:info, "#{name} added and started")
          |> reload_payload_now()}
 
@@ -354,7 +403,16 @@ defmodule CymphonyElixirWeb.DashboardLive do
      |> assign(:add_project_kind, kind)
      |> assign(:add_project_model, draft_add_project_field(params, "model", socket, :add_project_model))
      |> assign(:add_project_effort, draft_add_project_field(params, "effort", socket, :add_project_effort))
-     |> assign(:add_project_provider, draft_add_project_field(params, "provider", socket, :add_project_provider))}
+     |> assign(:add_project_provider, draft_add_project_field(params, "provider", socket, :add_project_provider))
+     |> assign(
+       :add_project_slug,
+       draft_add_project_field(params, "linear_project_slug", socket, :add_project_slug)
+     )
+     |> assign(:add_project_name, draft_add_project_field(params, "name", socket, :add_project_name))
+     |> assign(
+       :add_project_github,
+       draft_add_project_field(params, "github_repo_url", socket, :add_project_github)
+     )}
   end
 
   @impl true
@@ -495,12 +553,20 @@ defmodule CymphonyElixirWeb.DashboardLive do
     end
   end
 
+  # An orchestrator broadcast only marks the payload dirty; the next runtime tick
+  # loads it, never more often than `dashboard_refresh_seconds`. Reloading here
+  # made the *poll* interval the refresh interval — the orchestrator broadcasts
+  # twice per Linear poll (default 5s) plus once per agent event — and
+  # re-stamping `:last_payload_refresh` on every broadcast disabled the
+  # configured gate entirely, which is why "refresh 20s" still repainted at 5s.
   @impl true
   def handle_info(:observability_updated, socket) do
-    {:noreply,
-     socket
-     |> spawn_payload_load()
-     |> assign(:last_payload_refresh, System.monotonic_time(:millisecond))}
+    {:noreply, assign(socket, :payload_dirty, true)}
+  end
+
+  @impl true
+  def handle_info(:reload_payload_now, socket) do
+    {:noreply, reload_payload_now(socket)}
   end
 
   @impl true
@@ -520,11 +586,14 @@ defmodule CymphonyElixirWeb.DashboardLive do
     now = System.monotonic_time(:millisecond)
     last = socket.assigns[:last_payload_refresh] || 0
     refresh_ms = socket.assigns[:payload_refresh_ms] || 3_000
+    elapsed = now - last
 
     socket =
-      if now - last >= refresh_ms do
+      if elapsed >= refresh_ms and
+           (socket.assigns[:payload_dirty] == true or elapsed >= @idle_resync_ms) do
         socket
         |> spawn_payload_load()
+        |> assign(:payload_dirty, false)
         |> assign(:last_payload_refresh, now)
       else
         socket
@@ -543,7 +612,7 @@ defmodule CymphonyElixirWeb.DashboardLive do
       {:noreply,
        socket
        |> assign_payload_sections(payload)
-       |> assign(:token_samples, token_samples)
+       |> assign_token_throughput(token_samples)
        |> update(:agent_setting_drafts, &prune_agent_drafts(&1, payload))}
     end
   end
@@ -609,7 +678,11 @@ defmodule CymphonyElixirWeb.DashboardLive do
             <% end %>
             <span class="version-badge">v<%= @version %></span>
 
-            <div class="mode-switch" role="group" aria-label="Dashboard mode">
+            <%!-- `aria-pressed` is pure client state (localStorage `cymphony-prefs`).
+            The server has no correct value to render, and morphdom reset it on
+            every patch, so freeze the subtree instead of repairing it after the
+            fact. --%>
+            <div id="mode-switch-top" class="mode-switch" role="group" aria-label="Dashboard mode" phx-update="ignore">
               <button type="button" class="mode-switch-button" data-mode-set="simple" aria-pressed="true">
                 Simple
               </button>
@@ -699,8 +772,11 @@ defmodule CymphonyElixirWeb.DashboardLive do
             </div>
             <div class="metric-pill metric-pill--throughput advanced-only">
               <span class="metric-pill-label">Tput</span>
-              <span class="metric-pill-value numeric"><%= format_tps(current_tps(@token_samples)) %></span>
-              <span class="metric-pill-spark numeric"><%= tps_sparkline(@token_samples) %></span>
+              <%!-- Derived strings, not `@token_samples`: the sample list grows on
+              every payload load, so reading it here marked the template dirty on
+              every load and an idle board shipped a diff per poll. --%>
+              <span class="metric-pill-value numeric"><%= @throughput_tps %></span>
+              <span class="metric-pill-spark numeric"><%= @throughput_spark %></span>
             </div>
             <div class="metric-pill metric-pill--states section--states advanced-only">
               <span class="metric-pill-label">States</span>
@@ -778,7 +854,7 @@ defmodule CymphonyElixirWeb.DashboardLive do
           <button type="button" class="subtle-button" data-drawer-toggle aria-label="Close settings">Close</button>
         </div>
 
-        <section class="settings-group settings-group--mode" data-prefs>
+        <section id="settings-experience" class="settings-group settings-group--mode" data-prefs phx-update="ignore">
           <h3 class="settings-group-title">Experience</h3>
           <div class="mode-switch settings-mode-switch" role="group" aria-label="Choose dashboard mode">
             <button type="button" class="mode-switch-button" data-mode-set="simple" aria-pressed="true">Simple</button>
@@ -796,7 +872,11 @@ defmodule CymphonyElixirWeb.DashboardLive do
               <span class="linear-key-mask"><%= @linear_status.masked_key %></span>
             <% end %>
           </h3>
-          <form id="linear-connect-form" phx-submit="connect_linear" class="settings-inline">
+          <%!-- `phx-update="ignore"`, not a draft assign: the value is a secret
+          that must never reach assigns, flashes or logs, so the server has no
+          correct value to render and morphdom wiped whatever was typed on the
+          next patch. The markup is fully static, so freezing it loses nothing. --%>
+          <form id="linear-connect-form" phx-submit="connect_linear" class="settings-inline" phx-update="ignore">
             <input
               type="password"
               name="api_key"
@@ -827,7 +907,7 @@ defmodule CymphonyElixirWeb.DashboardLive do
                 <.model_combobox
                   id="add-project-slug"
                   name="linear_project_slug"
-                  value=""
+                  value={@add_project_slug}
                   list_id="linear-project-slugs"
                   options={Enum.map(@linear_projects, &linear_project_option/1)}
                   placeholder="slug or ailogic-ced4159f70c4"
@@ -838,11 +918,11 @@ defmodule CymphonyElixirWeb.DashboardLive do
               <div class="settings-field-grid">
                 <label class="settings-field-row" for="add-project-name">
                   <span class="inline-label">name</span>
-                  <input id="add-project-name" type="text" name="name" class="settings-field" />
+                  <input id="add-project-name" type="text" name="name" value={@add_project_name} phx-debounce="400" class="settings-field" />
                 </label>
                 <label class="settings-field-row" for="add-project-github">
                   <span class="inline-label">github</span>
-                  <input id="add-project-github" type="text" name="github_repo_url" class="settings-field" />
+                  <input id="add-project-github" type="text" name="github_repo_url" value={@add_project_github} phx-debounce="400" class="settings-field" />
                 </label>
               </div>
               <div class="advanced-only add-project-advanced">
@@ -885,7 +965,7 @@ defmodule CymphonyElixirWeb.DashboardLive do
                 <%= if @add_project_kind == "claude" do %>
                   <label class="settings-field-row" for="add-project-provider">
                     <span class="inline-label">provider</span>
-                    <input id="add-project-provider" type="text" name="provider" value={@add_project_provider} class="settings-field" />
+                    <input id="add-project-provider" type="text" name="provider" value={@add_project_provider} phx-debounce="400" class="settings-field" />
                   </label>
                 <% end %>
               </div>
@@ -911,30 +991,45 @@ defmodule CymphonyElixirWeb.DashboardLive do
             <% end %>
           <% end %>
 
-          <form phx-submit="set_concurrency" class="settings-inline settings-form">
+          <form phx-change="preview_field" phx-submit="set_concurrency" class="settings-inline settings-form">
+            <input type="hidden" name="field" value="global-concurrency" />
             <label class="inline-label" for="drawer-global-concurrency">
               <span class="simple-only">tasks</span>
               <span class="advanced-only">concurrency</span>
             </label>
-            <input id="drawer-global-concurrency" type="number" name="value" min="1" class="settings-field" />
+            <input
+              id="drawer-global-concurrency"
+              type="number"
+              name="value"
+              min="1"
+              value={field_value(@field_drafts, "global-concurrency", "")}
+              phx-debounce="400"
+              class="settings-field"
+            />
             <button type="submit" class="subtle-button">Set</button>
           </form>
 
-          <form phx-submit="set_refresh_interval" class="settings-inline settings-form">
+          <form phx-change="preview_field" phx-submit="set_refresh_interval" class="settings-inline settings-form">
+            <input type="hidden" name="field" value="refresh-interval" />
             <label class="inline-label" for="drawer-refresh-interval">refresh (s)</label>
             <input
               id="drawer-refresh-interval"
               type="number"
               name="value"
               min="1"
-              value={@payload_refresh_seconds}
+              value={field_value(@field_drafts, "refresh-interval", @payload_refresh_seconds)}
+              phx-debounce="400"
               class="settings-field"
             />
             <button type="submit" class="subtle-button">Set</button>
           </form>
         </section>
 
-        <section class="settings-group advanced-only" data-prefs>
+        <%!-- Density, section/column visibility and the completions limit are pure
+        localStorage state; the server always renders the same defaults, so every
+        patch reset the radios/checkboxes/select and `syncPrefControls` repaired
+        them asynchronously (a visible flicker). Freeze the subtree instead. --%>
+        <section id="settings-display" class="settings-group advanced-only" data-prefs phx-update="ignore">
           <h3 class="settings-group-title">Display</h3>
 
           <div class="settings-row">
@@ -1026,8 +1121,13 @@ defmodule CymphonyElixirWeb.DashboardLive do
               </div>
 
               <div class="project-section-controls">
-                <form phx-submit="set_project_concurrency" class="inline-form project-concurrency-control">
+                <form
+                  phx-change="preview_field"
+                  phx-submit="set_project_concurrency"
+                  class="inline-form project-concurrency-control"
+                >
                   <input type="hidden" name="project" value={project.name} />
+                  <input type="hidden" name="field" value={"concurrency:#{project.name}"} />
                   <label class="inline-label" for={"concurrency-#{project.name}"}>
                     <span class="simple-only">tasks at once</span>
                     <span class="advanced-only">concurrency</span>
@@ -1037,7 +1137,8 @@ defmodule CymphonyElixirWeb.DashboardLive do
                     type="number"
                     name="value"
                     min="1"
-                    value={Map.get(project, :max_concurrent_agents) || ""}
+                    value={field_value(@field_drafts, "concurrency:#{project.name}", Map.get(project, :max_concurrent_agents) || "")}
+                    phx-debounce="400"
                     class="inline-input inline-input--narrow"
                     title="Max concurrent agents (cli alias: cr)"
                   />
@@ -1092,15 +1193,21 @@ defmodule CymphonyElixirWeb.DashboardLive do
                 </form>
 
                 <%= if agent_settings.kind == "claude" do %>
-                  <form phx-submit="set_project_providers" class="inline-form inline-form--wide advanced-only">
+                  <form
+                    phx-change="preview_field"
+                    phx-submit="set_project_providers"
+                    class="inline-form inline-form--wide advanced-only"
+                  >
                     <input type="hidden" name="project" value={project.name} />
+                    <input type="hidden" name="field" value={"providers:#{project.name}"} />
                     <label class="inline-label" for={"providers-#{project.name}"}>providers</label>
                     <input
                       id={"providers-#{project.name}"}
                       type="text"
                       name="value"
-                      value={Enum.join(Map.get(project, :providers, []), ",")}
+                      value={field_value(@field_drafts, "providers:#{project.name}", Enum.join(Map.get(project, :providers, []), ","))}
                       placeholder="cv1,cz2,ck1"
+                      phx-debounce="400"
                       class="inline-input"
                       title="Comma-separated provider aliases (cli alias: c)"
                     />
@@ -1409,6 +1516,7 @@ defmodule CymphonyElixirWeb.DashboardLive do
                                     name="provider"
                                     value={session_spec.provider}
                                     placeholder="provider"
+                                    phx-debounce="400"
                                     class="inline-input inline-input--model"
                                     title="Provider auth alias (empty = keep resolved)"
                                   />
@@ -1623,12 +1731,48 @@ defmodule CymphonyElixirWeb.DashboardLive do
     socket
     |> assign(:payload_seq, seq)
     |> assign_payload_sections(payload)
-    |> assign(:token_samples, token_samples)
+    |> assign_token_throughput(token_samples)
+    |> assign(:payload_dirty, false)
     |> assign(:last_payload_refresh, System.monotonic_time(:millisecond))
     |> update(:agent_setting_drafts, &prune_agent_drafts(&1, payload))
   end
 
   defp next_payload_seq(socket), do: (socket.assigns[:payload_seq] || 0) + 1
+
+  # `:token_samples` must stay off the render path. It gains an entry on every
+  # single payload load, so a dynamic reading it marks the template dirty on
+  # every load — an idle board then shipped a diff per poll even though nothing
+  # moved. Only the two derived *strings* are assigned; `assign/3` already skips
+  # an identical value, so an idle load reassigns neither and the diff is empty.
+  # The raw list stays in an assign nothing reads, which costs no diff at all.
+  defp assign_token_throughput(socket, samples) do
+    socket
+    |> assign(:token_samples, samples)
+    |> assign(:throughput_tps, format_tps(current_tps(samples)))
+    |> assign(:throughput_spark, tps_sparkline(samples))
+  end
+
+  defp clear_field_draft(socket, key) do
+    update(socket, :field_drafts, &Map.delete(&1, key))
+  end
+
+  # Draft once touched, payload while untouched: clearing the draft on a
+  # successful submit is what lets an external `POST /api/v1/concurrency` (or
+  # another tab) become visible in this control again.
+  defp field_value(drafts, key, fallback) when is_map(drafts) do
+    Map.get(drafts, key, fallback)
+  end
+
+  defp reset_add_project_draft(socket) do
+    socket
+    |> assign(:add_project_slug, "")
+    |> assign(:add_project_name, "")
+    |> assign(:add_project_github, "")
+    |> assign(:add_project_kind, "")
+    |> assign(:add_project_model, "")
+    |> assign(:add_project_effort, "")
+    |> assign(:add_project_provider, "")
+  end
 
   # Fan a freshly loaded payload out into one assign per section, skipping the
   # sections whose value did not change. Sections missing from the payload (error
@@ -1685,14 +1829,31 @@ defmodule CymphonyElixirWeb.DashboardLive do
   # field, so it does not decay while an agent sits in a long tool call. That is
   # deliberate — re-rendering the whole board to animate a number the server
   # derives from nothing but the clock is the churn this exists to remove.
+  #
+  # `:last_event_at` is the same class of noise: the harness heartbeat is a
+  # timestamp-only stall poke (SPEC §10) fired every 2s while the CLI prints
+  # anything, and it carries no operator-visible news — `last_event`,
+  # `last_message`, `log_events` and `tokens` all stay in the signature and land
+  # the fresh section wholesale the moment one of them moves. Without this, a
+  # streaming agent reassigned `:running` and `:projects` every 2s, re-anchored
+  # `:now`, and re-serialized every combobox in the project section.
+  #
+  # `:due_at` is an absolute time the presenter re-derives as `utc_now +
+  # due_in_ms`, so it jitters by the snapshot round-trip; holding the previous
+  # value is lossless because every real reschedule also moves `attempt`,
+  # `held`, or `error`. The trade-off mirrors `t/s`: the expanded row's
+  # `@ <timestamp>` holds the value from the last load that moved a real field.
+  @volatile_entry_keys [:tokens_per_second, :last_event_at, :due_at]
+
   defp section_signature(entries) when is_list(entries), do: Enum.map(entries, &entry_signature/1)
 
   defp section_signature(section), do: section
 
   defp entry_signature(%{} = entry) do
     entry
-    |> Map.delete(:tokens_per_second)
+    |> Map.drop(@volatile_entry_keys)
     |> Map.replace_lazy(:running, &section_signature/1)
+    |> Map.replace_lazy(:retrying, &section_signature/1)
   end
 
   defp payload_section(payload, key) do
@@ -2295,7 +2456,9 @@ defmodule CymphonyElixirWeb.DashboardLive do
     socket =
       assign(socket, :agent_setting_drafts, Map.put(socket.assigns.agent_setting_drafts, project_name, draft))
 
-    if agent_changed? do
+    # An empty kind drafts model/effort without persisting or reloading: there is
+    # no kind to write, and a reload here would throw the draft away.
+    if agent_changed? and Agent.known_kind?(kind) do
       persist_preview_agent_kind(socket, project_name, kind)
     else
       socket
@@ -2593,6 +2756,7 @@ defmodule CymphonyElixirWeb.DashboardLive do
     issue_id = Map.get(entry, :issue_id)
     project_name = Map.get(entry, :project_name)
     orchestrator_pid = lookup_orchestrator(project_name)
+    pid = self()
 
     if is_binary(issue_id) and orchestrator_addressable?(orchestrator_pid) do
       Task.Supervisor.start_child(CymphonyElixir.TaskSupervisor, fn ->
@@ -2601,6 +2765,12 @@ defmodule CymphonyElixirWeb.DashboardLive do
         catch
           :exit, _ -> {:error, :unavailable}
         end
+
+        # The repaint used to come for free from the orchestrator's own
+        # broadcast; now that a broadcast only marks the payload dirty, the
+        # operator-initiated command has to ask for the reload itself — and
+        # after the call, so the reload cannot race ahead of the state change.
+        send(pid, :reload_payload_now)
       end)
     end
 
@@ -2745,6 +2915,7 @@ defmodule CymphonyElixirWeb.DashboardLive do
   defp send_issue_run_spec(socket, entry, issue_id, overrides) do
     project_name = Map.get(entry, :project_name)
     orchestrator_pid = lookup_orchestrator(project_name)
+    pid = self()
 
     if orchestrator_addressable?(orchestrator_pid) do
       Task.Supervisor.start_child(CymphonyElixir.TaskSupervisor, fn ->
@@ -2753,6 +2924,8 @@ defmodule CymphonyElixirWeb.DashboardLive do
         catch
           :exit, _ -> {:error, :unavailable}
         end
+
+        send(pid, :reload_payload_now)
       end)
     end
 

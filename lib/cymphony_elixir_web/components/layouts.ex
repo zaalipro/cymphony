@@ -186,20 +186,73 @@ defmodule CymphonyElixirWeb.Layouts do
                     this._onDocPointer = this.onDocPointer.bind(this);
                     this.open = false;
                     this.activeIndex = -1;
+                    this.activeValue = null;
+                    this.query = '';
                     this.options = [];
                     this.visibleOptions = [];
+                    this._restore = null;
                     this.bind();
                     this.cacheOptions();
                     this.close();
                     this.syncTrigger();
                   },
+                  // A LiveView patch morphs this whole subtree: the panel's
+                  // server-rendered `hidden` comes back, `combobox--open` is
+                  // stripped off the root, the search input's value and the
+                  // per-option `hidden`/`aria-selected` flags are rewritten, and
+                  // hiding an ancestor of the focused search box blurs it. So
+                  // snapshot the hook-owned DOM *before* the morph (beforeUpdate
+                  // is paired with updated) and put it back afterwards. The old
+                  // code inferred "still open" from document.activeElement in
+                  // updated(), which is already false by then, and fell through
+                  // to close() — which clears the typed filter. That is the
+                  // "dropdowns get refreshed" bug.
+                  beforeUpdate() {
+                    this.queryParts();
+                    this._restore = null;
+                    if (!this.open) return;
+                    var focused = !!(this.search && document.activeElement === this.search);
+                    this._restore = {
+                      query: this.search ? this.search.value : (this.query || ''),
+                      activeValue: this.activeValue || null,
+                      focused: focused,
+                      selStart: focused ? this.search.selectionStart : null,
+                      selEnd: focused ? this.search.selectionEnd : null
+                    };
+                  },
                   updated() {
-                    var keep = this.el.contains(document.activeElement);
                     this.bind();
                     this.cacheOptions();
                     this.syncTrigger();
-                    if (keep && this.open) this.filter(this.search ? this.search.value : '');
-                    else this.close();
+                    var r = this._restore;
+                    this._restore = null;
+                    // Was closed: assert closed chrome without calling close(),
+                    // which would clear a query the user may still be typing.
+                    if (!r) { this.setOpen(false); return; }
+                    // Order matters: setOpen first so the panel is visible before
+                    // we focus into it, and re-highlight after filter() because
+                    // filter() calls clearActive().
+                    this.setOpen(true);
+                    if (this.search) this.search.value = r.query;
+                    this.query = r.query;
+                    this.filter(r.query);
+                    if (r.activeValue) {
+                      // Re-highlight by value, not index: the option list itself
+                      // may have changed (a kind switch rewrites the models).
+                      var vis = this.visibleOptions || [];
+                      for (var i = 0; i < vis.length; i++) {
+                        if (this.optionValue(vis[i]) === r.activeValue) { this.setActive(i); break; }
+                      }
+                    }
+                    // Only steal focus back if it was ours before the morph, so a
+                    // patch landing while the operator types elsewhere cannot
+                    // yank the caret.
+                    if (r.focused && this.search) {
+                      this.search.focus();
+                      if (r.selStart !== null && this.search.setSelectionRange) {
+                        this.search.setSelectionRange(r.selStart, r.selEnd);
+                      }
+                    }
                   },
                   destroyed() {
                     if (this.setChrome) this.setChrome(false);
@@ -298,12 +351,21 @@ defmodule CymphonyElixirWeb.Layouts do
                   setChrome(open) {
                     var on = !!open;
                     this.el.classList.toggle('combobox--open', on);
-                    var section = this.el.closest('.project-section');
-                    if (section) section.classList.toggle('is-combobox-open', on);
-                    var row = this.el.closest('.session-row');
-                    if (row) row.classList.toggle('is-combobox-open', on);
-                    var card = this.el.closest('.queue-card');
-                    if (card) card.classList.toggle('is-combobox-open', on);
+                    this.syncChromeAncestor('.project-section', on);
+                    this.syncChromeAncestor('.session-row', on);
+                    this.syncChromeAncestor('.queue-card', on);
+                  },
+                  // A section/row/card holds several comboboxes and a patch runs
+                  // updated() on every one of them. Unconditionally removing the
+                  // class because *this* one is closed would strip the open
+                  // chrome (z-index, overflow) from a sibling that is still open,
+                  // depending on DOM order. `combobox--open` is toggled on self
+                  // first, so this never sees itself.
+                  syncChromeAncestor(selector, on) {
+                    var node = this.el.closest(selector);
+                    if (!node) return;
+                    if (on) node.classList.add('is-combobox-open');
+                    else if (!node.querySelector('.combobox--open')) node.classList.remove('is-combobox-open');
                   },
                   setOpen(open) {
                     this.open = !!open;
@@ -318,6 +380,7 @@ defmodule CymphonyElixirWeb.Layouts do
                   },
                   openPanel() {
                     if (this.search) this.search.value = '';
+                    this.query = '';
                     this.filter('');
                     this.setOpen(true);
                     var search = this.search;
@@ -325,10 +388,12 @@ defmodule CymphonyElixirWeb.Layouts do
                   },
                   close() {
                     if (this.search) this.search.value = '';
+                    this.query = '';
                     this.setOpen(false);
                   },
                   clearActive() {
                     this.activeIndex = -1;
+                    this.activeValue = null;
                     (this.options || []).forEach(function(opt) {
                       opt.setAttribute('aria-selected', 'false');
                     });
@@ -344,6 +409,7 @@ defmodule CymphonyElixirWeb.Layouts do
                     if (index >= vis.length) index = vis.length - 1;
                     this.activeIndex = index;
                     var active = vis[index];
+                    this.activeValue = this.optionValue(active);
                     vis.forEach(function(opt, i) {
                       opt.setAttribute('aria-selected', i === index ? 'true' : 'false');
                     });
@@ -376,7 +442,8 @@ defmodule CymphonyElixirWeb.Layouts do
                     this.setActive(next);
                   },
                   onSearchInput() {
-                    this.filter(this.search ? this.search.value : '');
+                    this.query = this.search ? this.search.value : '';
+                    this.filter(this.query);
                     if (!this.open) this.setOpen(true);
                   },
                   onTriggerClick(e) {
