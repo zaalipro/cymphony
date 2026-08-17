@@ -1956,6 +1956,44 @@ Enablement (extension):
   totals, recent events, and health/error indicators).
 - It is up to the implementation whether this is server-generated HTML or a client-side app that
   consumes the JSON API below.
+- Shell: `section#dashboard-root.dashboard-shell` (`phx-hook=OverlayDismiss`, inside the single
+  `div#live-clock` wrapper) is a two-column grid — `nav.side-rail` and
+  `div#dashboard-top.main-col`. `aside.settings-drawer` and `div.toast-stack` are siblings of
+  those two and render last. The main column holds, in order: `header.command-bar` (slim,
+  sticky, `--topbar-h` tall; `.command-bar-brand` hidden at ≥900px because the rail owns the
+  brand there), `div.reconnect-note[role=status]`, the instrument band,
+  `article#project-<dom-id>.project-section` per project, then
+  `section#completions-section.section--completions`. Project section ids fold characters an
+  HTML id cannot carry (case preserved) so two projects differing only by case stay distinct.
+- The metrics strip is `div.instrument-band.command-bar-row--metrics.section--metrics` and is a
+  **sibling** of `header.command-bar`, not a row inside it. It keeps the
+  `command-bar-row--metrics section--metrics` class tokens because the section-visibility prefs
+  key off them, and it stays inside the `unless payload_error` guard. Cells are hairline-divided
+  (`.metric-pill`, no pill chrome) with 26px / weight-300 tabular numerals. A nonzero Retry count
+  is not colored in the band; the retry rows carry the amber.
+- Running rows open with `div.session-grid-head.advanced-only[aria-hidden=true]`, a column-header
+  row whose cells reuse the body column classes (`.session-row-title`, `.session-row-chips`,
+  `.session-row-runtime`, `.session-row-tokens`), so `html[data-hidden-cols~=…]` hides a header
+  and its column with no extra selectors. The row layout is flex with fixed `flex-basis` cells,
+  never `grid-template-columns`: a `display:none` column must not leave a hole or shift the
+  remaining cells. The disclosure caret is CSS geometry on `.session-row-disclosure`; the server
+  renders no `▸`/`▾` glyph in the running rows.
+- Queue cards carry `data-rank-label` (1-based, zero-padded) alongside `data-rank` (0-based,
+  rewritten by the drag hook). CSS renders the label as a decorative numeral; the hook does not
+  maintain it, and the next payload load re-renders both.
+- Flashes render inside `div.toast-stack[aria-live=polite]`, fixed to the bottom-right and last
+  in `#dashboard-root`, so an arriving flash never shifts the board. The stalled-agent alert
+  stays in the document flow — it is persistent state, not a notification.
+- Theme: `data-theme` on `<html>` is `light` / `dark` / absent. The stylesheet ships the light
+  palette twice — `:root[data-theme="light"]` and
+  `@media (prefers-color-scheme: light) { :root:not([data-theme]) }` — so "system" really follows
+  the OS while an explicit `dark` choice still wins on a light OS. Vanilla CSS cannot share a
+  declaration block between an attribute selector and a media query; the duplicate is
+  intentional and both blocks must be edited together. Terminal wells (`.harness-tail`,
+  `.log-list`) stay dark in both themes by token construction (`--surface-well` / `--well-ink`
+  are identical across palettes).
+- Responsive breakpoints are 1200 / 900 / 640: full rail, 64px condensed rail, and no rail
+  (the top strip regains the brand) respectively.
 - Settings drawer (`aside.settings-drawer`) includes, after Experience and before Automation,
   visible in both simple and advanced modes:
   - **Linear** (`section.settings-group.settings-group--linear`): connect status
@@ -1978,9 +2016,12 @@ Enablement (extension):
     and starts the project supervisor immediately — no daemon restart. Duplicate
     name/slug is an operator-visible error.
   - Drawer fields only (`#linear-api-key`, add-project slug/name/github/agent/model/effort/provider,
-    `#drawer-global-concurrency`, `#drawer-refresh-interval`) use class `settings-field`
-    (filled control chrome). Do not restyle header/session `.inline-form` pills as naked
-    labels.
+    `#drawer-global-concurrency`, `#drawer-refresh-interval`) use class `settings-field`.
+    There is one field look everywhere (`.inline-input`, `select`, `.settings-field`,
+    `.combobox-trigger`): inset `--surface-deep` fill, `--line-strong` border, `--radius-ctl`.
+    The `.inline-form` **container** carries no chrome — it is a borderless label+field cluster
+    — but its control always does. A header or session control rendered as a naked label with
+    no field chrome is a bug.
   - Automation / Orchestrator (after global concurrency) includes
     `#drawer-refresh-interval` (`type=number`, `name=value`, `min=1`, default `3`,
     `phx-submit="set_refresh_interval"`). Persist the value as top-level

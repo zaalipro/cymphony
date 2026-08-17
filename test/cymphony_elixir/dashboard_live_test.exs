@@ -746,6 +746,49 @@ defmodule CymphonyElixir.DashboardLiveTest do
     assert render(view) =~ "Refresh interval must be a positive integer"
   end
 
+  test "the shell renders a nav rail, a main column, project anchors, and the session grid head" do
+    start_dashboard()
+    {:ok, view, html} = live(build_conn(), "/")
+
+    assert has_element?(view, ~s|#dashboard-root.dashboard-shell[phx-hook="OverlayDismiss"]|)
+    assert has_element?(view, ~s|nav.side-rail a.side-rail-brand[href="#dashboard-top"]|)
+    assert has_element?(view, "#dashboard-top.main-col")
+    assert has_element?(view, "#project-default.project-section")
+
+    # The band moved out of <header> and keeps the class tokens the
+    # section-visibility prefs key off.
+    assert html =~ ~s(class="instrument-band command-bar-row--metrics section--metrics")
+
+    # Head cells reuse the body column classes, so `data-hidden-cols` hides the
+    # header and its column together with no extra CSS.
+    assert has_element?(view, ".session-row-list .session-grid-head.advanced-only .sg-id", "Issue")
+    assert has_element?(view, ".session-grid-head .session-row-title", "Title")
+    assert has_element?(view, ".session-grid-head .session-row-runtime", "Time")
+    assert has_element?(view, ".session-grid-head .session-row-tokens", "Tokens")
+
+    # The disclosure chevron is CSS geometry now; the server renders no glyph.
+    disclosure = view |> element(~s|button.session-row-disclosure[phx-value-issue="MT-HTTP"]|) |> render()
+    refute disclosure =~ "▸"
+    refute disclosure =~ "▾"
+
+    # Always in the DOM; only painted while the socket is in `phx-error`.
+    assert has_element?(view, ~s|div.reconnect-note[role="status"]|)
+  end
+
+  test "flashes render in the fixed toast stack instead of shifting the board" do
+    start_dashboard()
+    {:ok, view, html} = live(build_conn(), "/")
+
+    assert has_element?(view, ~s|div.toast-stack[aria-live="polite"]|)
+    refute html =~ "alert-banner alert-info"
+
+    view
+    |> form(~s|form[phx-submit="set_refresh_interval"]|, %{value: "7"})
+    |> render_submit()
+
+    assert has_element?(view, ".toast-stack .alert-banner.alert-info", "Dashboard refresh set to 7s")
+  end
+
   test "queue board is hidden when waiting is empty" do
     start_dashboard()
     {:ok, view, html} = live(build_conn(), "/")
@@ -774,6 +817,10 @@ defmodule CymphonyElixir.DashboardLiveTest do
     assert has_element?(view, "section.queue-board.section--board")
     assert has_element?(view, "#queue-board-default.queue-board-list")
     assert has_element?(view, ~s|#queue-card-default-LLM-51[data-issue="LLM-51"][data-rank="0"]|)
+    # `data-rank` stays 0-based (the drag hook owns it); the printed rank is a
+    # separate 1-based label the CSS renders as a decorative numeral.
+    assert has_element?(view, ~s|#queue-card-default-LLM-51[data-rank-label="01"]|)
+    assert has_element?(view, ~s|#queue-card-default-LLM-12[data-rank-label="02"]|)
     assert has_element?(view, ~s|#queue-card-default-LLM-51.queue-card--next|)
     assert has_element?(view, "#queue-card-default-LLM-51 .queue-next-badge", "Next")
     refute has_element?(view, ~s|#queue-card-default-LLM-12.queue-card--next|)

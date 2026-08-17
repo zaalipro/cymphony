@@ -652,89 +652,112 @@ defmodule CymphonyElixirWeb.DashboardLive do
     It is a plain block box inside .app-shell, so it changes no layout. --%>
     <div id="live-clock" phx-hook="LiveClock">
     <section id="dashboard-root" class="dashboard-shell" phx-hook="OverlayDismiss">
-      <header class="command-bar">
-        <div class="command-bar-row command-bar-row--brand">
-          <div class="command-bar-brand">
-            <span class="brand-mark" aria-hidden="true"></span>
-            <span class="brand-wordmark">CYMPHONY</span>
-            <span class="brand-tagline simple-only">Work status</span>
-            <span class="brand-tagline advanced-only">Operations</span>
-          </div>
-          <div class="command-bar-meta">
-            <span class="status-badge status-badge-offline status-badge-transport">
-              <span class="status-badge-dot"></span>
-              Connecting
-            </span>
-            <%= if @payload_error do %>
-              <span class="status-badge status-badge-offline status-badge-payload">
-                <span class="status-badge-dot"></span>
-                Unavailable
-              </span>
-            <% else %>
-              <span class="status-badge status-badge-live status-badge-payload">
-                <span class="status-badge-dot"></span>
-                Live
-              </span>
-            <% end %>
-            <span class="version-badge">v<%= @version %></span>
+      <%!-- The rail is chrome, not a section: it reads only per-section assigns
+      and never `@now`, so a clock re-anchor never re-renders it. Part A ships
+      the brand block; the vitals/fleet/foot content lands in Part B. --%>
+      <nav class="side-rail" aria-label="Dashboard">
+        <a class="side-rail-brand" href="#dashboard-top">
+          <span class="brand-mark" aria-hidden="true"></span>
+          <span class="brand-wordmark">CYMPHONY</span>
+          <span class="version-badge">v<%= @version %></span>
+        </a>
+        <%!-- PART B: rail vitals --%>
+        <%!-- PART B: rail nav --%>
+        <%!-- PART B: rail foot --%>
+      </nav>
 
-            <%!-- `aria-pressed` is pure client state (localStorage `cymphony-prefs`).
-            The server has no correct value to render, and morphdom reset it on
-            every patch, so freeze the subtree instead of repairing it after the
-            fact. --%>
-            <div id="mode-switch-top" class="mode-switch" role="group" aria-label="Dashboard mode" phx-update="ignore">
-              <button type="button" class="mode-switch-button" data-mode-set="simple" aria-pressed="true">
-                Simple
-              </button>
-              <button type="button" class="mode-switch-button" data-mode-set="advanced" aria-pressed="false">
-                Advanced
-              </button>
+      <div class="main-col" id="dashboard-top">
+        <header class="command-bar">
+          <div class="command-bar-row command-bar-row--brand">
+            <div class="command-bar-brand">
+              <span class="brand-mark" aria-hidden="true"></span>
+              <span class="brand-wordmark">CYMPHONY</span>
+              <span class="brand-tagline simple-only">Work status</span>
+              <span class="brand-tagline advanced-only">Operations</span>
             </div>
+            <div class="command-bar-meta">
+              <span class="status-badge status-badge-offline status-badge-transport">
+                <span class="status-badge-dot"></span>
+                Connecting
+              </span>
+              <%= if @payload_error do %>
+                <span class="status-badge status-badge-offline status-badge-payload">
+                  <span class="status-badge-dot"></span>
+                  Unavailable
+                </span>
+              <% else %>
+                <span class="status-badge status-badge-live status-badge-payload">
+                  <span class="status-badge-dot"></span>
+                  Live
+                </span>
+              <% end %>
+              <span class="version-badge">v<%= @version %></span>
 
-            <div class="theme-toggle" role="group" aria-label="Theme">
-              <button type="button" class="theme-toggle-button" data-theme-set="light" title="Light theme" aria-label="Light theme"></button>
-              <button type="button" class="theme-toggle-button" data-theme-set="dark" title="Dark theme" aria-label="Dark theme"></button>
-              <button type="button" class="theme-toggle-button" data-theme-set="system" title="Follow system" aria-label="Follow system"></button>
+              <%!-- `aria-pressed` is pure client state (localStorage `cymphony-prefs`).
+              The server has no correct value to render, and morphdom reset it on
+              every patch, so freeze the subtree instead of repairing it after the
+              fact. --%>
+              <div id="mode-switch-top" class="mode-switch" role="group" aria-label="Dashboard mode" phx-update="ignore">
+                <button type="button" class="mode-switch-button" data-mode-set="simple" aria-pressed="true">
+                  Simple
+                </button>
+                <button type="button" class="mode-switch-button" data-mode-set="advanced" aria-pressed="false">
+                  Advanced
+                </button>
+              </div>
+
+              <div class="theme-toggle" role="group" aria-label="Theme">
+                <button type="button" class="theme-toggle-button" data-theme-set="light" title="Light theme" aria-label="Light theme"></button>
+                <button type="button" class="theme-toggle-button" data-theme-set="dark" title="Dark theme" aria-label="Dark theme"></button>
+                <button type="button" class="theme-toggle-button" data-theme-set="system" title="Follow system" aria-label="Follow system"></button>
+              </div>
+
+              <button type="button" class="subtle-button" data-drawer-toggle aria-label="Settings" title="Settings"></button>
+              <button type="button" class="subtle-button" phx-click="refresh_now">Refresh</button>
             </div>
-
-            <button type="button" class="subtle-button" data-drawer-toggle aria-label="Settings" title="Settings"></button>
-            <button type="button" class="subtle-button" phx-click="refresh_now">Refresh</button>
           </div>
-        </div>
+
+          <%= unless @payload_error do %>
+            <div class="command-bar-row simple-mode-summary simple-only" aria-live="polite">
+              <%= case autonomy_state(@projects, @polling) do %>
+                <% :unknown -> %>
+                  <span class="autonomy-indicator autonomy-indicator--unknown">
+                    <span class="autonomy-indicator-dot" aria-hidden="true"></span>
+                    Checking automatic work…
+                  </span>
+                  <span class="simple-mode-summary-copy">Cymphony is connecting to live orchestrator status.</span>
+                <% :paused -> %>
+                  <span class="autonomy-indicator autonomy-indicator--paused">
+                    <span class="autonomy-indicator-dot" aria-hidden="true"></span>
+                    Automatic work is paused
+                  </span>
+                  <span class="simple-mode-summary-copy">Running tasks can finish, but Cymphony will not start new ones.</span>
+                <% {:partial, active_count, project_count} -> %>
+                  <span class="autonomy-indicator autonomy-indicator--partial">
+                    <span class="autonomy-indicator-dot" aria-hidden="true"></span>
+                    Automatic work is on for <%= active_count %> of <%= project_count %> projects
+                  </span>
+                  <span class="simple-mode-summary-copy">Some projects are paused. Active projects will keep picking up ready issues.</span>
+                <% :on -> %>
+                  <span class="autonomy-indicator">
+                    <span class="autonomy-indicator-dot" aria-hidden="true"></span>
+                    Automatic work is on
+                  </span>
+                  <span class="simple-mode-summary-copy">Cymphony watches Linear and starts ready issues for you.</span>
+              <% end %>
+            </div>
+          <% end %>
+        </header>
+
+        <%!-- Always in the DOM, painted only while the socket is in `phx-error`:
+        a reconnect note must not wait for a server render to appear. --%>
+        <div class="reconnect-note" role="status">Connection lost — reconnecting…</div>
 
         <%= unless @payload_error do %>
-          <div class="command-bar-row simple-mode-summary simple-only" aria-live="polite">
-            <%= case autonomy_state(@projects, @polling) do %>
-              <% :unknown -> %>
-                <span class="autonomy-indicator autonomy-indicator--unknown">
-                  <span class="autonomy-indicator-dot" aria-hidden="true"></span>
-                  Checking automatic work…
-                </span>
-                <span class="simple-mode-summary-copy">Cymphony is connecting to live orchestrator status.</span>
-              <% :paused -> %>
-                <span class="autonomy-indicator autonomy-indicator--paused">
-                  <span class="autonomy-indicator-dot" aria-hidden="true"></span>
-                  Automatic work is paused
-                </span>
-                <span class="simple-mode-summary-copy">Running tasks can finish, but Cymphony will not start new ones.</span>
-              <% {:partial, active_count, project_count} -> %>
-                <span class="autonomy-indicator autonomy-indicator--partial">
-                  <span class="autonomy-indicator-dot" aria-hidden="true"></span>
-                  Automatic work is on for <%= active_count %> of <%= project_count %> projects
-                </span>
-                <span class="simple-mode-summary-copy">Some projects are paused. Active projects will keep picking up ready issues.</span>
-              <% :on -> %>
-                <span class="autonomy-indicator">
-                  <span class="autonomy-indicator-dot" aria-hidden="true"></span>
-                  Automatic work is on
-                </span>
-                <span class="simple-mode-summary-copy">Cymphony watches Linear and starts ready issues for you.</span>
-            <% end %>
-          </div>
-        <% end %>
-
-        <%= unless @payload_error do %>
-          <div class="command-bar-row command-bar-row--metrics section--metrics">
+          <%!-- The band left <header> to become its own instrument panel; the
+          pinned `command-bar-row--metrics section--metrics` tokens stay because
+          the section-visibility pref CSS keys off them. --%>
+          <div class="instrument-band command-bar-row--metrics section--metrics">
             <div class="metric-pill">
               <span class="metric-pill-label simple-only">Working</span>
               <span class="metric-pill-label advanced-only">Run</span>
@@ -846,7 +869,651 @@ defmodule CymphonyElixirWeb.DashboardLive do
             <% end %>
           </div>
         <% end %>
-      </header>
+
+        <%= if @payload_error do %>
+          <section class="error-card">
+            <h2 class="error-title">Snapshot unavailable</h2>
+            <p class="error-copy">
+              <strong><%= @payload_error.code %>:</strong> <%= @payload_error.message %>
+            </p>
+          </section>
+        <% else %>
+
+          <% stalled_entries = stalled_running_entries(@running) %>
+          <%= if stalled_entries != [] and not @stalled_alert_dismissed do %>
+            <div class="alert-banner">
+              <div class="alert-content">
+                <strong>Stalled agents detected:</strong>
+                <%= stalled_entries |> Enum.map(& &1.issue_identifier) |> Enum.join(", ") %>
+                <%= if length(stalled_entries) == 1 do %>
+                  <% stalled_at = hd(stalled_entries).last_event_at %>
+                  has been stalled for <span data-clock="elapsed" data-base-seconds={stall_seconds(stalled_at, @now)}><%= format_stall_duration(stalled_at, @now) %></span>.
+                <% else %>
+                  have been stalled.
+                <% end %>
+              </div>
+              <button type="button" class="subtle-button" phx-click="dismiss_stalled_alert">Dismiss</button>
+            </div>
+          <% end %>
+
+          <%= for project <- @projects do %>
+            <% agent_settings = project_agent_settings(@agent_setting_drafts, project) %>
+            <article class={project_section_class(project, @queue_edit_ids)} id={"project-" <> project_dom_id(project.name)}>
+              <header class="project-section-header">
+                <div class="project-section-title-block">
+                  <h2 class="project-section-name">
+                    <%= project.name %>
+                    <%= if Map.get(project, :paused, false) do %>
+                      <span class="chip chip--warn">Paused</span>
+                    <% end %>
+                  </h2>
+                  <p class="project-section-counts">
+                    <span class="numeric"><%= Map.get(project, :running_count, length(project.running)) %></span>
+                    <%= if max = Map.get(project, :max_concurrent_agents) do %>
+                      <span class="muted">/<%= max %></span>
+                    <% end %>
+                    <span class="muted">running</span>
+                    · <span class="numeric"><%= project_waiting_count(project) %></span>
+                    <span class="muted">queued</span>
+                    · <span class="numeric"><%= Map.get(project, :retrying_count, length(project.retrying)) %></span>
+                    <span class="muted">retrying</span>
+                  </p>
+                </div>
+
+                <div class="project-section-controls">
+                  <form
+                    phx-change="preview_field"
+                    phx-submit="set_project_concurrency"
+                    class="inline-form project-concurrency-control"
+                  >
+                    <input type="hidden" name="project" value={project.name} />
+                    <input type="hidden" name="field" value={"concurrency:#{project.name}"} />
+                    <label class="inline-label" for={"concurrency-#{project.name}"}>
+                      <span class="simple-only">tasks at once</span>
+                      <span class="advanced-only">concurrency</span>
+                    </label>
+                    <input
+                      id={"concurrency-#{project.name}"}
+                      type="number"
+                      name="value"
+                      min="1"
+                      value={field_value(@field_drafts, "concurrency:#{project.name}", Map.get(project, :max_concurrent_agents) || "")}
+                      phx-debounce="400"
+                      class="inline-input inline-input--narrow"
+                      title="Max concurrent agents (cli alias: cr)"
+                    />
+                    <button type="submit" class="subtle-button">Save</button>
+                  </form>
+
+                  <form
+                    phx-change="preview_project_agent"
+                    phx-submit="set_project_agent"
+                    class="project-agent-form advanced-only"
+                  >
+                    <input type="hidden" name="project" value={project.name} />
+                    <div class="agent-switcher">
+                      <label class="inline-label" for={"agent-#{project.name}-trigger"}>agent</label>
+                      <.model_combobox
+                        id={"agent-#{project.name}"}
+                        name="agent_kind"
+                        value={agent_settings.kind}
+                        list_id={"agent-options-#{project.name}"}
+                        options={kind_menu_options(false)}
+                        placeholder="agent"
+                      />
+                    </div>
+
+                    <div class="model-switcher">
+                      <label class="inline-label" for={"model-#{project.name}-trigger"}>model</label>
+                      <.model_combobox
+                        id={"model-#{project.name}"}
+                        name="model"
+                        value={agent_settings.model}
+                        list_id={"model-suggestions-#{project.name}"}
+                        options={model_suggestions(agent_settings.kind)}
+                        placeholder="default"
+                        title="Model override passed to the agent CLI (cli alias: model)"
+                        allow_custom={true}
+                      />
+                    </div>
+
+                    <div class="effort-switcher">
+                      <label class="inline-label" for={"effort-#{project.name}-trigger"}>effort</label>
+                      <.model_combobox
+                        id={"effort-#{project.name}"}
+                        name="effort"
+                        value={agent_settings.effort}
+                        list_id={"effort-options-#{project.name}"}
+                        options={effort_menu_options(agent_settings.kind, :default)}
+                        placeholder="default"
+                      />
+                    </div>
+
+                    <button type="submit" class="subtle-button">Set</button>
+                  </form>
+
+                  <%= if agent_settings.kind == "claude" do %>
+                    <form
+                      phx-change="preview_field"
+                      phx-submit="set_project_providers"
+                      class="inline-form inline-form--wide advanced-only"
+                    >
+                      <input type="hidden" name="project" value={project.name} />
+                      <input type="hidden" name="field" value={"providers:#{project.name}"} />
+                      <label class="inline-label" for={"providers-#{project.name}"}>providers</label>
+                      <input
+                        id={"providers-#{project.name}"}
+                        type="text"
+                        name="value"
+                        value={field_value(@field_drafts, "providers:#{project.name}", Enum.join(Map.get(project, :providers, []), ","))}
+                        placeholder="cv1,cz2,ck1"
+                        phx-debounce="400"
+                        class="inline-input"
+                        title="Comma-separated provider aliases (cli alias: c)"
+                      />
+                      <button type="submit" class="subtle-button">Save</button>
+                    </form>
+                  <% end %>
+
+                  <button
+                    type="button"
+                    class="subtle-button"
+                    phx-click="toggle_project_pause"
+                    phx-value-project={project.name}
+                  >
+                    <%= if Map.get(project, :paused, false), do: "Resume", else: "Pause" %>
+                  </button>
+                </div>
+              </header>
+
+              <%= if project.running == [] and project.retrying == [] and project_waiting(project) == [] do %>
+                <%= if Map.get(project, :paused, false) do %>
+                  <p class="empty-state simple-only">
+                    This project is paused. Resume it when you want Cymphony to start ready issues again.
+                  </p>
+                <% else %>
+                  <p class="empty-state simple-only">
+                    Nothing is running right now. Cymphony is watching Linear and will start the next ready issue automatically.
+                  </p>
+                <% end %>
+                <p class="empty-state advanced-only">No active sessions.</p>
+              <% end %>
+
+              <%= if project_waiting(project) != [] do %>
+                <section class="queue-board section--board">
+                  <header class="queue-board-header">
+                    <span class="queue-board-label simple-only">Up next</span>
+                    <span class="queue-board-label advanced-only">Queue</span>
+                    <span class="queue-board-count numeric"><%= project_waiting_count(project) %></span>
+                    <span class="queue-board-hint">Leftmost starts next</span>
+                  </header>
+                  <div
+                    id={"queue-board-#{project.name}"}
+                    class="queue-board-list"
+                    phx-hook="QueueBoard"
+                    data-project={project.name}
+                    data-order={queue_order_attr(project_waiting(project))}
+                  >
+                    <%= for {entry, rank} <- Enum.with_index(project_waiting(project)) do %>
+                      <% identifier = entry.issue_identifier %>
+                      <% editing? = MapSet.member?(@queue_edit_ids, {project.name, identifier}) %>
+                      <% queue_spec = queue_run_spec_settings(@queue_run_spec_drafts, project, entry) %>
+                      <article
+                        id={"queue-card-#{project.name}-#{identifier}"}
+                        class={"queue-card" <> if(rank == 0, do: " queue-card--next", else: "") <> if(editing?, do: " is-editing", else: "")}
+                        data-issue={identifier}
+                        data-issue-id={entry.issue_id}
+                        data-rank={rank}
+                        data-rank-label={String.pad_leading(to_string(rank + 1), 2, "0")}
+                        tabindex="0"
+                      >
+                        <div class="queue-card-body">
+                          <div class="queue-card-id">
+                            <%= if rank == 0 do %>
+                              <span class="queue-next-badge" title="Starts when a slot opens">Next</span>
+                            <% end %>
+                            <%= if entry.issue_url do %>
+                              <a href={entry.issue_url} target="_blank" rel="noopener" class="session-row-link queue-card-link"><%= identifier %></a>
+                            <% else %>
+                              <%= identifier %>
+                            <% end %>
+                          </div>
+                          <div class="queue-card-title"><%= entry.issue_title %></div>
+                          <button
+                            type="button"
+                            class="queue-card-edit-toggle"
+                            phx-click="toggle_queue_edit"
+                            phx-value-project={project.name}
+                            phx-value-issue={identifier}
+                          >
+                            Edit
+                          </button>
+                        </div>
+                        <%= if editing? do %>
+                          <div
+                            class="queue-card-edit"
+                            id={"queue-edit-#{project.name}-#{identifier}"}
+                            phx-hook="QueueEditPanel"
+                            phx-click-away="dismiss_overlays"
+                          >
+                            <form
+                              class="queue-edit-form"
+                              phx-change="preview_queue_run_spec"
+                              phx-submit="set_queue_run_spec"
+                            >
+                              <input type="hidden" name="project" value={project.name} />
+                              <input type="hidden" name="issue" value={identifier} />
+                              <div class="menu-field">
+                                <label class="menu-field-label" for={"queue-agent-#{identifier}-trigger"}>Harness</label>
+                                <.model_combobox
+                                  id={"queue-agent-#{identifier}"}
+                                  name="agent_kind"
+                                  value={queue_spec.kind}
+                                  list_id={"queue-agent-options-#{identifier}"}
+                                  options={kind_menu_options(false)}
+                                  placeholder="agent"
+                                />
+                              </div>
+                              <div class="menu-field">
+                                <label class="menu-field-label" for={"queue-model-#{identifier}-trigger"}>Model</label>
+                                <.model_combobox
+                                  id={"queue-model-#{identifier}"}
+                                  name="model"
+                                  value={queue_spec.model}
+                                  list_id={"model-suggestions-queue-#{identifier}"}
+                                  options={model_suggestions(queue_spec.suggestion_kind)}
+                                  placeholder="model"
+                                  allow_custom={true}
+                                />
+                              </div>
+                              <div class="menu-field">
+                                <label class="menu-field-label" for={"queue-effort-#{identifier}-trigger"}>Effort</label>
+                                <.model_combobox
+                                  id={"queue-effort-#{identifier}"}
+                                  name="effort"
+                                  value={queue_spec.effort}
+                                  list_id={"queue-effort-options-#{identifier}"}
+                                  options={effort_menu_options(queue_spec.suggestion_kind, false)}
+                                  placeholder="effort"
+                                />
+                              </div>
+                              <button type="submit" class="subtle-button subtle-button--accent queue-edit-pin">Pin</button>
+                            </form>
+                          </div>
+                        <% end %>
+                      </article>
+                    <% end %>
+                  </div>
+                </section>
+              <% end %>
+
+              <%= if project.running != [] do %>
+                <div class="session-row-list">
+                  <%!-- The head cells reuse the body column classes, so the
+                  `html[data-hidden-cols~=…]` prefs hide header and cell together
+                  with no extra selectors. --%>
+                  <div class="session-grid-head advanced-only" aria-hidden="true">
+                    <span class="sg-caret"></span>
+                    <span class="sg-id">Issue</span>
+                    <span class="session-row-title">Title</span>
+                    <span class="session-row-chips">Tags</span>
+                    <span class="session-row-runtime">Time</span>
+                    <span class="session-row-tokens">Tokens</span>
+                    <span class="sg-act"></span>
+                  </div>
+                  <%= for entry <- project.running do %>
+                    <% expanded? = MapSet.member?(@expanded_issue_ids, entry.issue_identifier) %>
+                    <article class={"session-row" <> if(expanded?, do: " session-row--expanded", else: "")}>
+                      <div class="session-row-summary">
+                        <button
+                          type="button"
+                          class="session-row-disclosure"
+                          phx-click="toggle_logs"
+                          phx-value-issue={entry.issue_identifier}
+                          aria-label={if expanded?, do: "Collapse", else: "Expand"}
+                        ><%!-- The chevron is drawn in CSS and rotated by
+                          `.session-row--expanded`; a server-rendered glyph would
+                          be one more string every payload load rewrites. --%></button>
+
+                        <div class="session-row-id">
+                          <%= if entry.issue_url do %>
+                            <a href={entry.issue_url} target="_blank" rel="noopener" class="session-row-link"><%= entry.issue_identifier %></a>
+                          <% else %>
+                            <%= entry.issue_identifier %>
+                          <% end %>
+                        </div>
+
+                        <div class="session-row-title" title={entry.issue_title || entry.last_message || ""}>
+                          <%= entry.issue_title || entry.last_message || "" %>
+                        </div>
+
+                        <div class="session-row-chips">
+                          <span class={chip_state_class(entry.state)}><%= entry.state %></span>
+                          <%= if entry.stalled do %>
+                            <span class="chip chip--danger">Stalled</span>
+                          <% end %>
+                          <%= if priority_label = priority_label(entry.priority) do %>
+                            <span class={chip_priority_class(entry.priority)}><%= priority_label %></span>
+                          <% end %>
+                          <%= if entry.provider do %>
+                            <span class="chip chip--accent advanced-only"><%= entry.provider %></span>
+                          <% end %>
+                          <%= if Map.get(entry, :agent_kind) do %>
+                            <span class="chip chip--agent advanced-only"><%= entry.agent_kind %></span>
+                          <% end %>
+                          <%= if Map.get(entry, :model) do %>
+                            <span class="chip chip--muted chip--truncate advanced-only" title={entry.model}><%= entry.model %></span>
+                          <% end %>
+                          <%= if Map.get(entry, :effort) do %>
+                            <span class="chip chip--muted advanced-only"><%= entry.effort %></span>
+                          <% end %>
+                          <span class="chip chip--muted advanced-only"><%= entry.worker_host || "local" %></span>
+                        </div>
+
+                        <div class="session-row-runtime numeric">
+                          <span data-clock="elapsed" data-base-seconds={runtime_seconds_from_started_at(entry.started_at, @now)}><%= format_runtime_seconds(runtime_seconds_from_started_at(entry.started_at, @now)) %></span>
+                        </div>
+
+                        <div class="session-row-tokens numeric" title={"In #{format_int(entry.tokens.input_tokens)} / Out #{format_int(entry.tokens.output_tokens)}"}>
+                          <%= format_int(entry.tokens.total_tokens) %><%= if tps = format_session_tps(entry) do %><span class="tps"> · <%= tps %> t/s</span><% end %>
+                        </div>
+
+                        <button
+                          type="button"
+                          class="subtle-button danger"
+                          phx-click="kill_issue"
+                          phx-value-issue={entry.issue_identifier}
+                        >
+                          <span class="simple-only">Stop</span>
+                          <span class="advanced-only">Kill</span>
+                        </button>
+                      </div>
+
+                      <%= if expanded? do %>
+                        <div class="session-row-detail">
+                          <p class="autonomy-note simple-only">
+                            Cymphony is continuing this task on its own. You can open the Linear issue for context or stop this run at any time.
+                          </p>
+                          <div class="session-row-detail-grid">
+                            <div class="session-stat advanced-only">
+                              <span class="session-stat-label">Agent</span>
+                              <span class="session-stat-value"><%= Map.get(entry, :agent_kind) || "claude" %></span>
+                            </div>
+                            <div class="session-stat advanced-only">
+                              <span class="session-stat-label">Model</span>
+                              <span class="session-stat-value"><%= Map.get(entry, :model) || "default" %></span>
+                            </div>
+                            <div class="session-stat advanced-only">
+                              <span class="session-stat-label">Effort</span>
+                              <span class="session-stat-value"><%= Map.get(entry, :effort) || "default" %></span>
+                            </div>
+                            <div class="session-stat advanced-only">
+                              <span class="session-stat-label">Provider</span>
+                              <span class="session-stat-value"><%= entry.provider || "default" %></span>
+                            </div>
+                            <div class="session-stat advanced-only">
+                              <span class="session-stat-label">Tokens</span>
+                              <span class="session-stat-value numeric">
+                                <%= format_int(entry.tokens.total_tokens) %>
+                                <span class="muted small">(in <%= format_int(entry.tokens.input_tokens) %> / out <%= format_int(entry.tokens.output_tokens) %>)</span>
+                              </span>
+                            </div>
+                            <div class="session-stat advanced-only">
+                              <span class="session-stat-label">Turn</span>
+                              <span class="session-stat-value numeric"><%= entry.turn_count %></span>
+                            </div>
+                            <div class="session-stat advanced-only">
+                              <span class="session-stat-label">Session</span>
+                              <span class="session-stat-value">
+                                <%= if entry.session_id do %>
+                                  <button
+                                    type="button"
+                                    class="subtle-button"
+                                    data-label="Copy ID"
+                                    data-copy={entry.session_id}
+                                    onclick="navigator.clipboard.writeText(this.dataset.copy); this.textContent = 'Copied'; clearTimeout(this._copyTimer); this._copyTimer = setTimeout(() => { this.textContent = this.dataset.label }, 1200);"
+                                  >Copy ID</button>
+                                <% else %>
+                                  <span class="muted">n/a</span>
+                                <% end %>
+                              </span>
+                            </div>
+                            <div class="session-stat session-stat--wide advanced-only">
+                              <span class="session-stat-label">Workspace</span>
+                              <span class="session-stat-value">
+                                <%= if entry.workspace_path do %>
+                                  <span class="mono workspace-path"><%= entry.workspace_path %></span>
+                                  <button
+                                    type="button"
+                                    class="subtle-button"
+                                    data-label="Copy"
+                                    data-copy={entry.workspace_path}
+                                    onclick="navigator.clipboard.writeText(this.dataset.copy); this.textContent = 'Copied'; clearTimeout(this._copyTimer); this._copyTimer = setTimeout(() => { this.textContent = this.dataset.label }, 1200);"
+                                  >Copy</button>
+                                <% else %>
+                                  <span class="muted">n/a</span>
+                                <% end %>
+                              </span>
+                            </div>
+                            <div class="session-stat session-stat--wide restart-with advanced-only">
+                              <span class="session-stat-label">Restart with</span>
+                              <% session_spec = session_run_spec_settings(@issue_run_spec_drafts, entry) %>
+                              <form
+                                phx-change="preview_issue_run_spec"
+                                phx-submit="set_issue_run_spec"
+                                class="restart-form"
+                              >
+                                <input type="hidden" name="issue" value={entry.issue_identifier} />
+                                <div class="agent-switcher">
+                                  <label class="inline-label" for={"restart-agent-#{entry.issue_identifier}-trigger"}>
+                                    Harness
+                                  </label>
+                                  <.model_combobox
+                                    id={"restart-agent-#{entry.issue_identifier}"}
+                                    name="agent_kind"
+                                    value={session_spec.kind}
+                                    list_id={"restart-agent-options-#{entry.issue_identifier}"}
+                                    options={kind_menu_options(true)}
+                                    placeholder="keep"
+                                    title="Harness"
+                                  />
+                                </div>
+                                <%= if session_spec.suggestion_kind == "claude" do %>
+                                  <div class="provider-switcher">
+                                    <label class="inline-label" for={"restart-provider-#{entry.issue_identifier}"}>
+                                      Provider
+                                    </label>
+                                    <input
+                                      id={"restart-provider-#{entry.issue_identifier}"}
+                                      type="text"
+                                      name="provider"
+                                      value={session_spec.provider}
+                                      placeholder="provider"
+                                      phx-debounce="400"
+                                      class="inline-input inline-input--model"
+                                      title="Provider auth alias (empty = keep resolved)"
+                                    />
+                                  </div>
+                                <% end %>
+                                <div class="model-switcher">
+                                  <label class="inline-label" for={"restart-model-#{entry.issue_identifier}-trigger"}>
+                                    Model
+                                  </label>
+                                  <.model_combobox
+                                    id={"restart-model-#{entry.issue_identifier}"}
+                                    name="model"
+                                    value={session_spec.model}
+                                    list_id={"model-suggestions-session-#{entry.issue_identifier}"}
+                                    options={model_suggestions(session_spec.suggestion_kind)}
+                                    placeholder="model"
+                                    title="Model passed to the agent CLI (empty = keep resolved)"
+                                    allow_custom={true}
+                                  />
+                                </div>
+                                <div class="effort-switcher">
+                                  <label class="inline-label" for={"restart-effort-#{entry.issue_identifier}-trigger"}>
+                                    Effort
+                                  </label>
+                                  <.model_combobox
+                                    id={"restart-effort-#{entry.issue_identifier}"}
+                                    name="effort"
+                                    value={session_spec.effort}
+                                    list_id={"restart-effort-options-#{entry.issue_identifier}"}
+                                    options={effort_menu_options(session_spec.suggestion_kind, :keep)}
+                                    placeholder="keep"
+                                    title="Reasoning effort (keep = unchanged)"
+                                  />
+                                </div>
+                                <button type="submit" class="subtle-button" title="Kill this session and restart it immediately with these overrides">Restart</button>
+                              </form>
+                              <span class="muted small">Restart kills the session and redispatches with these overrides.</span>
+                            </div>
+                          </div>
+
+                          <%= if entry.last_event do %>
+                            <div class="session-row-activity">
+                              <span class="session-stat-label simple-only">Latest update</span>
+                              <span class={log_event_badge_class(entry.last_event) <> " advanced-only"}><%= entry.last_event %></span>
+                              <span class="session-activity-message"><%= entry.last_message || "n/a" %></span>
+                              <%= if entry.last_event_at do %>
+                                <span class="mono numeric muted small advanced-only">@ <%= entry.last_event_at %></span>
+                              <% end %>
+                            </div>
+                          <% end %>
+
+                          <%= if entry.log_events == [] do %>
+                            <p class="empty-state advanced-only">No log events yet.</p>
+                          <% else %>
+                            <ul class="log-list advanced-only">
+                              <%= for log <- entry.log_events do %>
+                                <li class="log-event">
+                                  <span class="log-event-at"><%= format_log_at(log.at) %></span>
+                                  <span class={log_event_badge_class(log.event)}><%= log.event %></span>
+                                  <span class="log-event-message"><%= format_log_message(log.message) %></span>
+                                </li>
+                              <% end %>
+                            </ul>
+                          <% end %>
+
+                          <% tail = Map.get(@harness_tails, entry.issue_identifier, %{issue_id: Map.get(entry, :issue_id), last_seq: 0, lines: [], follow: true}) %>
+                          <% follow? = Map.get(tail, :follow, true) %>
+                          <section
+                            id={"harness-tail-" <> entry.issue_identifier}
+                            class="harness-tail advanced-only"
+                            phx-hook="HarnessTail"
+                            data-follow={if follow?, do: "true", else: "false"}
+                          >
+                            <header class="harness-tail-header">
+                              <span class="harness-tail-title">Harness</span>
+                              <button type="button" class="subtle-button" phx-click="toggle_harness_follow" phx-value-issue={entry.issue_identifier}>
+                                <%= if follow?, do: "Following", else: "Paused" %>
+                              </button>
+                            </header>
+                            <pre class="harness-tail-body"><%= for line <- Map.get(tail, :lines, []) do %><div class="harness-tail-line" data-seq={line_seq(line)}><%= line_text(line) %></div><% end %></pre>
+                          </section>
+                        </div>
+                      <% end %>
+                    </article>
+                  <% end %>
+                </div>
+              <% end %>
+
+              <%= if project.retrying != [] do %>
+                <div class="retry-row-list">
+                  <p class="subsection-label simple-only">Waiting to try again</p>
+                  <p class="subsection-label advanced-only">Retry queue</p>
+                  <%= for entry <- project.retrying do %>
+                    <article class="retry-row">
+                      <div class="retry-row-id">
+                        <%= if entry.issue_url do %>
+                          <a href={entry.issue_url} target="_blank" rel="noopener" class="session-row-link"><%= entry.issue_identifier %></a>
+                        <% else %>
+                          <%= entry.issue_identifier %>
+                        <% end %>
+                      </div>
+                      <div class="retry-row-attempt">
+                        <span class="chip chip--warn">Attempt <%= entry.attempt %></span>
+                        <%= if entry.due_at do %>
+                          <span class="muted">due <span data-clock="due" data-remaining-ms={retry_remaining_ms(entry.due_at, @now)}><%= format_retry_countdown(entry.due_at, @now) %></span></span>
+                        <% end %>
+                        <%= if Map.get(entry, :held) do %>
+                          <span class="muted">held while paused</span>
+                        <% end %>
+                      </div>
+                      <div class="retry-row-error advanced-only">
+                        <%= if entry.error do %>
+                          <span class="muted small mono"><%= String.slice(to_string(entry.error), 0, 120) %></span>
+                        <% end %>
+                      </div>
+                      <span class="retry-row-guidance simple-only">Cymphony will retry automatically.</span>
+                      <button
+                        type="button"
+                        class="subtle-button"
+                        phx-click="retry_issue"
+                        phx-value-issue={entry.issue_identifier}
+                      >
+                        Retry now
+                      </button>
+                    </article>
+                  <% end %>
+                </div>
+              <% end %>
+            </article>
+          <% end %>
+
+          <%= if @completions != [] do %>
+            <section class="section-card section--completions" id="completions-section">
+              <div class="section-header">
+                <div>
+                  <h2 class="section-title">Recent completions</h2>
+                  <p class="section-copy simple-only"><%= length(@completions) %> recently finished tasks.</p>
+                  <p class="section-copy advanced-only">Last <%= length(@completions) %> agent runs. Cleared on daemon restart.</p>
+                </div>
+                <button
+                  type="button"
+                  class="subtle-button"
+                  data-collapse-toggle="completions"
+                  aria-label="Expand section"
+                  aria-expanded="false"
+                >▸</button>
+              </div>
+
+              <div class="session-row-list">
+                <%= for entry <- @completions do %>
+                  <article class="session-row session-row--completed">
+                    <div class="session-row-summary">
+                      <span class="session-row-disclosure" aria-hidden="true">✓</span>
+                      <div class="session-row-id"><%= entry.issue_identifier %></div>
+                      <div class="session-row-title muted small">
+                        <%= if Map.get(entry, :project_name), do: entry.project_name, else: "" %>
+                      </div>
+                      <div class="session-row-chips">
+                        <span class="chip chip--ok">Done</span>
+                        <%= if Map.get(entry, :agent_kind) do %>
+                          <span class="chip chip--agent advanced-only"><%= entry.agent_kind %></span>
+                        <% end %>
+                        <%= if Map.get(entry, :model) do %>
+                          <span class="chip chip--muted chip--truncate advanced-only" title={entry.model}><%= entry.model %></span>
+                        <% end %>
+                        <span class="chip chip--muted advanced-only"><%= entry.worker_host || "local" %></span>
+                      </div>
+                      <div class="session-row-runtime numeric">
+                        <%= format_runtime_seconds(entry.runtime_seconds || 0) %>
+                      </div>
+                      <div class="session-row-tokens numeric">
+                        <%= format_int(entry.total_tokens) %>
+                      </div>
+                      <span class="muted small mono">
+                        <%= if entry.ended_at, do: entry.ended_at, else: "" %>
+                      </span>
+                    </div>
+                  </article>
+                <% end %>
+              </div>
+            </section>
+          <% end %>
+        <% end %>
+      </div>
 
       <aside class="settings-drawer" aria-label="Dashboard settings">
         <div class="settings-drawer-header">
@@ -1063,643 +1730,17 @@ defmodule CymphonyElixirWeb.DashboardLive do
         </section>
       </aside>
 
-      <%= if info = @flash["info"] do %>
-        <div class="alert-banner alert-info"><%= info %></div>
-      <% end %>
-      <%= if err = @flash["error"] do %>
-        <div class="alert-banner alert-error"><%= err %></div>
-      <% end %>
-
-      <%= if @payload_error do %>
-        <section class="error-card">
-          <h2 class="error-title">Snapshot unavailable</h2>
-          <p class="error-copy">
-            <strong><%= @payload_error.code %>:</strong> <%= @payload_error.message %>
-          </p>
-        </section>
-      <% else %>
-
-        <% stalled_entries = stalled_running_entries(@running) %>
-        <%= if stalled_entries != [] and not @stalled_alert_dismissed do %>
-          <div class="alert-banner">
-            <div class="alert-content">
-              <strong>Stalled agents detected:</strong>
-              <%= stalled_entries |> Enum.map(& &1.issue_identifier) |> Enum.join(", ") %>
-              <%= if length(stalled_entries) == 1 do %>
-                <% stalled_at = hd(stalled_entries).last_event_at %>
-                has been stalled for <span data-clock="elapsed" data-base-seconds={stall_seconds(stalled_at, @now)}><%= format_stall_duration(stalled_at, @now) %></span>.
-              <% else %>
-                have been stalled.
-              <% end %>
-            </div>
-            <button type="button" class="subtle-button" phx-click="dismiss_stalled_alert">Dismiss</button>
-          </div>
+      <%!-- Flashes render in a fixed stack so an arriving toast never shifts
+      the board; the stalled alert stays in flow because it is state, not a
+      notification. --%>
+      <div class="toast-stack" aria-live="polite">
+        <%= if info = @flash["info"] do %>
+          <div class="alert-banner alert-info"><%= info %></div>
         <% end %>
-
-        <%= for project <- @projects do %>
-          <% agent_settings = project_agent_settings(@agent_setting_drafts, project) %>
-          <article class={project_section_class(project, @queue_edit_ids)}>
-            <header class="project-section-header">
-              <div class="project-section-title-block">
-                <h2 class="project-section-name">
-                  <%= project.name %>
-                  <%= if Map.get(project, :paused, false) do %>
-                    <span class="chip chip--warn">Paused</span>
-                  <% end %>
-                </h2>
-                <p class="project-section-counts">
-                  <span class="numeric"><%= Map.get(project, :running_count, length(project.running)) %></span>
-                  <%= if max = Map.get(project, :max_concurrent_agents) do %>
-                    <span class="muted">/<%= max %></span>
-                  <% end %>
-                  <span class="muted">running</span>
-                  · <span class="numeric"><%= project_waiting_count(project) %></span>
-                  <span class="muted">queued</span>
-                  · <span class="numeric"><%= Map.get(project, :retrying_count, length(project.retrying)) %></span>
-                  <span class="muted">retrying</span>
-                </p>
-              </div>
-
-              <div class="project-section-controls">
-                <form
-                  phx-change="preview_field"
-                  phx-submit="set_project_concurrency"
-                  class="inline-form project-concurrency-control"
-                >
-                  <input type="hidden" name="project" value={project.name} />
-                  <input type="hidden" name="field" value={"concurrency:#{project.name}"} />
-                  <label class="inline-label" for={"concurrency-#{project.name}"}>
-                    <span class="simple-only">tasks at once</span>
-                    <span class="advanced-only">concurrency</span>
-                  </label>
-                  <input
-                    id={"concurrency-#{project.name}"}
-                    type="number"
-                    name="value"
-                    min="1"
-                    value={field_value(@field_drafts, "concurrency:#{project.name}", Map.get(project, :max_concurrent_agents) || "")}
-                    phx-debounce="400"
-                    class="inline-input inline-input--narrow"
-                    title="Max concurrent agents (cli alias: cr)"
-                  />
-                  <button type="submit" class="subtle-button">Save</button>
-                </form>
-
-                <form
-                  phx-change="preview_project_agent"
-                  phx-submit="set_project_agent"
-                  class="project-agent-form advanced-only"
-                >
-                  <input type="hidden" name="project" value={project.name} />
-                  <div class="agent-switcher">
-                    <label class="inline-label" for={"agent-#{project.name}-trigger"}>agent</label>
-                    <.model_combobox
-                      id={"agent-#{project.name}"}
-                      name="agent_kind"
-                      value={agent_settings.kind}
-                      list_id={"agent-options-#{project.name}"}
-                      options={kind_menu_options(false)}
-                      placeholder="agent"
-                    />
-                  </div>
-
-                  <div class="model-switcher">
-                    <label class="inline-label" for={"model-#{project.name}-trigger"}>model</label>
-                    <.model_combobox
-                      id={"model-#{project.name}"}
-                      name="model"
-                      value={agent_settings.model}
-                      list_id={"model-suggestions-#{project.name}"}
-                      options={model_suggestions(agent_settings.kind)}
-                      placeholder="default"
-                      title="Model override passed to the agent CLI (cli alias: model)"
-                      allow_custom={true}
-                    />
-                  </div>
-
-                  <div class="effort-switcher">
-                    <label class="inline-label" for={"effort-#{project.name}-trigger"}>effort</label>
-                    <.model_combobox
-                      id={"effort-#{project.name}"}
-                      name="effort"
-                      value={agent_settings.effort}
-                      list_id={"effort-options-#{project.name}"}
-                      options={effort_menu_options(agent_settings.kind, :default)}
-                      placeholder="default"
-                    />
-                  </div>
-
-                  <button type="submit" class="subtle-button">Set</button>
-                </form>
-
-                <%= if agent_settings.kind == "claude" do %>
-                  <form
-                    phx-change="preview_field"
-                    phx-submit="set_project_providers"
-                    class="inline-form inline-form--wide advanced-only"
-                  >
-                    <input type="hidden" name="project" value={project.name} />
-                    <input type="hidden" name="field" value={"providers:#{project.name}"} />
-                    <label class="inline-label" for={"providers-#{project.name}"}>providers</label>
-                    <input
-                      id={"providers-#{project.name}"}
-                      type="text"
-                      name="value"
-                      value={field_value(@field_drafts, "providers:#{project.name}", Enum.join(Map.get(project, :providers, []), ","))}
-                      placeholder="cv1,cz2,ck1"
-                      phx-debounce="400"
-                      class="inline-input"
-                      title="Comma-separated provider aliases (cli alias: c)"
-                    />
-                    <button type="submit" class="subtle-button">Save</button>
-                  </form>
-                <% end %>
-
-                <button
-                  type="button"
-                  class="subtle-button"
-                  phx-click="toggle_project_pause"
-                  phx-value-project={project.name}
-                >
-                  <%= if Map.get(project, :paused, false), do: "Resume", else: "Pause" %>
-                </button>
-              </div>
-            </header>
-
-            <%= if project.running == [] and project.retrying == [] and project_waiting(project) == [] do %>
-              <%= if Map.get(project, :paused, false) do %>
-                <p class="empty-state simple-only">
-                  This project is paused. Resume it when you want Cymphony to start ready issues again.
-                </p>
-              <% else %>
-                <p class="empty-state simple-only">
-                  Nothing is running right now. Cymphony is watching Linear and will start the next ready issue automatically.
-                </p>
-              <% end %>
-              <p class="empty-state advanced-only">No active sessions.</p>
-            <% end %>
-
-            <%= if project_waiting(project) != [] do %>
-              <section class="queue-board section--board">
-                <header class="queue-board-header">
-                  <span class="queue-board-label simple-only">Up next</span>
-                  <span class="queue-board-label advanced-only">Queue</span>
-                  <span class="queue-board-count numeric"><%= project_waiting_count(project) %></span>
-                  <span class="queue-board-hint">Leftmost starts next</span>
-                </header>
-                <div
-                  id={"queue-board-#{project.name}"}
-                  class="queue-board-list"
-                  phx-hook="QueueBoard"
-                  data-project={project.name}
-                  data-order={queue_order_attr(project_waiting(project))}
-                >
-                  <%= for {entry, rank} <- Enum.with_index(project_waiting(project)) do %>
-                    <% identifier = entry.issue_identifier %>
-                    <% editing? = MapSet.member?(@queue_edit_ids, {project.name, identifier}) %>
-                    <% queue_spec = queue_run_spec_settings(@queue_run_spec_drafts, project, entry) %>
-                    <article
-                      id={"queue-card-#{project.name}-#{identifier}"}
-                      class={"queue-card" <> if(rank == 0, do: " queue-card--next", else: "") <> if(editing?, do: " is-editing", else: "")}
-                      data-issue={identifier}
-                      data-issue-id={entry.issue_id}
-                      data-rank={rank}
-                      tabindex="0"
-                    >
-                      <div class="queue-card-body">
-                        <div class="queue-card-id">
-                          <%= if rank == 0 do %>
-                            <span class="queue-next-badge" title="Starts when a slot opens">Next</span>
-                          <% end %>
-                          <%= if entry.issue_url do %>
-                            <a href={entry.issue_url} target="_blank" rel="noopener" class="session-row-link queue-card-link"><%= identifier %></a>
-                          <% else %>
-                            <%= identifier %>
-                          <% end %>
-                        </div>
-                        <div class="queue-card-title"><%= entry.issue_title %></div>
-                        <button
-                          type="button"
-                          class="queue-card-edit-toggle"
-                          phx-click="toggle_queue_edit"
-                          phx-value-project={project.name}
-                          phx-value-issue={identifier}
-                        >
-                          Edit
-                        </button>
-                      </div>
-                      <%= if editing? do %>
-                        <div
-                          class="queue-card-edit"
-                          id={"queue-edit-#{project.name}-#{identifier}"}
-                          phx-hook="QueueEditPanel"
-                          phx-click-away="dismiss_overlays"
-                        >
-                          <form
-                            class="queue-edit-form"
-                            phx-change="preview_queue_run_spec"
-                            phx-submit="set_queue_run_spec"
-                          >
-                            <input type="hidden" name="project" value={project.name} />
-                            <input type="hidden" name="issue" value={identifier} />
-                            <div class="menu-field">
-                              <label class="menu-field-label" for={"queue-agent-#{identifier}-trigger"}>Harness</label>
-                              <.model_combobox
-                                id={"queue-agent-#{identifier}"}
-                                name="agent_kind"
-                                value={queue_spec.kind}
-                                list_id={"queue-agent-options-#{identifier}"}
-                                options={kind_menu_options(false)}
-                                placeholder="agent"
-                              />
-                            </div>
-                            <div class="menu-field">
-                              <label class="menu-field-label" for={"queue-model-#{identifier}-trigger"}>Model</label>
-                              <.model_combobox
-                                id={"queue-model-#{identifier}"}
-                                name="model"
-                                value={queue_spec.model}
-                                list_id={"model-suggestions-queue-#{identifier}"}
-                                options={model_suggestions(queue_spec.suggestion_kind)}
-                                placeholder="model"
-                                allow_custom={true}
-                              />
-                            </div>
-                            <div class="menu-field">
-                              <label class="menu-field-label" for={"queue-effort-#{identifier}-trigger"}>Effort</label>
-                              <.model_combobox
-                                id={"queue-effort-#{identifier}"}
-                                name="effort"
-                                value={queue_spec.effort}
-                                list_id={"queue-effort-options-#{identifier}"}
-                                options={effort_menu_options(queue_spec.suggestion_kind, false)}
-                                placeholder="effort"
-                              />
-                            </div>
-                            <button type="submit" class="subtle-button subtle-button--accent queue-edit-pin">Pin</button>
-                          </form>
-                        </div>
-                      <% end %>
-                    </article>
-                  <% end %>
-                </div>
-              </section>
-            <% end %>
-
-            <%= if project.running != [] do %>
-              <div class="session-row-list">
-                <%= for entry <- project.running do %>
-                  <% expanded? = MapSet.member?(@expanded_issue_ids, entry.issue_identifier) %>
-                  <article class={"session-row" <> if(expanded?, do: " session-row--expanded", else: "")}>
-                    <div class="session-row-summary">
-                      <button
-                        type="button"
-                        class="session-row-disclosure"
-                        phx-click="toggle_logs"
-                        phx-value-issue={entry.issue_identifier}
-                        aria-label={if expanded?, do: "Collapse", else: "Expand"}
-                      >
-                        <%= if expanded?, do: "▾", else: "▸" %>
-                      </button>
-
-                      <div class="session-row-id">
-                        <%= if entry.issue_url do %>
-                          <a href={entry.issue_url} target="_blank" rel="noopener" class="session-row-link"><%= entry.issue_identifier %></a>
-                        <% else %>
-                          <%= entry.issue_identifier %>
-                        <% end %>
-                      </div>
-
-                      <div class="session-row-title" title={entry.issue_title || entry.last_message || ""}>
-                        <%= entry.issue_title || entry.last_message || "" %>
-                      </div>
-
-                      <div class="session-row-chips">
-                        <span class={chip_state_class(entry.state)}><%= entry.state %></span>
-                        <%= if entry.stalled do %>
-                          <span class="chip chip--danger">Stalled</span>
-                        <% end %>
-                        <%= if priority_label = priority_label(entry.priority) do %>
-                          <span class={chip_priority_class(entry.priority)}><%= priority_label %></span>
-                        <% end %>
-                        <%= if entry.provider do %>
-                          <span class="chip chip--accent advanced-only"><%= entry.provider %></span>
-                        <% end %>
-                        <%= if Map.get(entry, :agent_kind) do %>
-                          <span class="chip chip--agent advanced-only"><%= entry.agent_kind %></span>
-                        <% end %>
-                        <%= if Map.get(entry, :model) do %>
-                          <span class="chip chip--muted chip--truncate advanced-only" title={entry.model}><%= entry.model %></span>
-                        <% end %>
-                        <%= if Map.get(entry, :effort) do %>
-                          <span class="chip chip--muted advanced-only"><%= entry.effort %></span>
-                        <% end %>
-                        <span class="chip chip--muted advanced-only"><%= entry.worker_host || "local" %></span>
-                      </div>
-
-                      <div class="session-row-runtime numeric">
-                        <span data-clock="elapsed" data-base-seconds={runtime_seconds_from_started_at(entry.started_at, @now)}><%= format_runtime_seconds(runtime_seconds_from_started_at(entry.started_at, @now)) %></span>
-                      </div>
-
-                      <div class="session-row-tokens numeric" title={"In #{format_int(entry.tokens.input_tokens)} / Out #{format_int(entry.tokens.output_tokens)}"}>
-                        <%= format_int(entry.tokens.total_tokens) %><%= if tps = format_session_tps(entry) do %><span class="tps"> · <%= tps %> t/s</span><% end %>
-                      </div>
-
-                      <button
-                        type="button"
-                        class="subtle-button danger"
-                        phx-click="kill_issue"
-                        phx-value-issue={entry.issue_identifier}
-                      >
-                        <span class="simple-only">Stop</span>
-                        <span class="advanced-only">Kill</span>
-                      </button>
-                    </div>
-
-                    <%= if expanded? do %>
-                      <div class="session-row-detail">
-                        <p class="autonomy-note simple-only">
-                          Cymphony is continuing this task on its own. You can open the Linear issue for context or stop this run at any time.
-                        </p>
-                        <div class="session-row-detail-grid">
-                          <div class="session-stat advanced-only">
-                            <span class="session-stat-label">Agent</span>
-                            <span class="session-stat-value"><%= Map.get(entry, :agent_kind) || "claude" %></span>
-                          </div>
-                          <div class="session-stat advanced-only">
-                            <span class="session-stat-label">Model</span>
-                            <span class="session-stat-value"><%= Map.get(entry, :model) || "default" %></span>
-                          </div>
-                          <div class="session-stat advanced-only">
-                            <span class="session-stat-label">Effort</span>
-                            <span class="session-stat-value"><%= Map.get(entry, :effort) || "default" %></span>
-                          </div>
-                          <div class="session-stat advanced-only">
-                            <span class="session-stat-label">Provider</span>
-                            <span class="session-stat-value"><%= entry.provider || "default" %></span>
-                          </div>
-                          <div class="session-stat advanced-only">
-                            <span class="session-stat-label">Tokens</span>
-                            <span class="session-stat-value numeric">
-                              <%= format_int(entry.tokens.total_tokens) %>
-                              <span class="muted small">(in <%= format_int(entry.tokens.input_tokens) %> / out <%= format_int(entry.tokens.output_tokens) %>)</span>
-                            </span>
-                          </div>
-                          <div class="session-stat advanced-only">
-                            <span class="session-stat-label">Turn</span>
-                            <span class="session-stat-value numeric"><%= entry.turn_count %></span>
-                          </div>
-                          <div class="session-stat advanced-only">
-                            <span class="session-stat-label">Session</span>
-                            <span class="session-stat-value">
-                              <%= if entry.session_id do %>
-                                <button
-                                  type="button"
-                                  class="subtle-button"
-                                  data-label="Copy ID"
-                                  data-copy={entry.session_id}
-                                  onclick="navigator.clipboard.writeText(this.dataset.copy); this.textContent = 'Copied'; clearTimeout(this._copyTimer); this._copyTimer = setTimeout(() => { this.textContent = this.dataset.label }, 1200);"
-                                >Copy ID</button>
-                              <% else %>
-                                <span class="muted">n/a</span>
-                              <% end %>
-                            </span>
-                          </div>
-                          <div class="session-stat session-stat--wide advanced-only">
-                            <span class="session-stat-label">Workspace</span>
-                            <span class="session-stat-value">
-                              <%= if entry.workspace_path do %>
-                                <span class="mono workspace-path"><%= entry.workspace_path %></span>
-                                <button
-                                  type="button"
-                                  class="subtle-button"
-                                  data-label="Copy"
-                                  data-copy={entry.workspace_path}
-                                  onclick="navigator.clipboard.writeText(this.dataset.copy); this.textContent = 'Copied'; clearTimeout(this._copyTimer); this._copyTimer = setTimeout(() => { this.textContent = this.dataset.label }, 1200);"
-                                >Copy</button>
-                              <% else %>
-                                <span class="muted">n/a</span>
-                              <% end %>
-                            </span>
-                          </div>
-                          <div class="session-stat session-stat--wide restart-with advanced-only">
-                            <span class="session-stat-label">Restart with</span>
-                            <% session_spec = session_run_spec_settings(@issue_run_spec_drafts, entry) %>
-                            <form
-                              phx-change="preview_issue_run_spec"
-                              phx-submit="set_issue_run_spec"
-                              class="restart-form"
-                            >
-                              <input type="hidden" name="issue" value={entry.issue_identifier} />
-                              <div class="agent-switcher">
-                                <label class="inline-label" for={"restart-agent-#{entry.issue_identifier}-trigger"}>
-                                  Harness
-                                </label>
-                                <.model_combobox
-                                  id={"restart-agent-#{entry.issue_identifier}"}
-                                  name="agent_kind"
-                                  value={session_spec.kind}
-                                  list_id={"restart-agent-options-#{entry.issue_identifier}"}
-                                  options={kind_menu_options(true)}
-                                  placeholder="keep"
-                                  title="Harness"
-                                />
-                              </div>
-                              <%= if session_spec.suggestion_kind == "claude" do %>
-                                <div class="provider-switcher">
-                                  <label class="inline-label" for={"restart-provider-#{entry.issue_identifier}"}>
-                                    Provider
-                                  </label>
-                                  <input
-                                    id={"restart-provider-#{entry.issue_identifier}"}
-                                    type="text"
-                                    name="provider"
-                                    value={session_spec.provider}
-                                    placeholder="provider"
-                                    phx-debounce="400"
-                                    class="inline-input inline-input--model"
-                                    title="Provider auth alias (empty = keep resolved)"
-                                  />
-                                </div>
-                              <% end %>
-                              <div class="model-switcher">
-                                <label class="inline-label" for={"restart-model-#{entry.issue_identifier}-trigger"}>
-                                  Model
-                                </label>
-                                <.model_combobox
-                                  id={"restart-model-#{entry.issue_identifier}"}
-                                  name="model"
-                                  value={session_spec.model}
-                                  list_id={"model-suggestions-session-#{entry.issue_identifier}"}
-                                  options={model_suggestions(session_spec.suggestion_kind)}
-                                  placeholder="model"
-                                  title="Model passed to the agent CLI (empty = keep resolved)"
-                                  allow_custom={true}
-                                />
-                              </div>
-                              <div class="effort-switcher">
-                                <label class="inline-label" for={"restart-effort-#{entry.issue_identifier}-trigger"}>
-                                  Effort
-                                </label>
-                                <.model_combobox
-                                  id={"restart-effort-#{entry.issue_identifier}"}
-                                  name="effort"
-                                  value={session_spec.effort}
-                                  list_id={"restart-effort-options-#{entry.issue_identifier}"}
-                                  options={effort_menu_options(session_spec.suggestion_kind, :keep)}
-                                  placeholder="keep"
-                                  title="Reasoning effort (keep = unchanged)"
-                                />
-                              </div>
-                              <button type="submit" class="subtle-button" title="Kill this session and restart it immediately with these overrides">Restart</button>
-                            </form>
-                            <span class="muted small">Restart kills the session and redispatches with these overrides.</span>
-                          </div>
-                        </div>
-
-                        <%= if entry.last_event do %>
-                          <div class="session-row-activity">
-                            <span class="session-stat-label simple-only">Latest update</span>
-                            <span class={log_event_badge_class(entry.last_event) <> " advanced-only"}><%= entry.last_event %></span>
-                            <span class="session-activity-message"><%= entry.last_message || "n/a" %></span>
-                            <%= if entry.last_event_at do %>
-                              <span class="mono numeric muted small advanced-only">@ <%= entry.last_event_at %></span>
-                            <% end %>
-                          </div>
-                        <% end %>
-
-                        <%= if entry.log_events == [] do %>
-                          <p class="empty-state advanced-only">No log events yet.</p>
-                        <% else %>
-                          <ul class="log-list advanced-only">
-                            <%= for log <- entry.log_events do %>
-                              <li class="log-event">
-                                <span class="log-event-at"><%= format_log_at(log.at) %></span>
-                                <span class={log_event_badge_class(log.event)}><%= log.event %></span>
-                                <span class="log-event-message"><%= format_log_message(log.message) %></span>
-                              </li>
-                            <% end %>
-                          </ul>
-                        <% end %>
-
-                        <% tail = Map.get(@harness_tails, entry.issue_identifier, %{issue_id: Map.get(entry, :issue_id), last_seq: 0, lines: [], follow: true}) %>
-                        <% follow? = Map.get(tail, :follow, true) %>
-                        <section
-                          id={"harness-tail-" <> entry.issue_identifier}
-                          class="harness-tail advanced-only"
-                          phx-hook="HarnessTail"
-                          data-follow={if follow?, do: "true", else: "false"}
-                        >
-                          <header class="harness-tail-header">
-                            <span class="harness-tail-title">Harness</span>
-                            <button type="button" class="subtle-button" phx-click="toggle_harness_follow" phx-value-issue={entry.issue_identifier}>
-                              <%= if follow?, do: "Following", else: "Paused" %>
-                            </button>
-                          </header>
-                          <pre class="harness-tail-body"><%= for line <- Map.get(tail, :lines, []) do %><div class="harness-tail-line" data-seq={line_seq(line)}><%= line_text(line) %></div><% end %></pre>
-                        </section>
-                      </div>
-                    <% end %>
-                  </article>
-                <% end %>
-              </div>
-            <% end %>
-
-            <%= if project.retrying != [] do %>
-              <div class="retry-row-list">
-                <p class="subsection-label simple-only">Waiting to try again</p>
-                <p class="subsection-label advanced-only">Retry queue</p>
-                <%= for entry <- project.retrying do %>
-                  <article class="retry-row">
-                    <div class="retry-row-id">
-                      <%= if entry.issue_url do %>
-                        <a href={entry.issue_url} target="_blank" rel="noopener" class="session-row-link"><%= entry.issue_identifier %></a>
-                      <% else %>
-                        <%= entry.issue_identifier %>
-                      <% end %>
-                    </div>
-                    <div class="retry-row-attempt">
-                      <span class="chip chip--warn">Attempt <%= entry.attempt %></span>
-                      <%= if entry.due_at do %>
-                        <span class="muted">due <span data-clock="due" data-remaining-ms={retry_remaining_ms(entry.due_at, @now)}><%= format_retry_countdown(entry.due_at, @now) %></span></span>
-                      <% end %>
-                      <%= if Map.get(entry, :held) do %>
-                        <span class="muted">held while paused</span>
-                      <% end %>
-                    </div>
-                    <div class="retry-row-error advanced-only">
-                      <%= if entry.error do %>
-                        <span class="muted small mono"><%= String.slice(to_string(entry.error), 0, 120) %></span>
-                      <% end %>
-                    </div>
-                    <span class="retry-row-guidance simple-only">Cymphony will retry automatically.</span>
-                    <button
-                      type="button"
-                      class="subtle-button"
-                      phx-click="retry_issue"
-                      phx-value-issue={entry.issue_identifier}
-                    >
-                      Retry now
-                    </button>
-                  </article>
-                <% end %>
-              </div>
-            <% end %>
-          </article>
+        <%= if err = @flash["error"] do %>
+          <div class="alert-banner alert-error"><%= err %></div>
         <% end %>
-
-        <%= if @completions != [] do %>
-          <section class="section-card section--completions">
-            <div class="section-header">
-              <div>
-                <h2 class="section-title">Recent completions</h2>
-                <p class="section-copy simple-only"><%= length(@completions) %> recently finished tasks.</p>
-                <p class="section-copy advanced-only">Last <%= length(@completions) %> agent runs. Cleared on daemon restart.</p>
-              </div>
-              <button
-                type="button"
-                class="subtle-button"
-                data-collapse-toggle="completions"
-                aria-label="Expand section"
-                aria-expanded="false"
-              >▸</button>
-            </div>
-
-            <div class="session-row-list">
-              <%= for entry <- @completions do %>
-                <article class="session-row session-row--completed">
-                  <div class="session-row-summary">
-                    <span class="session-row-disclosure" aria-hidden="true">✓</span>
-                    <div class="session-row-id"><%= entry.issue_identifier %></div>
-                    <div class="session-row-title muted small">
-                      <%= if Map.get(entry, :project_name), do: entry.project_name, else: "" %>
-                    </div>
-                    <div class="session-row-chips">
-                      <span class="chip chip--ok">Done</span>
-                      <%= if Map.get(entry, :agent_kind) do %>
-                        <span class="chip chip--agent advanced-only"><%= entry.agent_kind %></span>
-                      <% end %>
-                      <%= if Map.get(entry, :model) do %>
-                        <span class="chip chip--muted chip--truncate advanced-only" title={entry.model}><%= entry.model %></span>
-                      <% end %>
-                      <span class="chip chip--muted advanced-only"><%= entry.worker_host || "local" %></span>
-                    </div>
-                    <div class="session-row-runtime numeric">
-                      <%= format_runtime_seconds(entry.runtime_seconds || 0) %>
-                    </div>
-                    <div class="session-row-tokens numeric">
-                      <%= format_int(entry.total_tokens) %>
-                    </div>
-                    <span class="muted small mono">
-                      <%= if entry.ended_at, do: entry.ended_at, else: "" %>
-                    </span>
-                  </div>
-                </article>
-              <% end %>
-            </div>
-          </section>
-        <% end %>
-      <% end %>
+      </div>
     </section>
     </div>
     """
@@ -2046,6 +2087,15 @@ defmodule CymphonyElixirWeb.DashboardLive do
   end
 
   defp non_id_char_regex, do: Regex.compile!("[^A-Za-z0-9_-]+")
+
+  # Anchor target for a project section (and, in Part B, the rail link that
+  # jumps to it). Case is preserved so two projects differing only by case keep
+  # distinct ids; only characters an HTML id cannot carry are folded.
+  defp project_dom_id(name) do
+    name
+    |> to_string()
+    |> String.replace(non_id_char_regex(), "-")
+  end
 
   defp orchestrator do
     Endpoint.config(:orchestrator) || CymphonyElixir.Orchestrator

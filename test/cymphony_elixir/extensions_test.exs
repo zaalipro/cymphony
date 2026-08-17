@@ -1182,6 +1182,28 @@ defmodule CymphonyElixir.ExtensionsTest do
       assert dashboard_css =~ ".combobox.combobox--open"
       assert dashboard_css =~ "--z-combobox: 80"
       assert dashboard_css =~ "z-index: var(--z-combobox)"
+
+      # v3 shell: rail + main column, the instrument band, and the toast stack
+      # that keeps a flash out of the document flow.
+      assert dashboard_css =~ ".dashboard-shell {"
+      assert dashboard_css =~ ".side-rail {"
+      assert dashboard_css =~ ".instrument-band {"
+      assert dashboard_css =~ ".toast-stack {"
+
+      # Custom-property NAMES the QueueBoard hook resolves at runtime through
+      # getComputedStyle. Values are free to change; a rename breaks drag.
+      for token <- [
+            "--dur-flip:",
+            "--dur-mid:",
+            "--dur-fast:",
+            "--ease:",
+            "--ease-spring:",
+            "--z-drag:",
+            "--shadow-drag:",
+            "--accent-soft:"
+          ] do
+        assert dashboard_css =~ token
+      end
     end
 
     test "pause_dispatch sends :pause to the orchestrator" do
