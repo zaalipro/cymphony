@@ -858,12 +858,18 @@ defmodule CymphonyElixirWeb.DashboardLive do
           the section-visibility pref CSS keys off them. --%>
           <div class="instrument-band command-bar-row--metrics section--metrics">
             <div class="metric-pill">
-              <span class="metric-pill-label simple-only">Working</span>
+              <%!-- Simple mode used to say "Working" here and "Waiting" below,
+              which put three wait-words on one screen: the rail counts
+              "RUNNING · QUEUED", this cell counts retries, and the section
+              underneath is "Waiting to try again". One word per concept —
+              "Running" matches the rail, "To retry" says what the count is.
+              The count mapping (running / retrying) is unchanged. --%>
+              <span class="metric-pill-label simple-only">Running</span>
               <span class="metric-pill-label advanced-only">Run</span>
               <span class="metric-pill-value numeric"><%= @counts.running %></span>
             </div>
             <div class="metric-pill">
-              <span class="metric-pill-label simple-only">Waiting</span>
+              <span class="metric-pill-label simple-only">To retry</span>
               <span class="metric-pill-label advanced-only">Retry</span>
               <span class="metric-pill-value numeric"><%= @counts.retrying %></span>
             </div>
@@ -898,7 +904,17 @@ defmodule CymphonyElixirWeb.DashboardLive do
               every payload load, so reading it here marked the template dirty on
               every load and an idle board shipped a diff per poll. --%>
               <span class="metric-pill-value numeric"><%= @throughput_tps %></span>
-              <span class="metric-pill-spark numeric"><%= @throughput_spark %></span>
+              <%!-- A freshly mounted board has fewer than two token samples, so
+              the sparkline string is empty and the tile read as a bare "0" with
+              nothing beside it — broken chrome on first impression. Show a flat
+              baseline in `--ink-faint` instead, the same quiet treatment the
+              States / Kinds cells give an empty breakdown. The placeholder is a
+              literal, so it costs no per-load churn. --%>
+              <%= if @throughput_spark == "" do %>
+                <span class="metric-pill-spark metric-pill-placeholder numeric">▁▁▁▁▁▁▁▁▁▁▁▁</span>
+              <% else %>
+                <span class="metric-pill-spark numeric"><%= @throughput_spark %></span>
+              <% end %>
             </div>
             <div class="metric-pill metric-pill--states section--states advanced-only">
               <span class="metric-pill-label">States</span>
@@ -1928,6 +1944,11 @@ defmodule CymphonyElixirWeb.DashboardLive do
           >
             <input type="hidden" name="project" value={@project_name} />
             <input type="hidden" name="issue" value={@entry.issue_identifier} />
+            <%!-- The panel is fixed-positioned and only the highlighted card
+            behind it says which issue is being pinned. Name it inside the
+            popover so the edit stays legible if QueueEditPanel flips the panel
+            above the card or the operator scrolls mid-edit. --%>
+            <span class="menu-field-label">Pin next run · <span class="mono"><%= @entry.issue_identifier %></span></span>
             <div class="menu-field">
               <label class="menu-field-label" for={"queue-agent-#{@entry.issue_identifier}-trigger"}>Harness</label>
               <.model_combobox

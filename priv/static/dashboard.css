@@ -512,11 +512,30 @@ html[data-ui-mode="advanced"] .simple-only {
   box-shadow: inset -3px -1px 0 1px currentColor;
 }
 
+/* "Follow the OS" is a monitor, not an arrow: the previous clip-path polygon
+   drew an up-arrow that read as upload/eject beside a legible sun and moon.
+   Screen (::before) is a hairline rectangle centered by the button's flex
+   centering; the stand (::after) is absolutely positioned so it stays out of
+   that flex flow and sits flush under the screen's bottom edge. */
 .theme-toggle-button[data-theme-set="system"]::before {
   width: 12px;
-  height: 12px;
+  height: 8px;
+  background: transparent;
+  border: 1.5px solid currentColor;
+  border-radius: 2px;
+  clip-path: none;
+}
+
+.theme-toggle-button[data-theme-set="system"]::after {
+  content: "";
+  display: block;
+  position: absolute;
+  bottom: 5px;
+  left: 50%;
+  width: 6px;
+  height: 2px;
   background: currentColor;
-  clip-path: polygon(50% 0, 100% 38%, 82% 38%, 82% 100%, 18% 100%, 18% 38%, 0 38%);
+  transform: translateX(-50%);
 }
 
 .theme-toggle-button:hover {
@@ -663,12 +682,19 @@ html[data-ui-mode="advanced"] .mode-switch-button[data-mode-set="advanced"] {
   background: var(--accent-fade);
 }
 
+/* `flex: 1 0 auto` is what keeps the band reading as a cockpit strip: at 1600px
+   with rate limits present the last two cells wrap onto a second row, and
+   without growth that row was a left-packed stub leaving ~60% of the panel
+   empty (and the 160px accent rule underlined only the first wrapped cell like
+   a selected-tab indicator). Growing every cell makes each row fill
+   edge-to-edge at any wrap point, idle boards included. */
 .metric-pill {
   display: flex;
   flex-direction: column;
   justify-content: center;
   gap: 2px;
   padding: var(--space-3) var(--space-4);
+  flex: 1 0 auto;
   min-width: 96px;
   border: 0;
   border-radius: 0;
@@ -716,15 +742,20 @@ html[data-ui-mode="advanced"] .mode-switch-button[data-mode-set="advanced"] {
 }
 
 /* Ops cells carry several detail spans; let them flow inline under the label
-   instead of stacking and stretching the whole band. */
+   instead of stacking and stretching the whole band.
+   `justify-content` has to be reset: the base cell centers on a *column* main
+   axis (vertical centering), and flipping to `row wrap` here turned that into
+   horizontal centering, so every wrapped line floated mid-cell — "credits
+   128.5" centered under LIMITS and "next 12s" indented off the POLLING label's
+   left edge. No `max-width`: the cell now grows with the rest of the band. */
 .metric-pill--ops {
   display: flex;
   flex-flow: row wrap;
   align-items: baseline;
   align-content: center;
+  justify-content: flex-start;
   column-gap: var(--space-2);
   row-gap: 2px;
-  max-width: 360px;
 }
 
 .metric-pill--ops .metric-pill-label { flex: 1 0 100%; }
@@ -1355,9 +1386,16 @@ form.queue-edit-form {
 /* The title is the operator's primary scent: with eight tags on a busy row the
    `min-width: 0` version collapsed to "…neve…" while the chip cluster kept
    ~500px and still orphaned one chip onto a second line. A floor of 200px keeps
-   readable words and makes the chips wrap as a balanced right-aligned block. */
+   readable words and makes the chips wrap as a balanced right-aligned block.
+   The basis is `0`, not `auto`: with an `auto` basis the title's own long text
+   is its basis, so flex shrink was distributed proportionally onto the chip
+   cluster and rows carrying a worker host still orphaned one tag onto a second
+   line (~14px taller, breaking the grid's row rhythm) while the row had room.
+   At basis 0 the title takes only leftover space and the chips wrap only when
+   the row is genuinely narrow. The header cell shares the class, so the column
+   alignment moves with it. */
 .session-row-title {
-  flex: 1 1 auto;
+  flex: 1 1 0;
   min-width: 200px;
   color: var(--ink-soft);
   white-space: nowrap;
@@ -2008,9 +2046,14 @@ input[type="radio"] { accent-color: var(--accent); }
 }
 
 /* Long model names (gemini-3.7-flash-high) have to truncate before they push
-   the tag cluster into a second line and eat the title. */
+   the tag cluster into a second line and eat the title. `display` must be
+   overridden: `.chip` is `inline-flex`, `text-overflow` never applies to a flex
+   container, and the clipped name rendered as a bare "gemini-3.7-flash-" that
+   reads like a real model. `inline-block` blockifies the same way as a flex
+   item, so the row layout is unchanged and the ellipsis finally paints. */
 .chip--truncate {
-  max-width: 110px;
+  display: inline-block;
+  max-width: 120px;
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;

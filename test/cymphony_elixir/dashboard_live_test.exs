@@ -1134,6 +1134,35 @@ defmodule CymphonyElixir.DashboardLiveTest do
     assert has_element?(view, ".metric-pill--kinds .metric-pill-value.metric-pill-placeholder", "—")
   end
 
+  test "a fresh board's Tput cell shows a flat baseline instead of an empty sparkline" do
+    start_dashboard()
+
+    {:ok, view, _html} = live(build_conn(), "/")
+
+    # Under two token samples there is no rate to draw, and an empty string left
+    # the cell reading as a bare "0" — the same broken-chrome impression the
+    # States/Kinds em dash exists to avoid.
+    assert has_element?(
+             view,
+             ".metric-pill--throughput .metric-pill-spark.metric-pill-placeholder",
+             "▁▁▁▁▁▁▁▁▁▁▁▁"
+           )
+  end
+
+  test "the simple band names the running count once and calls retries retries" do
+    start_dashboard()
+
+    {:ok, _view, html} = live(build_conn(), "/")
+
+    # The rail already counts `running · queued`. A band that said "Working" put
+    # two words on one count, and its "Waiting" meant *retrying* while the rail's
+    # meant *queued*. Counts are unchanged; only the words are.
+    assert html =~ ~s(<span class="metric-pill-label simple-only">Running</span>)
+    assert html =~ ~s(<span class="metric-pill-label simple-only">To retry</span>)
+    refute html =~ ~s(<span class="metric-pill-label simple-only">Working</span>)
+    refute html =~ ~s(<span class="metric-pill-label simple-only">Waiting</span>)
+  end
+
   test "populated States/Kinds cells keep the breakdown text and no placeholder class" do
     start_dashboard()
 

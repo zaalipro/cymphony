@@ -1975,9 +1975,16 @@ Enablement (extension):
   `command-bar-row--metrics section--metrics` class tokens because the section-visibility prefs
   key off them, and it stays inside the `unless payload_error` guard. Cells are hairline-divided
   (`.metric-pill`, no pill chrome) with 26px / weight-300 tabular numerals. A nonzero Retry count
-  is not colored in the band; the retry rows carry the amber. A breakdown cell whose map has no
-  positive count (States / Kinds on an idle board) renders `—` and carries
-  `.metric-pill-placeholder` (`--ink-faint`) on its value span; an empty value string leaves a
+  is not colored in the band; the retry rows carry the amber. Every cell grows (`flex: 1 0 auto`)
+  so a band that wraps — rate limits present at 1600px push the ops cells onto a second row —
+  fills each row edge-to-edge; a stub row under a full one reads as an unfinished panel and leaves
+  the 160px accent rule underlining a single cell like a tab indicator. `.metric-pill--ops` carries
+  no `max-width` for the same reason, and must reset `justify-content: flex-start` because it flips
+  the base cell's main axis from column to row (the inherited `center` then centers every wrapped
+  detail line instead of aligning it under the label). A cell with nothing to report renders a
+  static string and carries `.metric-pill-placeholder` (`--ink-faint`) on its value span — `—` for
+  a breakdown map with no positive count (States / Kinds on an idle board), a flat `▁` baseline for
+  the Tput sparkline while there are fewer than two token samples; an empty value string leaves a
   dead label-only compartment in the hero band and reads as broken chrome.
 - Running rows open with `div.session-grid-head.advanced-only[aria-hidden=true]`, a column-header
   row whose cells reuse the body column classes (`.session-row-title`, `.session-row-chips`,
@@ -1985,9 +1992,14 @@ Enablement (extension):
   and its column with no extra selectors. The row layout is flex with fixed `flex-basis` cells,
   never `grid-template-columns`: a `display:none` column must not leave a hole or shift the
   remaining cells. `.session-row-title` keeps a `min-width` floor (the title is the primary
-  scent; it must not collapse to an ellipsis while the tag cluster keeps hundreds of pixels),
-  and `.chip--truncate` caps long model names so the tags wrap as a balanced block instead of
-  orphaning one tag onto a second line. The disclosure caret is CSS geometry on `.session-row-disclosure`; the server
+  scent; it must not collapse to an ellipsis while the tag cluster keeps hundreds of pixels) over
+  a `flex-basis` of `0` (with `auto` the title's own text is the basis, so shrink lands
+  proportionally on the tag cluster and a row carrying a worker host orphans one tag onto a second
+  line while the row still has room), and `.chip--truncate` caps long model names so the tags wrap
+  as a balanced block instead of orphaning one tag onto a second line. `.chip--truncate` must also
+  override `display` to `inline-block`: `.chip` is `inline-flex` and `text-overflow` never applies
+  to a flex container, so the cap alone clipped `gemini-3.7-flash-high` to a plausible-looking
+  `gemini-3.7-flash-` with no ellipsis. The disclosure caret is CSS geometry on `.session-row-disclosure`; the server
   renders no `▸`/`▾` glyph in the running rows.
 - Queue cards carry `data-rank-label` (1-based, zero-padded) alongside `data-rank` (0-based,
   rewritten by the drag hook). CSS renders the label as a decorative numeral; the hook does not
@@ -2121,10 +2133,15 @@ Enablement (extension):
   `preview_add_project`. Do not delete persisted providers when the field is hidden.
   Session provider chips and the read-only Provider stat stay visible for every kind.
 - Per-project header counts: `N/M running · Q queued · R retrying`. Advanced metrics add
-  `.metric-pill--queue.section--queue` = `counts.waiting`. The simple Waiting pill stays
-  `counts.retrying`.
+  `.metric-pill--queue.section--queue` = `counts.waiting`. Simple mode labels the first two band
+  cells **Running** (`counts.running`) and **To retry** (`counts.retrying`) — the mappings are
+  unchanged, but the rail already says `running · queued`, so a band that said "Working" and
+  "Waiting" put two words on the running count and made "waiting" mean *retrying* here and
+  *queued* one column to the left.
 - Theme / settings glyphs are CSS geometry only on `.theme-toggle-button` and
-  `[data-drawer-toggle]` (no ☀ / ☾ / ⌂ / ⚙ text).
+  `[data-drawer-toggle]` (no ☀ / ☾ / ⌂ / ⚙ text). The `system` button draws a monitor — a
+  hairline `::before` rectangle plus an absolutely positioned `::after` stand — not an arrow
+  outline, which reads as upload/eject beside a sun and a moon.
 - Display preferences include `{Board, board}`. Hide the board with
   `html[data-hidden-sections~=board] .section--board { display: none }`.
 - Waiting board (`section.queue-board.section--board`) sits inside
@@ -2142,8 +2159,11 @@ Enablement (extension):
   No Linear priority / state / agent chips. Edit is not an alert:
   `div.queue-card-edit` when `{project, id}` is in assign `:queue_edit_ids`;
   `form.queue-edit-form` (`phx-change=preview_queue_run_spec`,
-  `phx-submit=set_queue_run_spec`); hidden `project` + `issue`;
-  comboboxes for `agent_kind` / `model` / `effort` preselect the card pin when
+  `phx-submit=set_queue_run_spec`); hidden `project` + `issue`; a
+  `span.menu-field-label` header line — `Pin next run · <identifier>` with the
+  identifier in `.mono` — before the first `.menu-field`, so the fixed-position
+  sheet names its subject when it is flipped above the card or the board
+  scrolls; comboboxes for `agent_kind` / `model` / `effort` preselect the card pin when
   set, otherwise the project header agent/model/effort (no `keep` blank);
   submit `Pin`; no provider. Pin persists with the queue and does **not** kill
   anything. Empty / `"keep"` in the pin payload still skip a field (API compat).

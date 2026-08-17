@@ -1033,6 +1033,12 @@ defmodule CymphonyElixir.ExtensionsTest do
       assert has_element?(view, "#queue-effort-LLM-51")
       refute has_element?(view, ~s|form.queue-edit-form input[name="provider"]|)
 
+      # The sheet is fixed to the viewport and can be flipped above its card, so
+      # it names the issue it pins instead of relying on the card behind it.
+      pin_form = view |> element("form.queue-edit-form") |> render()
+      assert pin_form =~ "Pin next run"
+      assert pin_form =~ ~s(<span class="mono">LLM-51</span>)
+
       render_submit(view, "set_queue_run_spec", %{
         "project" => "default",
         "issue" => "LLM-51",
@@ -1276,6 +1282,48 @@ defmodule CymphonyElixir.ExtensionsTest do
       assert dashboard_css =~ ".side-rail {"
       assert dashboard_css =~ ".instrument-band {"
       assert dashboard_css =~ ".toast-stack {"
+
+      # Band cells grow: with rate limits present the band wraps at 1600px, and
+      # without growth the second row was a left-packed stub under a full row —
+      # ~60% empty panel, with the 160px accent rule underlining one cell like a
+      # tab indicator. The ops cell drops its max-width for the same reason and
+      # must reset the base cell's `center` (that centering is vertical on the
+      # column axis; `--ops` flips the main axis to a row, where it centered
+      # every wrapped detail line off the label's left edge).
+      assert dashboard_css =~ "  flex: 1 0 auto;\n  min-width: 96px;"
+      refute dashboard_css =~ "max-width: 360px;"
+
+      assert dashboard_css =~ """
+             .metric-pill--ops {
+               display: flex;
+               flex-flow: row wrap;
+               align-items: baseline;
+               align-content: center;
+               justify-content: flex-start;
+             """
+
+      # `.chip` is inline-flex and `text-overflow` never applies to a flex
+      # container, so the cap alone clipped "gemini-3.7-flash-high" to a
+      # plausible-looking "gemini-3.7-flash-" with no ellipsis.
+      assert dashboard_css =~ """
+             .chip--truncate {
+               display: inline-block;
+               max-width: 120px;
+             """
+
+      # Basis 0, not auto: with an auto basis the title's own text is the basis,
+      # so shrink landed proportionally on the tag cluster and a row carrying a
+      # worker host orphaned one tag onto a second line while it still had room.
+      assert dashboard_css =~ """
+             .session-row-title {
+               flex: 1 1 0;
+               min-width: 200px;
+             """
+
+      # "Follow the OS" is a monitor (hairline screen + stand), not the old
+      # arrow polygon, which read as upload/eject beside a sun and a moon.
+      assert dashboard_css =~ ~s|.theme-toggle-button[data-theme-set="system"]::after|
+      refute dashboard_css =~ "clip-path: polygon(50% 0, 100% 38%"
 
       # Light theme ships two ways: an explicit choice and — new in v3 — the OS
       # preference when no choice was made. The `:not([data-theme])` guard keeps
