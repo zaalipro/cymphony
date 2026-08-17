@@ -6,9 +6,27 @@ defmodule CymphonyElixir.Agent.Antigravity do
   Resume uses `--conversation <id>` (never `-c` / `--continue`, which resume the
   last session in cwd and would cross-pollute issues). MCP flags are not
   invented; operators can pass extras via `settings.extra_args`.
+
+  Two flags are always built in because the CLI is unusable without them:
+
+  * `--new-project` — without it `agy` ignores the cwd it was launched in and
+    sandboxes itself into `~/.gemini/antigravity-cli/scratch`, so every run
+    wrote its code outside the per-issue workspace and no PR could ever be
+    produced. It is appended to fresh runs *and* to `--conversation` resumes
+    (verified safe on both). `settings.new_project == false` is the escape
+    hatch; any other value (including a missing key) keeps the flag.
+  * `--log-file <workspace>/agy.log` — stdout only ever carries the generic
+    "Agent execution terminated due to error."; the real cause (HTTP 400/429,
+    auth failures) goes to the CLI's own log file, which otherwise lands in
+    `~/.gemini/antigravity-cli/log/` under a timestamp nobody can correlate to
+    an issue. Pointing it at the session workspace puts the diagnosis next to
+    the run. The path is used verbatim, so under SSH remoting it names the
+    remote workspace.
   """
 
   @behaviour CymphonyElixir.Agent
+
+  @session_log_file "agy.log"
 
   @impl true
   def default_command, do: "agy"
@@ -41,6 +59,8 @@ defmodule CymphonyElixir.Agent.Antigravity do
       |> maybe_add_bool_flag(Map.get(settings, :skip_permissions) == true, "--dangerously-skip-permissions")
       |> maybe_add_bool_flag(Map.get(settings, :sandbox) == true, "--sandbox")
       |> maybe_add_print_timeout(Map.get(settings, :print_timeout))
+      |> maybe_add_new_project(Map.get(settings, :new_project))
+      |> maybe_add_log_file(run_spec.workspace)
       |> maybe_add_extra_args(Map.get(settings, :extra_args))
 
     {:ok, Enum.join([command | args], " ")}
@@ -233,17 +253,18 @@ defmodule CymphonyElixir.Agent.Antigravity do
 
   defp maybe_add_print_timeout(args, _timeout), do: args
 
-  defp maybe_add_extra_args(args, extra) when is_binary(extra) and extra != "", do: args ++ [extra]
+  # Opt-out, not opt-in: only an explicit `false` drops the flag. A missing key
+  # (hand-authored WORKFLOW.md, or the claude-section fallback `Agent.section/2`
+  # returns when no antigravity embed exists) must still get the workspace.
+  defp maybe_add_new_project(args, false), do: args
+  defp maybe_add_new_project(args, _new_project), do: args ++ ["--new-project"]
 
-  defp maybe_add_extra_args(args, extra) when is_list(extra) do
-    args ++
-      Enum.flat_map(extra, fn
-        item when is_binary(item) -> [shell_escape(item)]
-        _ -> []
-      end)
-  end
+  defp maybe_add_log_file(args, workspace) when is_binary(workspace) and workspace != "",
+    do: args ++ ["--log-file", shell_escape(Path.join(workspace, @session_log_file))]
 
-  defp maybe_add_extra_args(args, _extra), do: args
+  defp maybe_add_log_file(args, _workspace), do: args
+
+  defp maybe_add_extra_args(args, extra), do: CymphonyElixir.Agent.append_extra_args(args, extra)
 
   defp emit(on_message, details) when is_function(on_message, 1) do
     on_message.(Map.put(details, :timestamp, DateTime.utc_now()))

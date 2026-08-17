@@ -61,6 +61,29 @@ defmodule CymphonyElixir.Agent do
 
   def section(settings, _kind), do: settings.claude
 
+  @doc """
+  Appends a section's `extra_args` to an argv list.
+
+  Shared by every adapter so the two accepted shapes behave identically across
+  kinds: a non-empty string is trusted operator input and is appended as a raw
+  trailing fragment (it may contain several flags and its own quoting), while a
+  list is escaped item by item. Non-binary list members and any other value are
+  dropped — `extra_args` is the escape hatch for flags Cymphony does not model,
+  not a place to fail a run.
+  """
+  @spec append_extra_args([String.t()], term()) :: [String.t()]
+  def append_extra_args(args, extra) when is_binary(extra) and extra != "", do: args ++ [extra]
+
+  def append_extra_args(args, extra) when is_list(extra) do
+    args ++
+      Enum.flat_map(extra, fn
+        item when is_binary(item) -> [CymphonyElixir.Shell.escape(item)]
+        _ -> []
+      end)
+  end
+
+  def append_extra_args(args, _extra), do: args
+
   @spec put_section(map(), String.t(), map()) :: map()
   def put_section(settings, "codex", sec), do: %{settings | codex: sec}
 

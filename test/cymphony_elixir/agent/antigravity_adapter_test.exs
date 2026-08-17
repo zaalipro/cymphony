@@ -29,6 +29,7 @@ defmodule CymphonyElixir.Agent.AntigravityAdapterTest do
               extra_args: nil,
               skip_permissions: true,
               sandbox: false,
+              new_project: true,
               print_timeout: nil,
               provider: nil,
               providers: []
@@ -58,7 +59,11 @@ defmodule CymphonyElixir.Agent.AntigravityAdapterTest do
   describe "build_command/1" do
     test "default is agy -p --output-format stream-json with skip-permissions" do
       assert {:ok, cmd} = Antigravity.build_command(spec())
-      assert cmd == "agy -p 'do the thing' --output-format 'stream-json' --dangerously-skip-permissions"
+
+      assert cmd ==
+               "agy -p 'do the thing' --output-format 'stream-json' --dangerously-skip-permissions " <>
+                 "--new-project --log-file '/tmp/ws/agy.log'"
+
       refute cmd =~ "--resume"
       refute cmd =~ "--continue"
       refute cmd =~ ~r/(^|\s)-c(\s|$)/
@@ -68,6 +73,49 @@ defmodule CymphonyElixir.Agent.AntigravityAdapterTest do
       refute cmd =~ "--conversation"
       refute cmd =~ "--print-timeout"
       refute cmd =~ "--mcp"
+    end
+
+    test "--new-project is on a fresh run and on a --conversation resume" do
+      # Without it agy ignores its launch cwd and works inside
+      # ~/.gemini/antigravity-cli/scratch, so nothing ever lands in the
+      # workspace. Production verified the flag is accepted on both paths.
+      assert {:ok, fresh} = Antigravity.build_command(spec())
+      assert fresh =~ "--new-project"
+
+      assert {:ok, resumed} = Antigravity.build_command(spec(%{session_id: "conv-77"}))
+      assert resumed =~ "--conversation 'conv-77'"
+      assert resumed =~ "--new-project"
+    end
+
+    test "new_project false is the escape hatch; any other value keeps the flag" do
+      assert {:ok, off} = Antigravity.build_command(spec(%{settings: %{new_project: false}}))
+      refute off =~ "--new-project"
+
+      for value <- [true, nil, "false", 0] do
+        assert {:ok, cmd} = Antigravity.build_command(spec(%{settings: %{new_project: value}}))
+        assert cmd =~ "--new-project"
+      end
+    end
+
+    test "--log-file points at agy.log inside the session workspace" do
+      # agy prints only "Agent execution terminated due to error." on stdout;
+      # the HTTP status lives in its own log file, which otherwise lands in
+      # ~/.gemini/antigravity-cli/log/ under a timestamp nobody can correlate.
+      assert {:ok, cmd} = Antigravity.build_command(spec(%{workspace: "/ws/LLM-51"}))
+      assert cmd =~ "--log-file '/ws/LLM-51/agy.log'"
+    end
+
+    test "--log-file uses a remote workspace path verbatim and is escaped" do
+      assert {:ok, cmd} = Antigravity.build_command(spec(%{workspace: "/srv/work spaces/LLM-9"}))
+      assert cmd =~ "--log-file '/srv/work spaces/LLM-9/agy.log'"
+    end
+
+    test "a missing or empty workspace omits --log-file rather than logging to /agy.log" do
+      assert {:ok, from_nil} = Antigravity.build_command(spec(%{workspace: nil}))
+      refute from_nil =~ "--log-file"
+
+      assert {:ok, from_empty} = Antigravity.build_command(spec(%{workspace: ""}))
+      refute from_empty =~ "--log-file"
     end
 
     test "model and effort flags are escaped and appended" do

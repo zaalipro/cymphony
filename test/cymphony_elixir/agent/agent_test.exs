@@ -69,6 +69,28 @@ defmodule CymphonyElixir.AgentTest do
     assert updated.claude == @claude_section
   end
 
+  describe "append_extra_args/2" do
+    test "a non-empty string is appended raw as one trailing fragment" do
+      assert Agent.append_extra_args(["-p"], "--verbose --flag=1") == ["-p", "--verbose --flag=1"]
+    end
+
+    test "a list is escaped item by item" do
+      assert Agent.append_extra_args([], ["--foo", "bar baz"]) == ["'--foo'", "'bar baz'"]
+    end
+
+    test "non-binary list members are dropped rather than failing the run" do
+      assert Agent.append_extra_args([], ["--ok", 12, :atom, nil]) == ["'--ok'"]
+    end
+
+    test "empty, nil, and unsupported shapes append nothing" do
+      for extra <- ["", nil, 12, %{"antigravity" => ["--x"]}, :atom] do
+        assert Agent.append_extra_args(["-p"], extra) == ["-p"]
+      end
+
+      assert Agent.append_extra_args(["-p"], []) == ["-p"]
+    end
+  end
+
   test "put_section writes claude when antigravity is absent or the kind is unknown" do
     new_sec = %{command: "fallback"}
 
