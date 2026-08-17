@@ -150,11 +150,7 @@ defmodule CymphonyElixirWeb.ObservabilityApiController do
   def refresh_interval(conn, params) do
     case Control.parse_concurrency(params["value"]) do
       {:ok, n} ->
-        Control.set_dashboard_refresh_seconds(n)
-
-        conn
-        |> put_status(202)
-        |> json(%{dashboard_refresh_seconds: n})
+        persist_refresh_interval(conn, n)
 
       :error ->
         error_response(
@@ -162,6 +158,27 @@ defmodule CymphonyElixirWeb.ObservabilityApiController do
           422,
           "invalid_refresh_interval",
           "refresh interval 'value' must be a positive integer"
+        )
+    end
+  end
+
+  # The interval is only useful if it was written: this route is the only one in
+  # the family that used to discard the result and answer 202 regardless, so a
+  # config store that could not be read or written silently reverted the setting
+  # on the next restart. `/api/v1/pause` already reports its persist failure.
+  defp persist_refresh_interval(conn, n) do
+    case Control.set_dashboard_refresh_seconds(n) do
+      :ok ->
+        conn
+        |> put_status(202)
+        |> json(%{dashboard_refresh_seconds: n})
+
+      {:error, _reason} ->
+        error_response(
+          conn,
+          422,
+          "refresh_interval_not_persisted",
+          "refresh interval could not be saved to ~/.cymphony/config.json"
         )
     end
   end

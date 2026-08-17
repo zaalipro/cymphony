@@ -53,6 +53,23 @@ defmodule CymphonyElixir.ExtensionsTest do
     def graphql(query, variables, _opts), do: graphql(query, variables)
   end
 
+  # A *reachable* orchestrator that cannot answer. This is what
+  # `snapshot_unavailable` is for, and it is now distinct from a daemon with no
+  # orchestrator at all — which is an empty fleet, not a failure, and comes back
+  # as a normal payload with `projects: []`.
+  defmodule DownOrchestrator do
+    use GenServer
+
+    def start_link(opts) do
+      GenServer.start_link(__MODULE__, :ok, opts)
+    end
+
+    def init(:ok), do: {:ok, :ok}
+
+    def handle_call(:snapshot, _from, state), do: {:reply, :unavailable, state}
+    def handle_call(:request_refresh, _from, state), do: {:reply, :unavailable, state}
+  end
+
   defmodule SlowOrchestrator do
     use GenServer
 
@@ -545,6 +562,7 @@ defmodule CymphonyElixir.ExtensionsTest do
 
   test "phoenix observability api preserves 405, 404, and unavailable behavior" do
     unavailable_orchestrator = Module.concat(__MODULE__, :UnavailableOrchestrator)
+    {:ok, _pid} = DownOrchestrator.start_link(name: unavailable_orchestrator)
     start_test_endpoint(orchestrator: unavailable_orchestrator, snapshot_timeout_ms: 5)
 
     assert json_response(post(build_conn(), "/api/v1/state", %{}), 405) ==
@@ -580,6 +598,32 @@ defmodule CymphonyElixir.ExtensionsTest do
                  "message" => "Orchestrator is unavailable"
                }
              }
+  end
+
+  test "a fleet with no orchestrator at all is an empty payload, not an error" do
+    # The registry is empty and the legacy name is not registered: nothing is
+    # broken, there is simply nothing to run. Reporting `snapshot_unavailable`
+    # here left the dashboard's "No projects / connect Linear" card unreachable
+    # in production — the only payload a zero-project daemon could produce took
+    # the error branch instead.
+    start_test_endpoint(
+      orchestrator: Module.concat(__MODULE__, :NoOrchestratorAtAll),
+      snapshot_timeout_ms: 5
+    )
+
+    payload = json_response(get(build_conn(), "/api/v1/state"), 200)
+
+    refute Map.has_key?(payload, "error")
+    assert payload["projects"] == []
+    assert payload["running"] == []
+    assert payload["retrying"] == []
+    assert payload["recent_completed"] == []
+    assert payload["polling"] == nil
+    assert payload["rate_limits"] == nil
+    assert payload["counts"]["running"] == 0
+    assert payload["counts"]["retrying"] == 0
+    assert payload["counts"]["waiting"] == 0
+    assert payload["token_totals"]["total_tokens"] == 0
   end
 
   test "phoenix observability api preserves snapshot timeout behavior" do
@@ -719,24 +763,52 @@ defmodule CymphonyElixir.ExtensionsTest do
       Keyword.put(state, :snapshot, updated_snapshot)
     end)
 
+    # A pubsub broadcast no longer reloads on the spot — it marks the payload
+    # dirty and the next due runtime tick coalesces it into one load, so the
+    # orchestrator's 2-broadcasts-per-poll cadence can no longer override
+    # `dashboard_refresh_seconds`. Shorten the interval so the tick is due.
+    view
+    |> form(~s|form[phx-submit="set_refresh_interval"]|, %{value: "1"})
+    |> render_submit()
+
     StatusDashboard.notify_update()
 
-    assert_eventually(fn ->
-      render(view) =~ "agent message content streaming: structured update"
-    end)
+    assert_eventually(
+      fn ->
+        render(view) =~ "agent message content streaming: structured update"
+      end,
+      120
+    )
   end
 
   test "dashboard liveview renders an unavailable state without crashing" do
-    start_test_endpoint(
-      orchestrator: Module.concat(__MODULE__, :MissingDashboardOrchestrator),
-      snapshot_timeout_ms: 5
-    )
+    orchestrator_name = Module.concat(__MODULE__, :BrokenDashboardOrchestrator)
+    {:ok, _pid} = DownOrchestrator.start_link(name: orchestrator_name)
+    start_test_endpoint(orchestrator: orchestrator_name, snapshot_timeout_ms: 5)
 
     {:ok, view, html} = live(build_conn(), "/")
     assert html =~ "Snapshot unavailable"
     assert html =~ "snapshot_unavailable"
     assert has_element?(view, ".status-badge-payload.status-badge-offline", "Unavailable")
     refute has_element?(view, ".status-badge-payload.status-badge-live")
+    refute html =~ "fleet-empty"
+  end
+
+  test "dashboard liveview shows the fleet-empty card when no orchestrator is running" do
+    # The production shape of a zero-project fleet, end to end: empty registry,
+    # no legacy orchestrator, real `Presenter.state_payload/2`. It must reach the
+    # "No projects" card, not the red error card.
+    start_test_endpoint(
+      orchestrator: Module.concat(__MODULE__, :MissingDashboardOrchestrator),
+      snapshot_timeout_ms: 5
+    )
+
+    {:ok, view, html} = live(build_conn(), "/")
+
+    refute html =~ "snapshot_unavailable"
+    assert has_element?(view, "section.section-card.fleet-empty .fleet-empty-label", "No projects")
+    assert has_element?(view, ".fleet-empty-action[data-drawer-toggle]", "Open settings")
+    assert has_element?(view, ".status-badge-payload.status-badge-live")
   end
 
   describe "recent completions" do
@@ -961,6 +1033,12 @@ defmodule CymphonyElixir.ExtensionsTest do
       assert has_element?(view, "#queue-effort-LLM-51")
       refute has_element?(view, ~s|form.queue-edit-form input[name="provider"]|)
 
+      # The sheet is fixed to the viewport and can be flipped above its card, so
+      # it names the issue it pins instead of relying on the card behind it.
+      pin_form = view |> element("form.queue-edit-form") |> render()
+      assert pin_form =~ "Pin next run"
+      assert pin_form =~ ~s(<span class="mono">LLM-51</span>)
+
       render_submit(view, "set_queue_run_spec", %{
         "project" => "default",
         "issue" => "LLM-51",
@@ -1019,7 +1097,11 @@ defmodule CymphonyElixir.ExtensionsTest do
       assert html =~ "data-drawer-toggle"
 
       # Simple is the approachable default; Advanced preserves expert controls.
-      assert html =~ ~s(class="mode-switch")
+      # The rail foot owns the switch at wide widths, the top strip keeps a
+      # narrow-only duplicate, and the console keeps its own copy.
+      assert has_element?(view, ~s|nav.side-rail #mode-switch-rail.mode-switch|)
+      assert has_element?(view, "#mode-switch-top.mode-switch.topbar-only-narrow")
+      assert has_element?(view, ".settings-drawer .mode-switch.settings-mode-switch")
       assert html =~ ~s(data-mode-set="simple")
       assert html =~ ~s(data-mode-set="advanced")
       assert html =~ ~s(aria-label="Dashboard mode")
@@ -1131,7 +1213,9 @@ defmodule CymphonyElixir.ExtensionsTest do
 
       # Client-side clock formatting must stay byte-identical to the Elixir
       # formatters in dashboard_live.ex; changing either side must break here.
-      assert html =~ ~s|return mins + 'm ' + (whole - mins * 60) + 's';|
+      # Elapsed rolls into hours past 60 minutes on both sides.
+      assert html =~ ~s|if (hours > 0) return hours + 'h ' + mins + 'm ' + secs + 's';|
+      assert html =~ ~s|return mins + 'm ' + secs + 's';|
       assert html =~ ~s|return seconds + 's';|
       assert html =~ ~s|if (!(seconds > 0)) seconds = 0;|
       assert html =~ ~s|if (!(ms > 0)) return 'now';|
@@ -1140,9 +1224,24 @@ defmodule CymphonyElixir.ExtensionsTest do
       # back to the text of the last payload load, so the hook has to repaint on
       # `updated` as well as on its own interval or the clocks rewind per patch.
       [_before, live_clock] = String.split(html, "LiveClock: {", parts: 2)
-      [live_clock, _after] = String.split(live_clock, "Combobox: {", parts: 2)
+      [live_clock, combobox] = String.split(live_clock, "Combobox: {", parts: 2)
       assert live_clock =~ "updated() {"
       assert live_clock =~ "this.tick();"
+
+      # A patch re-applies the panel's server-rendered `hidden`, strips
+      # `combobox--open`, rewrites the search value and the option flags, and
+      # blurs the search box by hiding its ancestor. The hook has to snapshot
+      # that state before the morph and put it back after, or an open dropdown
+      # vanishes mid-selection with the typed filter gone.
+      [combobox, _rest] = String.split(combobox, "QueueBoard: {", parts: 2)
+      assert combobox =~ "beforeUpdate() {"
+      assert combobox =~ "this.setOpen(true);"
+      assert combobox =~ "this.filter(r.query);"
+      assert combobox =~ "this.search.setSelectionRange("
+      # The old `updated()` inferred "still open" from document.activeElement —
+      # already false by then — and fell through to close(), which clears the
+      # typed filter.
+      refute combobox =~ "else this.close();"
 
       dashboard_css = response(get(build_conn(), "/dashboard.css"), 200)
       assert dashboard_css =~ ~s(html[data-ui-mode="simple"] .advanced-only)
@@ -1151,11 +1250,162 @@ defmodule CymphonyElixir.ExtensionsTest do
       assert dashboard_css =~
                ~s|html[data-ui-mode="simple"]:not([data-expanded-sections~="completions"]) .section--completions .session-row-list|
 
+      # The collapse chevron rotates off the same `<html>` pref attributes that
+      # hide the section body, never off the button's server-rendered
+      # `aria-expanded`: that attribute lives inside the LiveView container, so
+      # morphdom resets it to the template value ("false") on every patch and the
+      # chevron would point right at an expanded Completions section until the
+      # next `syncPrefControls()` run. `<html>` is outside the patched container.
+      assert dashboard_css =~
+               ~s|html[data-ui-mode="simple"]:not([data-expanded-sections~="completions"]) [data-collapse-toggle="completions"]::before|
+
+      assert dashboard_css =~
+               ~s|html[data-collapsed-sections~="completions"] [data-collapse-toggle="completions"]::before|
+
+      refute dashboard_css =~ ~s|[data-collapse-toggle][aria-expanded="false"]::before|
+
+      # `aria-expanded` is still written for screen readers, and the observer now
+      # watches it so a patch-reset name is repaired; the guarded writes keep that
+      # from re-triggering the sync from its own mutation.
+      assert html =~ ~s|attributeFilter: ['aria-pressed', 'aria-expanded']|
+      assert html =~ ~s|if (el.getAttribute('aria-expanded') !== expanded) el.setAttribute('aria-expanded', expanded);|
+
       assert dashboard_css =~ ".project-section > .project-section-header"
       assert dashboard_css =~ ".project-section.is-combobox-open"
       assert dashboard_css =~ ".combobox.combobox--open"
       assert dashboard_css =~ "--z-combobox: 80"
       assert dashboard_css =~ "z-index: var(--z-combobox)"
+
+      # v3 shell: rail + main column, the instrument band, and the toast stack
+      # that keeps a flash out of the document flow.
+      assert dashboard_css =~ ".dashboard-shell {"
+      assert dashboard_css =~ ".side-rail {"
+      assert dashboard_css =~ ".instrument-band {"
+      assert dashboard_css =~ ".toast-stack {"
+
+      # Band cells grow: with rate limits present the band wraps at 1600px, and
+      # without growth the second row was a left-packed stub under a full row —
+      # ~60% empty panel, with the 160px accent rule underlining one cell like a
+      # tab indicator. The ops cell drops its max-width for the same reason and
+      # must reset the base cell's `center` (that centering is vertical on the
+      # column axis; `--ops` flips the main axis to a row, where it centered
+      # every wrapped detail line off the label's left edge).
+      assert dashboard_css =~ "  flex: 1 0 auto;\n  min-width: 96px;"
+      refute dashboard_css =~ "max-width: 360px;"
+
+      assert dashboard_css =~ """
+             .metric-pill--ops {
+               display: flex;
+               flex-flow: row wrap;
+               align-items: baseline;
+               align-content: center;
+               justify-content: flex-start;
+             """
+
+      # `.chip` is inline-flex and `text-overflow` never applies to a flex
+      # container, so the cap alone clipped "gemini-3.7-flash-high" to a
+      # plausible-looking "gemini-3.7-flash-" with no ellipsis.
+      assert dashboard_css =~ """
+             .chip--truncate {
+               display: inline-block;
+               max-width: 120px;
+             """
+
+      # Basis 0, not auto: with an auto basis the title's own text is the basis,
+      # so shrink landed proportionally on the tag cluster and a row carrying a
+      # worker host orphaned one tag onto a second line while it still had room.
+      assert dashboard_css =~ """
+             .session-row-title {
+               flex: 1 1 0;
+               min-width: 200px;
+             """
+
+      # "Follow the OS" is a monitor (hairline screen + stand), not the old
+      # arrow polygon, which read as upload/eject beside a sun and a moon.
+      assert dashboard_css =~ ~s|.theme-toggle-button[data-theme-set="system"]::after|
+      refute dashboard_css =~ "clip-path: polygon(50% 0, 100% 38%"
+
+      # Light theme ships two ways: an explicit choice and — new in v3 — the OS
+      # preference when no choice was made. The `:not([data-theme])` guard keeps
+      # an explicit dark choice winning on a light OS.
+      assert dashboard_css =~ ~s|:root[data-theme="light"] {|
+      assert dashboard_css =~ "@media (prefers-color-scheme: light) {"
+      assert dashboard_css =~ ":root:not([data-theme]) {"
+
+      # The rail is furniture, not a floating panel: it has its own surface token
+      # so light can sit it *below* the page while dark keeps --surface. Both
+      # light blocks (attribute + media duplicate) must carry the value.
+      assert dashboard_css =~ "background: var(--rail-surface);"
+      assert length(String.split(dashboard_css, "--rail-surface: #efefec;")) == 3
+
+      # The console scrim is a real element box (`body::after`), so it actually
+      # intercepts clicks; a box-shadow scrim would let them through.
+      assert dashboard_css =~ ~s|html[data-drawer="open"] body::after|
+      assert dashboard_css =~ "z-index: var(--z-scrim)"
+
+      # Esc closes the console; the listener is delegated, not a hook, because
+      # the open flag is an attribute on <html> outside the LiveView container.
+      # It yields to an inner overlay that already consumed the key — the
+      # Combobox's own Escape handler calls preventDefault(), and without this
+      # guard one Escape dismissed both the dropdown and the whole console.
+      assert html =~ "if (e.key === 'Escape' &&"
+      assert html =~ ~s|document.documentElement.getAttribute('data-drawer') === 'open'|
+      assert html =~ "if (e.defaultPrevented) return;"
+
+      # The rail's scroll-spy is additive: every anchor works without it.
+      assert html =~ "RailNav: {"
+      assert html =~ ~s|link.setAttribute('aria-current', 'true')|
+
+      # The narrow-viewport jump menu is a native <details>; its `open` attribute
+      # is browser-owned and the server never renders it, so morphdom strips it
+      # on every patch. JumpMenu snapshots it before the morph and restores it.
+      assert html =~ "JumpMenu: {"
+      assert html =~ "this._open = this.el.open;"
+      assert html =~ "if (this._open && !this.el.open) this.el.open = true;"
+
+      # The queue-card edit sheet is a popover, not an inline block: the hook
+      # pins it to the viewport off the card's rect (and flips it above the card
+      # when it would overflow the bottom), so it cannot be clipped by the
+      # board's own scroll box. It re-places on `updated` because a patch resets
+      # the inline styles morphdom does not own.
+      assert html =~ "QueueEditPanel: {"
+      assert html =~ "var card = this.el.closest('.queue-card');"
+      assert html =~ "this.el.style.position = 'fixed';"
+      assert html =~ "updated() { this.place(); },"
+
+      # Its outside-click dismiss must exempt the toggle that opened it (else the
+      # click that closes one sheet also swallows the open of the next) and the
+      # Combobox panels, which render outside the sheet's own subtree.
+      assert html =~ "if (t.closest('.queue-card-edit-toggle')) return;"
+      assert html =~ "if (t.closest('.combobox-list') || t.closest('.combobox-panel')) return;"
+
+      # Rail content + Part B surfaces.
+      assert dashboard_css =~ ".rail-vitals {"
+      assert dashboard_css =~ ".rail-led--paused {"
+      assert dashboard_css =~ ".rail-foot {"
+      assert dashboard_css =~ ".fleet-empty {"
+      assert dashboard_css =~ ".jump-menu-panel {"
+      assert dashboard_css =~ ".topbar-only-narrow { display: none; }"
+
+      # The layout script still rewrites this button's textContent to a glyph, so
+      # the glyph is hidden and the chevron is CSS geometry. Its rotation is
+      # asserted above, off `<html>` rather than off `aria-expanded`.
+      assert dashboard_css =~ "[data-collapse-toggle] {"
+
+      # Custom-property NAMES the QueueBoard hook resolves at runtime through
+      # getComputedStyle. Values are free to change; a rename breaks drag.
+      for token <- [
+            "--dur-flip:",
+            "--dur-mid:",
+            "--dur-fast:",
+            "--ease:",
+            "--ease-spring:",
+            "--z-drag:",
+            "--shadow-drag:",
+            "--accent-soft:"
+          ] do
+        assert dashboard_css =~ token
+      end
     end
 
     test "pause_dispatch sends :pause to the orchestrator" do
@@ -1619,6 +1869,32 @@ defmodule CymphonyElixir.ExtensionsTest do
                    "message" => "refresh interval 'value' must be a positive integer"
                  }
                }
+    end
+
+    test "POST /api/v1/refresh-interval reports a persist failure instead of claiming success" do
+      tmp = Path.join(System.tmp_dir!(), "cymphony-refresh-api-fail-#{System.unique_integer([:positive])}")
+      File.mkdir_p!(tmp)
+      Application.put_env(:cymphony_elixir, :config_dir_override, tmp)
+
+      on_exit(fn ->
+        Application.delete_env(:cymphony_elixir, :config_dir_override)
+        File.rm_rf!(tmp)
+      end)
+
+      orchestrator_name = Module.concat(__MODULE__, :RefreshIntervalPersistFailOrchestrator)
+
+      {:ok, _pid} =
+        StaticOrchestrator.start_link(name: orchestrator_name, snapshot: static_snapshot())
+
+      start_test_endpoint(orchestrator: orchestrator_name, snapshot_timeout_ms: 50)
+
+      # No `config.json` to read-modify-write. An interval that was not written
+      # reverts on the next restart, so 202 was a lie — `/api/v1/pause` already
+      # answers `dispatch_pause_not_persisted` in the same situation.
+      assert %{"error" => %{"code" => "refresh_interval_not_persisted", "message" => message}} =
+               json_response(post(build_conn(), "/api/v1/refresh-interval", %{"value" => 8}), 422)
+
+      assert is_binary(message)
     end
 
     test "GET /api/v1/refresh-interval is 405 not issue_not_found" do

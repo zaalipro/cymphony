@@ -257,7 +257,12 @@ past — `due_at_ms`, so its `due_in_ms` clamps to `0` for the whole pause: with
 parked indefinitely is indistinguishable from one due this instant, and any presenter deriving an
 absolute `due_at` from `now + due_in_ms` produces a value that advances one second per second,
 which re-renders every project section on every payload load of an otherwise idle paused board.
-Status surfaces therefore render "held" for such an entry and no due time at all.
+Status surfaces therefore render "held" for such an entry and no due time at all. On the dashboard
+that is a tag in the same grammar as its neighbours, not a loose muted sentence — the retry row
+gets a "held" modifier class and the state renders as a neutral tag beside the amber "Attempt N".
+Held means *suppressed*, not failing, so the tag carries no amber and the modifier mutes the row's
+amber retry edge: while dispatch is paused every retry row is held, and a wall of warning-coloured
+rows misreports a deliberately parked queue.
 
 `error` is truncated by status surfaces (the dashboard retry row shows 120 characters), so it must
 be front-loaded with the failure itself. A crashed agent task exits with `{exception, stacktrace}`:
@@ -1608,7 +1613,8 @@ Pipeline:
    for harness ticks.
 6. The orchestrator treats `:harness_heartbeat` as a timestamp-only stall poke:
    it updates `running_entry.last_agent_timestamp` and does **not**
-   `append_log_event`, `notify_dashboard`, or `broadcast_issue_update`.
+   `append_log_event`, `notify_dashboard`, or `broadcast_issue_update`. The dashboard must
+   not treat the resulting `last_event_at` movement as a change either (Section 13.7.1).
    `:harness_stdout` / `:harness_heartbeat` must never appear in the 50-event
    `log_events` ring. On every path that removes a running entry (success, kill,
    fail, abandon) the orchestrator calls `HarnessStream.drop(issue_id)`.
@@ -1955,6 +1961,108 @@ Enablement (extension):
   totals, recent events, and health/error indicators).
 - It is up to the implementation whether this is server-generated HTML or a client-side app that
   consumes the JSON API below.
+- Shell: `section#dashboard-root.dashboard-shell` (`phx-hook=OverlayDismiss`, inside the single
+  `div#live-clock` wrapper) is a two-column grid — `nav.side-rail` and
+  `div#dashboard-top.main-col`. `aside.settings-drawer` and `div.toast-stack` are siblings of
+  those two and render last. The main column holds, in order: `header.command-bar` (slim,
+  sticky, `--topbar-h` tall; `.command-bar-brand` hidden at ≥900px because the rail owns the
+  brand there), `div.reconnect-note[role=status]`, the instrument band,
+  `article#project-<dom-id>.project-section` per project, then
+  `section#completions-section.section--completions`. Project section ids fold characters an
+  HTML id cannot carry (case preserved) so two projects differing only by case stay distinct.
+- The metrics strip is `div.instrument-band.command-bar-row--metrics.section--metrics` and is a
+  **sibling** of `header.command-bar`, not a row inside it. It keeps the
+  `command-bar-row--metrics section--metrics` class tokens because the section-visibility prefs
+  key off them, and it stays inside the `unless payload_error` guard. Cells are hairline-divided
+  (`.metric-pill`, no pill chrome) with 26px / weight-300 tabular numerals. A nonzero Retry count
+  is not colored in the band; the retry rows carry the amber. Every cell grows (`flex: 1 0 auto`)
+  so a band that wraps — rate limits present at 1600px push the ops cells onto a second row —
+  fills each row edge-to-edge; a stub row under a full one reads as an unfinished panel and leaves
+  the 160px accent rule underlining a single cell like a tab indicator. `.metric-pill--ops` carries
+  no `max-width` for the same reason, and must reset `justify-content: flex-start` because it flips
+  the base cell's main axis from column to row (the inherited `center` then centers every wrapped
+  detail line instead of aligning it under the label). A cell with nothing to report renders a
+  static string and carries `.metric-pill-placeholder` (`--ink-faint`) on its value span — `—` for
+  a breakdown map with no positive count (States / Kinds on an idle board), a flat `▁` baseline for
+  the Tput sparkline while there are fewer than two token samples; an empty value string leaves a
+  dead label-only compartment in the hero band and reads as broken chrome.
+- Running rows open with `div.session-grid-head.advanced-only[aria-hidden=true]`, a column-header
+  row whose cells reuse the body column classes (`.session-row-title`, `.session-row-chips`,
+  `.session-row-runtime`, `.session-row-tokens`), so `html[data-hidden-cols~=…]` hides a header
+  and its column with no extra selectors. The row layout is flex with fixed `flex-basis` cells,
+  never `grid-template-columns`: a `display:none` column must not leave a hole or shift the
+  remaining cells. `.session-row-title` keeps a `min-width` floor (the title is the primary
+  scent; it must not collapse to an ellipsis while the tag cluster keeps hundreds of pixels) over
+  a `flex-basis` of `0` (with `auto` the title's own text is the basis, so shrink lands
+  proportionally on the tag cluster and a row carrying a worker host orphans one tag onto a second
+  line while the row still has room), and `.chip--truncate` caps long model names so the tags wrap
+  as a balanced block instead of orphaning one tag onto a second line. `.chip--truncate` must also
+  override `display` to `inline-block`: `.chip` is `inline-flex` and `text-overflow` never applies
+  to a flex container, so the cap alone clipped `gemini-3.7-flash-high` to a plausible-looking
+  `gemini-3.7-flash-` with no ellipsis. The disclosure caret is CSS geometry on `.session-row-disclosure`; the server
+  renders no `▸`/`▾` glyph in the running rows.
+- Queue cards carry `data-rank-label` (1-based, zero-padded) alongside `data-rank` (0-based,
+  rewritten by the drag hook). CSS renders the label as a decorative numeral; the hook does not
+  maintain it, and the next payload load re-renders both.
+- Flashes render inside `div.toast-stack[aria-live=polite]`, fixed to the bottom-right and last
+  in `#dashboard-root`, so an arriving flash never shifts the board. The stalled-agent alert
+  stays in the document flow — it is persistent state, not a notification.
+- Theme: `data-theme` on `<html>` is `light` / `dark` / absent. The stylesheet ships the light
+  palette twice — `:root[data-theme="light"]` and
+  `@media (prefers-color-scheme: light) { :root:not([data-theme]) }` — so "system" really follows
+  the OS while an explicit `dark` choice still wins on a light OS. Vanilla CSS cannot share a
+  declaration block between an attribute selector and a media query; the duplicate is
+  intentional and both blocks must be edited together. Terminal wells (`.harness-tail`,
+  `.log-list`) stay dark in both themes by token construction (`--surface-well` / `--well-ink`
+  are identical across palettes). The rail paints `--rail-surface`, a token of its own: in dark
+  it equals `--surface`, in light it is `#EFEFEC` — *below* `--page`, because a rail painted the
+  same white as the content panels reads as unanchored floating text with one hairline doing all
+  the separation work. Both light blocks carry it.
+- `nav.side-rail[aria-label]` is chrome, not a section, and is not hideable by the display
+  prefs. It renders, in order: `a.side-rail-brand[href="#dashboard-top"]`; a `.rail-vitals`
+  block (running/queued numerals plus the autonomy sentence, inside the `unless payload_error`
+  guard); `div#rail-nav.rail-group` with a `.rail-link` per anchor — Overview, one per project
+  (`href="#project-<dom-id>"`, `title` = project name, `.rail-link-meta` = `running·waiting`),
+  and Completions when non-empty — each opening with a `.rail-led--run|retry|paused|idle|done`
+  LED; then `.rail-foot` with the mode switch (`#mode-switch-rail`, `phx-update=ignore`), the
+  theme toggle, the settings `[data-drawer-toggle]` and Refresh. The rail reads only existing
+  section assigns (`counts`, `projects`, `completions`, `polling`, `version`) and never `now`,
+  so a clock re-anchor cannot re-render it. LED precedence is paused > retrying > running >
+  idle. `RailNav` (`phx-hook` on `#rail-nav`) only paints `aria-current`; every anchor works
+  without it.
+- At ≥900px the rail owns the mode switch and theme toggle; the top strip keeps duplicate
+  copies marked `.topbar-only-narrow` that are painted only below 900px, plus a native
+  `details#jump-menu.jump-menu` project-jump disclosure. Its `open` attribute is browser-owned
+  and never server-rendered, so morphdom strips it on every patch: the `JumpMenu` hook
+  snapshots it in `beforeUpdate()` and restores it in `updated()`, and closes the menu when a
+  link inside it is clicked. Below 900px this is the only section-jump control, so a patch may
+  not close it mid-read; without JS it still opens and closes, it just cannot survive a patch.
+  The delegated layout script syncs every duplicated instance, so the copies never disagree.
+- Responsive breakpoints are 1200 / 900 / 640: full rail, 64px condensed rail (names become
+  `title` tooltips; the rail's mode switch hides because no label fits — the console keeps it),
+  and no rail (the top strip regains the brand and the jump menu) respectively.
+- When a **connected** payload has no projects and no error, the board is replaced by
+  `section.section-card.fleet-empty` — "No projects", one sentence, and an accent
+  `[data-drawer-toggle]` button. The disconnected first render never shows it: `projects: []`
+  is also the default payload, and a dead render has not earned the claim. A daemon with no
+  orchestrator anywhere must actually *produce* that payload — see the empty-fleet rule under
+  `GET /api/v1/state` — or the card is unreachable and the operator gets an error card with no
+  call to action instead.
+- Settings drawer (`aside.settings-drawer`) is scrimmed while open: `html[data-drawer="open"]
+  body::after` is a real fixed element box, so it intercepts clicks (a box-shadow scrim would
+  let them through). The click target becomes `<body>`, which `OverlayDismiss` treats as
+  outside, so the console closes and nothing underneath activates. `Escape` closes it too, via
+  a delegated `keydown` listener in `layouts.ex` — not a hook, because the open flag is an
+  attribute on `<html>`, outside the LiveView container. That listener must yield to an
+  overlay that already consumed the key (`e.defaultPrevented`): a Combobox open inside the
+  console handles `Escape` itself, and one keypress may not dismiss both it and the console.
+  Every console control carries an explanatory `p.settings-help` line; the
+  Automation/Orchestrator controls are additionally wrapped one-per-`div.settings-control-row`
+  = control + exactly one `p.settings-help` line, so `.settings-control-row +
+  .settings-control-row` rules a hairline between them. The Linear, Projects, Experience and
+  Display groups keep their help copy as a group-level sibling. The refresh row's
+  copy must distinguish it from Linear polling. Primary actions (Connect, Add project, Resume
+  all, queue Pin) carry `.subtle-button--accent`; Pause all and Restart stay quiet.
 - Settings drawer (`aside.settings-drawer`) includes, after Experience and before Automation,
   visible in both simple and advanced modes:
   - **Linear** (`section.settings-group.settings-group--linear`): connect status
@@ -1971,37 +2079,47 @@ Enablement (extension):
     (`name=linear_project_slug`; **not** a native `<select>`). Options come from the
     operator's accessible Linear projects (label `name (slug_id)`, value `slug_id`) and
     type-to-filter. Also: name input `#add-project-name`, optional GitHub URL
-    `#add-project-github`, and advanced-only agent / `.model-switcher` Combobox / native
-    effort `<select>` / provider fields. `preview_add_project` drafts those advanced
-    fields. Submit appends the project to `config.json`, writes a temp `WORKFLOW.md`,
+    `#add-project-github`, and advanced-only agent / `.model-switcher` Combobox / effort
+    Combobox / provider fields. `preview_add_project` drafts the slug, name, github and those
+    advanced fields, and a successful add resets all of them. Submit appends the project to `config.json`, writes a temp `WORKFLOW.md`,
     and starts the project supervisor immediately — no daemon restart. Duplicate
     name/slug is an operator-visible error.
   - Drawer fields only (`#linear-api-key`, add-project slug/name/github/agent/model/effort/provider,
-    `#drawer-global-concurrency`, `#drawer-refresh-interval`) use class `settings-field`
-    (filled control chrome). Do not restyle header/session `.inline-form` pills as naked
-    labels.
+    `#drawer-global-concurrency`, `#drawer-refresh-interval`) use class `settings-field`.
+    There is one field look everywhere (`.inline-input`, `select`, `.settings-field`,
+    `.combobox-trigger`): inset `--surface-deep` fill, `--line-strong` border, `--radius-ctl`.
+    The `.inline-form` **container** carries no chrome — it is a borderless label+field cluster
+    — but its control always does. A header or session control rendered as a naked label with
+    no field chrome is a bug.
+  - The global concurrency field `#drawer-global-concurrency` prefills the fleet value while
+    every project reports the same `max_concurrent_agents`; when they disagree it renders
+    empty with `placeholder="mixed"` (prefilling one of two values would flatten the other on
+    Set), and when no project reports a limit it renders empty with `placeholder="10"`, the
+    schema default. A completely blank box beside Set reads as unfinished.
   - Automation / Orchestrator (after global concurrency) includes
     `#drawer-refresh-interval` (`type=number`, `name=value`, `min=1`, default `3`,
     `phx-submit="set_refresh_interval"`). Persist the value as top-level
     `~/.cymphony/config.json` `dashboard_refresh_seconds` (positive integer, minimum 1;
     default `3` when missing/unreadable). This is the dashboard payload refresh cadence
     only — it is **not** `polling.interval_ms`, must not rewrite `WORKFLOW.md` for Linear
-    refresh, and must not change orchestrator poll timing. Open dashboards keep their
-    current interval until remount or a successful `set_refresh_interval`.
-- Per-project header agent `<select>` uses a stable id `agent-<project>` (never embed the
-  current kind or effort). Changing to a known kind persists immediately (kind only;
+    refresh, and must not change orchestrator poll timing. No pubsub event may shorten this
+    interval. Open dashboards keep their current interval until remount or a successful
+    `set_refresh_interval`.
+- The per-project header agent control is a Combobox whose hidden input carries the stable id
+  `agent-<project>` (its label points at `agent-<project>-trigger`); the id never embeds the
+  current kind or effort. Changing to a known kind persists immediately (kind only;
   model/effort wait for header **Set**). Header **Set** and `POST /api/v1/agent` persist
   kind+model+effort, rewrite the project's generated `WORKFLOW.md`, and overlay
   `config.json` so `snapshot.agent_kind` survives the next refresh. Dashboard payload
-  reloads are generation-tokened so an in-flight stale snapshot cannot revert the select
+  reloads are generation-tokened so an in-flight stale snapshot cannot revert the selection
   after persist.
 - Header and expanded-session **model** controls are a labeled `.model-switcher` Combobox
   (type-to-filter suggestions; not `<datalist>`). Header wrapping form remains
   `form.project-agent-form` (`phx-change="preview_project_agent"`,
   `phx-submit="set_project_agent"`) so **Set** still sends kind+model+effort. Inner pills:
-  `.agent-switcher` (`#agent-<project>` native select), `.model-switcher` (Combobox),
-  `.effort-switcher` (native `#effort-<project>` select), and **Set**. Effort stays a
-  native `<select>`. Session restart is `form.restart-form` (`phx-change="preview_issue_run_spec"`,
+  `.agent-switcher` (Combobox whose hidden input carries `#agent-<project>`),
+  `.model-switcher` (Combobox), `.effort-switcher` (Combobox whose hidden input carries
+  `#effort-<project>`), and **Set**. Session restart is `form.restart-form` (`phx-change="preview_issue_run_spec"`,
   `phx-submit="set_issue_run_spec"`) with labeled Harness / Provider / Model Combobox /
   Effort pills — not one cramped pill. Harness stdout `section#harness-tail-<id>` is
   unchanged.
@@ -2015,10 +2133,15 @@ Enablement (extension):
   `preview_add_project`. Do not delete persisted providers when the field is hidden.
   Session provider chips and the read-only Provider stat stay visible for every kind.
 - Per-project header counts: `N/M running · Q queued · R retrying`. Advanced metrics add
-  `.metric-pill--queue.section--queue` = `counts.waiting`. The simple Waiting pill stays
-  `counts.retrying`.
+  `.metric-pill--queue.section--queue` = `counts.waiting`. Simple mode labels the first two band
+  cells **Running** (`counts.running`) and **To retry** (`counts.retrying`) — the mappings are
+  unchanged, but the rail already says `running · queued`, so a band that said "Working" and
+  "Waiting" put two words on the running count and made "waiting" mean *retrying* here and
+  *queued* one column to the left.
 - Theme / settings glyphs are CSS geometry only on `.theme-toggle-button` and
-  `[data-drawer-toggle]` (no ☀ / ☾ / ⌂ / ⚙ text).
+  `[data-drawer-toggle]` (no ☀ / ☾ / ⌂ / ⚙ text). The `system` button draws a monitor — a
+  hairline `::before` rectangle plus an absolutely positioned `::after` stand — not an arrow
+  outline, which reads as upload/eject beside a sun and a moon.
 - Display preferences include `{Board, board}`. Hide the board with
   `html[data-hidden-sections~=board] .section--board { display: none }`.
 - Waiting board (`section.queue-board.section--board`) sits inside
@@ -2036,8 +2159,11 @@ Enablement (extension):
   No Linear priority / state / agent chips. Edit is not an alert:
   `div.queue-card-edit` when `{project, id}` is in assign `:queue_edit_ids`;
   `form.queue-edit-form` (`phx-change=preview_queue_run_spec`,
-  `phx-submit=set_queue_run_spec`); hidden `project` + `issue`;
-  comboboxes for `agent_kind` / `model` / `effort` preselect the card pin when
+  `phx-submit=set_queue_run_spec`); hidden `project` + `issue`; a
+  `span.menu-field-label` header line — `Pin next run · <identifier>` with the
+  identifier in `.mono` — before the first `.menu-field`, so the fixed-position
+  sheet names its subject when it is flipped above the card or the board
+  scrolls; comboboxes for `agent_kind` / `model` / `effort` preselect the card pin when
   set, otherwise the project header agent/model/effort (no `keep` blank);
   submit `Pin`; no provider. Pin persists with the queue and does **not** kill
   anything. Empty / `"keep"` in the pin payload still skip a field (API compat).
@@ -2056,9 +2182,39 @@ Enablement (extension):
   `layouts.ex` beside `HarnessTail` / `Combobox` (`mounted` / `updated` / `destroyed`;
   `pushEvent reorder_queue`). `Combobox.setChrome` also toggles the closest
   `.queue-card`.
-- Refresh behavior: server-side re-render is change-only, and the second-by-second clock
-  runs in the browser. The poll/pubsub cadence itself is unchanged (see the
-  `dashboard_refresh_seconds` bullet above and Section 8.1).
+- `QueueEditPanel` hook mounts on `div#queue-edit-<project>-<identifier>.queue-card-edit`
+  (`layouts.ex`, beside `QueueBoard`). The edit sheet is a popover rather than an inline
+  block, so the board's scroll box cannot clip it: `place()` fixes it to the viewport off
+  the card's `getBoundingClientRect()` (width clamped to 304…360px and to the viewport,
+  flipped above the card when it would overflow the bottom) and runs on `mounted`,
+  `updated`, `resize` and capture-phase `scroll` — `updated` is required because a patch
+  drops the inline styles morphdom does not own. A capture-phase `mousedown` outside the
+  sheet clears `data-drawer` and pushes `dismiss_overlays`, exempting
+  `.queue-card-edit-toggle` (otherwise the click that closes one sheet also swallows the
+  open of the next) and `.combobox-list` / `.combobox-panel`, which render outside the
+  sheet's subtree. `phx-click-away="dismiss_overlays"` on the same element is the
+  server-side half; `OverlayDismiss.keepOpen` likewise exempts `.queue-card-edit`.
+  `mounted` clears `data-drawer`, so opening a card's sheet closes the settings console
+  rather than stacking a popover on top of a scrimmed panel.
+- Refresh behavior: server-side re-render is change-only, the second-by-second clock runs
+  in the browser, and `dashboard_refresh_seconds` is the **single** cadence for data-driven
+  reloads (see the `dashboard_refresh_seconds` bullet above and Section 8.1).
+  - A pubsub `:observability_updated` event sets a `:payload_dirty` flag only. It must not
+    reload and must not re-stamp `:last_payload_refresh`. The orchestrator broadcasts twice
+    per Linear poll (`polling.interval_ms`, default 5000) plus once per agent event, so
+    reloading on the message made the *poll* interval the refresh interval, and re-stamping
+    the window on every broadcast disabled the configured gate outright. `:payload_dirty`
+    must not be read by the render, or it becomes the next always-dirty assign.
+  - The 1s runtime tick performs one coalesced reload when the window elapsed **and**
+    (`:payload_dirty` **or** at least 30s since the last load). The 30s idle resync is a
+    safety net for a dropped broadcast and for fields nothing broadcasts about
+    (`last_agent_timestamp`, the poll countdown). Leading edge: an event that lands after
+    the window already elapsed reloads on the next tick (≤1s). The reload clears the flag.
+  - User-initiated events reload immediately through the synchronous reload path, which
+    also clears the flag. The async orchestrator commands (`kill_issue`, `retry_issue`,
+    `set_issue_run_spec`, `refresh_now`) ask for that reload from their own task **after**
+    the `GenServer.call`, so the repaint is immediate and correctly ordered; they used to
+    depend on the orchestrator's broadcast for it.
   - Time-derived text is server-rendered once per payload load, wrapped in a span carrying a
     clock anchor. An anchor is always a remaining/elapsed **amount**, never an absolute wall
     time, so client clock skew cannot accumulate: `data-clock="countdown"` +
@@ -2067,6 +2223,11 @@ Enablement (extension):
     The global runtime tile is `elapsed` and adds `data-rate` = number of running sessions,
     because that total advances one second per running session per wall second. There is no
     turns suffix on any clock; `data-rate` is the only multiplier the format takes.
+  - Elapsed renders `Mm Ss` under the hour and rolls into `Hh Mm Ss` from 60 minutes up
+    (`4h 20m 44s`); a minutes-only counter past the hour (`260m 44s`) is a raw-counter tell in
+    the band's largest numeral. `due` shares the elapsed formatter on both sides; countdown
+    stays `Ns`. The server formatter and the hook's `formatElapsed` are one contract — they
+    move in the same commit or the hook rewrites the server text the first time it paints.
   - One `LiveClock` hook (registered in `layouts.ex` beside `HarnessTail` / `Combobox` /
     `QueueBoard`) mounts on a single wrapper `div#live-clock` around the dashboard and runs
     one 1s interval that rewrites only those spans' `textContent`; it clears the interval on
@@ -2084,11 +2245,11 @@ Enablement (extension):
     `:now`. `:now` is a clock *anchor*, not a clock: it is assigned at mount and re-anchored
     by a payload load — the async `{:payload_loaded, seq, payload}` reply and the synchronous
     reload used by event handlers both go through the same split — but **only when a section
-    a clock reads actually moved** (`:token_totals`, `:running`, `:projects`). `:now` is read
-    inside the per-project comprehension (session runtime, retry due-in), and a HEEx
-    comprehension is a single change-tracked slot: re-anchoring on a load that moved nothing
-    would re-evaluate and re-serialize every project header, queue card, session row and
-    restart form, which is the re-render the section split exists to skip. Server-rendered
+    a clock reads actually moved** (`:token_totals`, `:running`, `:projects`). `:now` reaches
+    the board only through the `now` attr of the stalled-alert and session-row components and
+    the retry row's due-in anchor, so re-anchoring on a load that moved nothing would
+    re-serialize those clock spans for no reason — the re-render the section split exists to
+    skip. Server-rendered
     values are therefore correct as of the last load that moved a clock-bearing section, and
     the hook takes over between loads. A clock hung off a section outside that set renders a
     stale amount, so the set must stay in step with the `:now` reads in the template. The
@@ -2099,25 +2260,79 @@ Enablement (extension):
     `:payload_error`). There is no monolithic `:payload` assign, because nested `@payload.x`
     reads mark the whole template dirty on every load. A section whose value did not change
     is not reassigned, so LiveView change tracking skips it. `generated_at` gets no assign
-    (it moves on every load and is rendered nowhere). The comparison also ignores a running
-    entry's `tokens_per_second`, which the presenter re-derives from the wall clock on every
-    load (tokens over seconds-since-start) and which would otherwise make `:running` and
-    `:projects` differ on every refresh while an agent runs; any other movement still assigns
-    the whole fresh section, drifted rate included. The accepted trade-off is that the
-    rendered per-session `t/s` chip holds the value from the last load that moved a real
-    field: while an agent sits in a long tool call the chip does not decay, and it catches up
-    the moment anything else about the session moves. A retry's `due_at` must be computed so
-    it does not drift for the same reason: `now + due_in_ms` truncated **after** the offset is
-    applied, not a truncated clock plus whole seconds. That names the same absolute second
-    across loads as long as the snapshot round-trip does not straddle a second boundary — it
-    is a large reduction in flip rate, not a guarantee; `due_in_ms` is measured against the
-    orchestrator's monotonic clock and `now` is sampled later in the presenter. A section
-    missing from the payload falls back to the default payload (error snapshots, older
-    snapshot shapes). Both the async and the synchronous load path go through the same split;
-    `payload_seq` guarding is unchanged.
-  - Acceptance: an idle dashboard ships no per-second diff, and a poll whose only movement is
-    `generated_at` reassigns no section and does not re-anchor `:now` — only `:token_samples`
-    (throughput window) moves.
+    (it moves on every load and is rendered nowhere). The comparison drops a set of
+    volatile keys from every entry and recurses into a project's `:running` **and** its
+    `:retrying`:
+    - `tokens_per_second`, which the presenter re-derives from the wall clock on every load
+      (tokens over seconds-since-start) and which would otherwise make `:running` and
+      `:projects` differ on every refresh while an agent runs.
+    - `last_event_at`, which the 2s harness heartbeat pokes. The heartbeat is defined as a
+      timestamp-only stall poke (Section 10) and carries no operator-visible news;
+      `last_event`, `last_message`, `log_events` and `tokens` stay in the comparison, so
+      anything real still lands the fresh section wholesale.
+    - `due_at`, an absolute time re-derived from `now + due_in_ms`. Holding the previous
+      value is lossless because every real reschedule also moves `attempt`, `held`, or
+      `error`.
+
+    One volatile value lives on a **section** rather than on an entry and needs its own rule:
+    `polling.next_poll_in_ms`, the countdown the orchestrator re-derives as
+    `max(0, next_poll_due_at_ms - now_ms)` on every snapshot. Comparing it verbatim reassigns
+    `:polling` on every payload load, so *no* load can ever ship an empty diff and every
+    refresh interval costs a full-container morph. Collapse an integer countdown in the
+    `:polling` comparison so only `checking?`, `paused`, `poll_interval_ms` — and `nil`, which
+    means no poll is scheduled and renders `n/a` without an anchor — can move the section. It
+    is lossless: the countdown is a `data-clock="countdown"` anchor the browser advances
+    itself, and `checking?` flips true on every tick and false again when the cycle ends,
+    landing the refreshed countdown twice per poll.
+
+    Any other movement still assigns the whole fresh section, drifted values included. The
+    accepted trade-off is that the rendered per-session `t/s` chip and the expanded row's
+    `@ <timestamp>` hold the value from the last load that moved a real field: while an agent
+    sits in a long tool call they do not decay, and they catch up the moment anything else
+    about the session moves. A retry's `due_at` is still computed so it does not drift —
+    `now + due_in_ms` truncated **after** the offset is applied, not a truncated clock plus
+    whole seconds — because it is rendered; the change comparison no longer depends on it. A
+    section missing from the payload falls back to the default payload (error snapshots,
+    older snapshot shapes). Both the async and the synchronous load path go through the same
+    split; `payload_seq` guarding is unchanged.
+  - Every user-editable control must render from a draft assign once the operator touches it.
+    A DOM patch rewrites `input.value` from the server value for every input it walks and
+    spares only the *focused*, non-hidden one, so an undrafted control is reset by the next
+    patch — and a patch landing between blur and click submits the stale value. Drafts cover
+    the per-project concurrency and providers inputs, the drawer's global concurrency and
+    refresh interval, the add-project slug/name/github/agent/model/effort/provider fields,
+    and the existing agent / session / queue run-spec drafts. A draft is written by a
+    `phx-change` preview and cleared on successful submit, so an external API write becomes
+    visible in the control again. Text/number inputs debounce (400ms) so a keystroke does not
+    cost a round trip and a whole-container patch. Two things get `phx-update="ignore"`
+    instead of a draft, because the server has no correct value to render for them: the
+    Linear API key form (the key must never reach assigns) and the client-owned preference
+    controls (density radios, section/column checkboxes, completions-limit select, both mode
+    switches), which are pure localStorage state.
+  - The Combobox hook owns its open state across patches. A patch re-applies the panel's
+    server-rendered `hidden`, strips the open-chrome classes, rewrites the search value and
+    every option's `hidden` / `aria-selected`, and blurs the search input by hiding an
+    ancestor of it. The hook must snapshot query, active option **value**, focus and caret
+    before the patch and restore them after it — open the panel first, then set the search
+    value, re-filter, re-highlight by value (the option list itself may have changed), and
+    refocus only if the search was focused before. It must never fall back to closing, which
+    clears the typed filter.
+  - The template carries **no** local `<% x = … %>` bindings. Such a binding makes the HEEx
+    compiler abandon change tracking for every dynamic that follows it in the same template,
+    which put a whole project section — its Comboboxes included — on the wire for a single
+    harness stdout line, at up to ~12 patches per second on an expanded row. Rows are function
+    components (stalled alert, project agent controls, queue card, session row) whose attrs are
+    change-tracked individually, and the project / queue / session / retry comprehensions are
+    keyed so the diff is per row. A harness line must ship the harness pane and nothing else.
+  - Acceptance: an idle dashboard ships no per-second diff; with sessions running and no real
+    state change a payload load ships an **empty** diff (an empty diff is skipped entirely by
+    the client, which is what leaves every input and every open dropdown alone) and reassigns
+    no section, does not re-anchor `:now`, and moves only the throughput sample window, which
+    no dynamic reads. A poll whose only movement is `generated_at` does the same, and so does
+    one whose only movement is the poll countdown. "No real state change" has to be tested
+    with the countdown **advanced**: a live orchestrator moves it on every snapshot, so an
+    acceptance payload echoed back from a frozen fixture proves nothing. A
+    `dashboard_refresh_seconds` of 20 means at most one data re-render per 20s.
 
 #### 13.7.2 JSON REST API (`/api/v1/*`)
 
@@ -2132,6 +2347,14 @@ Minimum endpoints:
   - `counts.waiting` is the sum of per-project `waiting` lengths (`waiting_count`).
     Each project object includes `waiting` (list) + `waiting_count`. Default payload /
     fixtures include `waiting: []` and `counts.waiting`.
+  - **Empty fleet is not an error.** When the project registry holds no orchestrators *and*
+    the legacy orchestrator name is not registered, there is nothing to snapshot and nothing
+    is wrong: return a normal payload with `projects: []`, zeroed `counts`/`token_totals`,
+    empty `running`/`retrying`/`recent_completed`, and `polling`/`rate_limits` `null` — no
+    `error` key. `snapshot_unavailable` stays reserved for an orchestrator that exists and
+    cannot answer (including a registry with projects whose snapshots all failed), and
+    `snapshot_timeout` for one that did not answer in time. Reporting a zero-project daemon
+    as `snapshot_unavailable` also made the dashboard's fleet-empty card unreachable.
   - Suggested response shape:
 
     ```json
@@ -2336,6 +2559,9 @@ Minimum endpoints:
     `dashboard_refresh_seconds` (beside `projects`, never inside a project map).
   - `202` `{"dashboard_refresh_seconds": N}`.
   - `422` `{"error":{"code":"invalid_refresh_interval","message":"..."}}`.
+  - `422` `{"error":{"code":"refresh_interval_not_persisted","message":"..."}}` when the
+    value could not be written to the config store. Answering `202` there claimed success for
+    a setting that reverts on the next restart.
 
 Optional operational-control endpoints (extension; all return `202 Accepted` and accept an
 optional `?project=<name>` scope):
@@ -2359,8 +2585,9 @@ optional `?project=<name>` scope):
   runtime agent settings and persists to `~/.cymphony/config.json`; **rewrites the
   project's generated `WORKFLOW.md` and overlays `config.json` agent/model/effort so
   `snapshot.agent_kind` survives the next dashboard/API refresh**. Dashboard header
-  **Set** and change-to-save (kind-only persist on the project agent `<select>`) follow
-  the same rewrite + overlay path. Applies to subsequent dispatches. Error when
+  **Set** and change-to-save (kind-only persist on the project agent Combobox, whose hidden
+  input carries `#agent-<project>`) follow the same rewrite + overlay path. Applies to
+  subsequent dispatches. Error when
   none of those keys are present or `kind` is not a known kind:
   `"body must include at least one of kind/model/effort; kind must be one of: claude, codex, antigravity"`.
 - `POST /api/v1/refresh-interval` is documented with the minimum endpoints above
@@ -2375,6 +2602,17 @@ optional `?project=<name>` scope):
 Dashboard display preferences (density, hidden sections including `{Board, board}`,
 visible columns, list lengths) are client-side only (browser localStorage); they are not
 server state and have no API surface.
+
+Every affordance that reflects a client-side preference must be styled from the `<html>`
+attributes that preference already sets, never from an attribute the server renders inside the
+LiveView container. A DOM patch rewrites server-rendered attributes back to the template's value
+while `<html>` — outside the patched container — keeps what localStorage set, so a control keyed
+off the server attribute silently disagrees with the state it describes after any refresh. The
+section-collapse chevron is the concrete case: it rotates off the same
+`data-collapsed-sections` / `data-expanded-sections` / `data-ui-mode` selectors that hide the
+section body, and not off the button's own `aria-expanded`. That attribute is still written for
+assistive technology, guarded so the mutation observer that repairs it after a patch cannot
+re-trigger itself.
 
 API design notes:
 
@@ -2996,20 +3234,37 @@ Unless otherwise noted, Sections 17.1 through 17.7 are `Core Conformance`. Bulle
   changing orchestrator behavior
 - If the LiveView dashboard is implemented (Section 13.7.1 refresh behavior):
   - a runtime tick that is not yet due to refresh moves no assign and renders identical HTML;
-    the tick that *is* due still schedules the payload load (and so moves `:payload_seq` and
-    `:last_payload_refresh`)
-  - re-delivering a byte-identical payload, and a payload whose only movement is
-    `generated_at`, reassigns no section and does not re-anchor `:now` (only
-    `:token_samples` moves)
-  - a payload whose only movement is a wall-clock-derived field the server re-derives on
-    every load (a running entry's `tokens_per_second`) reassigns no section either
+    the tick that *is* due, with the payload marked dirty, still schedules the payload load
+    (and so moves `:payload_seq` and `:last_payload_refresh`)
+  - a pubsub update inside the refresh window marks the payload dirty and reloads nothing:
+    `:payload_seq` and `:last_payload_refresh` do not move, and a burst of updates costs one
+    load per configured interval
+  - an idle board still resyncs once the idle-resync deadline passes with nothing dirty
+  - re-delivering a payload **with sessions running** that differs only in values the server
+    re-derives from the wall clock — `generated_at`, and a poll countdown that has ticked
+    down — reassigns no section, does not re-anchor `:now`, and ships an empty diff to the
+    client
+  - a payload whose only movement is a volatile entry field the server re-derives or pokes on
+    every load (`tokens_per_second`, `last_event_at`, `due_at`, including inside a project's
+    nested `retrying` list) reassigns no section either
+  - an operator-initiated command (`kill_issue`, `retry_issue`, `refresh_now`,
+    `set_issue_run_spec`) reloads the payload without waiting for the refresh window
+  - a draft written by a `phx-change` preview survives a payload load that lands mid-edit,
+    and a successful submit clears it
   - a payload that moves one section leaves the other section assigns alone
-  - a payload that only moves the poll countdown leaves `:now` and the per-project section
-    alone; a payload that moves a clock-bearing section re-anchors `:now`
+  - a payload that only moves the poll countdown between two integers reassigns nothing at
+    all — not `:polling`, not `:now`, not the per-project section — while one that drops the
+    countdown to `nil`, or flips `checking?`, still reassigns `:polling`; a payload that moves
+    a clock-bearing section re-anchors `:now`
   - time-derived spans carry their `data-clock` anchor as a remaining/elapsed amount, and
     drop the anchor attribute entirely when the amount is unknown so the server-rendered
     text survives
   - the client clock formatter and the server formatters produce identical strings
+  - a connected dashboard with no orchestrator registered anywhere renders the fleet-empty
+    card, not the snapshot-error card, straight out of `Presenter.state_payload/2`; an
+    orchestrator that exists and cannot answer still renders the error card
+  - the narrow-viewport jump menu keeps its `open` attribute across a LiveView patch
+  - `Escape` inside an open Combobox in the settings console closes only the dropdown
 
 ### 17.7 CLI and Host Lifecycle
 

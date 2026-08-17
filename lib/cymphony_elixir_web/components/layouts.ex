@@ -157,12 +157,15 @@ defmodule CymphonyElixirWeb.Layouts do
                     }
                     if (el.textContent !== text) el.textContent = text;
                   },
-                  // format_runtime_seconds/1
+                  // format_runtime_seconds/1 — byte-identical, hour rollover included.
                   formatElapsed(seconds) {
                     var whole = Math.trunc(seconds);
                     if (!(whole > 0)) whole = 0;
-                    var mins = Math.trunc(whole / 60);
-                    return mins + 'm ' + (whole - mins * 60) + 's';
+                    var hours = Math.trunc(whole / 3600);
+                    var mins = Math.trunc((whole - hours * 3600) / 60);
+                    var secs = whole - hours * 3600 - mins * 60;
+                    if (hours > 0) return hours + 'h ' + mins + 'm ' + secs + 's';
+                    return mins + 'm ' + secs + 's';
                   },
                   // format_poll_countdown/1
                   formatCountdown(ms) {
@@ -186,20 +189,73 @@ defmodule CymphonyElixirWeb.Layouts do
                     this._onDocPointer = this.onDocPointer.bind(this);
                     this.open = false;
                     this.activeIndex = -1;
+                    this.activeValue = null;
+                    this.query = '';
                     this.options = [];
                     this.visibleOptions = [];
+                    this._restore = null;
                     this.bind();
                     this.cacheOptions();
                     this.close();
                     this.syncTrigger();
                   },
+                  // A LiveView patch morphs this whole subtree: the panel's
+                  // server-rendered `hidden` comes back, `combobox--open` is
+                  // stripped off the root, the search input's value and the
+                  // per-option `hidden`/`aria-selected` flags are rewritten, and
+                  // hiding an ancestor of the focused search box blurs it. So
+                  // snapshot the hook-owned DOM *before* the morph (beforeUpdate
+                  // is paired with updated) and put it back afterwards. The old
+                  // code inferred "still open" from document.activeElement in
+                  // updated(), which is already false by then, and fell through
+                  // to close() — which clears the typed filter. That is the
+                  // "dropdowns get refreshed" bug.
+                  beforeUpdate() {
+                    this.queryParts();
+                    this._restore = null;
+                    if (!this.open) return;
+                    var focused = !!(this.search && document.activeElement === this.search);
+                    this._restore = {
+                      query: this.search ? this.search.value : (this.query || ''),
+                      activeValue: this.activeValue || null,
+                      focused: focused,
+                      selStart: focused ? this.search.selectionStart : null,
+                      selEnd: focused ? this.search.selectionEnd : null
+                    };
+                  },
                   updated() {
-                    var keep = this.el.contains(document.activeElement);
                     this.bind();
                     this.cacheOptions();
                     this.syncTrigger();
-                    if (keep && this.open) this.filter(this.search ? this.search.value : '');
-                    else this.close();
+                    var r = this._restore;
+                    this._restore = null;
+                    // Was closed: assert closed chrome without calling close(),
+                    // which would clear a query the user may still be typing.
+                    if (!r) { this.setOpen(false); return; }
+                    // Order matters: setOpen first so the panel is visible before
+                    // we focus into it, and re-highlight after filter() because
+                    // filter() calls clearActive().
+                    this.setOpen(true);
+                    if (this.search) this.search.value = r.query;
+                    this.query = r.query;
+                    this.filter(r.query);
+                    if (r.activeValue) {
+                      // Re-highlight by value, not index: the option list itself
+                      // may have changed (a kind switch rewrites the models).
+                      var vis = this.visibleOptions || [];
+                      for (var i = 0; i < vis.length; i++) {
+                        if (this.optionValue(vis[i]) === r.activeValue) { this.setActive(i); break; }
+                      }
+                    }
+                    // Only steal focus back if it was ours before the morph, so a
+                    // patch landing while the operator types elsewhere cannot
+                    // yank the caret.
+                    if (r.focused && this.search) {
+                      this.search.focus();
+                      if (r.selStart !== null && this.search.setSelectionRange) {
+                        this.search.setSelectionRange(r.selStart, r.selEnd);
+                      }
+                    }
                   },
                   destroyed() {
                     if (this.setChrome) this.setChrome(false);
@@ -298,12 +354,21 @@ defmodule CymphonyElixirWeb.Layouts do
                   setChrome(open) {
                     var on = !!open;
                     this.el.classList.toggle('combobox--open', on);
-                    var section = this.el.closest('.project-section');
-                    if (section) section.classList.toggle('is-combobox-open', on);
-                    var row = this.el.closest('.session-row');
-                    if (row) row.classList.toggle('is-combobox-open', on);
-                    var card = this.el.closest('.queue-card');
-                    if (card) card.classList.toggle('is-combobox-open', on);
+                    this.syncChromeAncestor('.project-section', on);
+                    this.syncChromeAncestor('.session-row', on);
+                    this.syncChromeAncestor('.queue-card', on);
+                  },
+                  // A section/row/card holds several comboboxes and a patch runs
+                  // updated() on every one of them. Unconditionally removing the
+                  // class because *this* one is closed would strip the open
+                  // chrome (z-index, overflow) from a sibling that is still open,
+                  // depending on DOM order. `combobox--open` is toggled on self
+                  // first, so this never sees itself.
+                  syncChromeAncestor(selector, on) {
+                    var node = this.el.closest(selector);
+                    if (!node) return;
+                    if (on) node.classList.add('is-combobox-open');
+                    else if (!node.querySelector('.combobox--open')) node.classList.remove('is-combobox-open');
                   },
                   setOpen(open) {
                     this.open = !!open;
@@ -318,6 +383,7 @@ defmodule CymphonyElixirWeb.Layouts do
                   },
                   openPanel() {
                     if (this.search) this.search.value = '';
+                    this.query = '';
                     this.filter('');
                     this.setOpen(true);
                     var search = this.search;
@@ -325,10 +391,12 @@ defmodule CymphonyElixirWeb.Layouts do
                   },
                   close() {
                     if (this.search) this.search.value = '';
+                    this.query = '';
                     this.setOpen(false);
                   },
                   clearActive() {
                     this.activeIndex = -1;
+                    this.activeValue = null;
                     (this.options || []).forEach(function(opt) {
                       opt.setAttribute('aria-selected', 'false');
                     });
@@ -344,6 +412,7 @@ defmodule CymphonyElixirWeb.Layouts do
                     if (index >= vis.length) index = vis.length - 1;
                     this.activeIndex = index;
                     var active = vis[index];
+                    this.activeValue = this.optionValue(active);
                     vis.forEach(function(opt, i) {
                       opt.setAttribute('aria-selected', i === index ? 'true' : 'false');
                     });
@@ -376,7 +445,8 @@ defmodule CymphonyElixirWeb.Layouts do
                     this.setActive(next);
                   },
                   onSearchInput() {
-                    this.filter(this.search ? this.search.value : '');
+                    this.query = this.search ? this.search.value : '';
+                    this.filter(this.query);
                     if (!this.open) this.setOpen(true);
                   },
                   onTriggerClick(e) {
@@ -1043,6 +1113,68 @@ defmodule CymphonyElixirWeb.Layouts do
                     document.documentElement.removeAttribute('data-drawer');
                     this.pushEvent('dismiss_overlays', {});
                   }
+                },
+                // A native `<details>` keeps its open state in a DOM attribute the
+                // server never renders, and morphdom removes every attribute the
+                // server did not send — so any patch snapped the narrow-viewport
+                // jump menu shut mid-read. Below 900px the rail is gone and this
+                // is the only section-jump control, so the browser-owned flag has
+                // to be restored around the morph, like the Combobox does for its
+                // panel. Clicking a link closes it (native `<details>` would not).
+                JumpMenu: {
+                  mounted() {
+                    this._onPick = this.onPick.bind(this);
+                    this.el.addEventListener('click', this._onPick);
+                  },
+                  beforeUpdate() {
+                    this._open = this.el.open;
+                  },
+                  updated() {
+                    if (this._open && !this.el.open) this.el.open = true;
+                  },
+                  destroyed() {
+                    if (this.el) this.el.removeEventListener('click', this._onPick);
+                  },
+                  onPick(e) {
+                    var target = e.target;
+                    if (target && target.closest && target.closest('.jump-menu-link')) {
+                      this.el.open = false;
+                    }
+                  }
+                },
+                // Purely decorative scroll-spy: paints `aria-current` on the rail
+                // link whose section is nearest the top strip. No server traffic,
+                // no assign — without this hook the rail simply has no persistent
+                // highlight and every anchor still works.
+                RailNav: {
+                  mounted() {
+                    this._onScroll = this.sync.bind(this);
+                    window.addEventListener('scroll', this._onScroll, {passive: true});
+                    window.addEventListener('resize', this._onScroll, {passive: true});
+                    this.sync();
+                  },
+                  updated() { this.sync(); },
+                  destroyed() {
+                    window.removeEventListener('scroll', this._onScroll);
+                    window.removeEventListener('resize', this._onScroll);
+                  },
+                  sync() {
+                    var links = Array.prototype.slice.call(this.el.querySelectorAll('.rail-link'));
+                    if (!links.length) return;
+                    var probe = 120;
+                    var current = links[0];
+                    for (var i = 0; i < links.length; i++) {
+                      var href = links[i].getAttribute('href') || '';
+                      if (href.charAt(0) !== '#') continue;
+                      var section = document.getElementById(href.slice(1));
+                      if (!section) continue;
+                      if (section.getBoundingClientRect().top <= probe) current = links[i];
+                    }
+                    links.forEach(function(link) {
+                      if (link === current) link.setAttribute('aria-current', 'true');
+                      else link.removeAttribute('aria-current');
+                    });
+                  }
                 }
               }
             });
@@ -1131,12 +1263,18 @@ defmodule CymphonyElixirWeb.Layouts do
               document.querySelectorAll('[data-pref="completions-limit"]').forEach(function(el) {
                 el.value = prefs.completionsLimit || '100';
               });
+              // The visible chevron is CSS keyed off `<html>` (patch-proof); these
+              // writes are the accessible name only. Every write is guarded so the
+              // MutationObserver below — which watches `aria-expanded` so a morphdom
+              // reset is repaired — cannot re-trigger this function from its own edit.
               document.querySelectorAll('[data-collapse-toggle]').forEach(function(el) {
                 var collapsed = sectionIsCollapsed(el.getAttribute('data-collapse-toggle'), prefs);
                 var marker = collapsed ? '▸' : '▾';
+                var expanded = collapsed ? 'false' : 'true';
+                var label = collapsed ? 'Expand section' : 'Collapse section';
                 if (el.textContent !== marker) el.textContent = marker;
-                el.setAttribute('aria-expanded', collapsed ? 'false' : 'true');
-                el.setAttribute('aria-label', collapsed ? 'Expand section' : 'Collapse section');
+                if (el.getAttribute('aria-expanded') !== expanded) el.setAttribute('aria-expanded', expanded);
+                if (el.getAttribute('aria-label') !== label) el.setAttribute('aria-label', label);
               });
             }
 
@@ -1188,6 +1326,25 @@ defmodule CymphonyElixirWeb.Layouts do
               }
             });
 
+            // Esc closes the settings console. A delegated listener, not a hook:
+            // the drawer's open state is an attribute on <html>, outside the
+            // LiveView container, so nothing here can be patched away.
+            //
+            // The innermost overlay wins: a Combobox open *inside* the console
+            // (the add-project slug/agent/model/effort pickers) handles Escape
+            // itself and calls preventDefault(), and the keydown then bubbles to
+            // here. Without this guard one Escape dismissed both the dropdown and
+            // the whole console. It mirrors `OverlayDismiss.keepOpen`, which
+            // already exempts an open Combobox from the pointer-dismiss path —
+            // keyboard and pointer dismissal have to agree.
+            document.addEventListener('keydown', function(e) {
+              if (e.defaultPrevented) return;
+              if (e.key === 'Escape' &&
+                  document.documentElement.getAttribute('data-drawer') === 'open') {
+                document.documentElement.removeAttribute('data-drawer');
+              }
+            });
+
             document.addEventListener('change', function(e) {
               var html = document.documentElement;
               var prefs = readPrefs();
@@ -1214,11 +1371,15 @@ defmodule CymphonyElixirWeb.Layouts do
             syncPrefControls();
             window.addEventListener('phx:page-loading-stop', syncPrefControls);
 
+            // A LiveView patch rewrites server-rendered attributes back to the
+            // template's value. `aria-expanded` is watched alongside `aria-pressed`
+            // so a patched collapse toggle regains its accessible name immediately;
+            // the guarded writes above keep that from looping.
             var liveRoot = document.querySelector('[data-phx-main]');
             if (liveRoot && window.MutationObserver) {
               new MutationObserver(syncPrefControls).observe(liveRoot, {
                 attributes: true,
-                attributeFilter: ['aria-pressed'],
+                attributeFilter: ['aria-pressed', 'aria-expanded'],
                 childList: true,
                 subtree: true
               });

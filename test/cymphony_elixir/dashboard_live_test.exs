@@ -746,6 +746,176 @@ defmodule CymphonyElixir.DashboardLiveTest do
     assert render(view) =~ "Refresh interval must be a positive integer"
   end
 
+  test "the global concurrency field prefills the fleet value and never renders blank" do
+    snapshot = put_in(static_snapshot(), [:polling, :max_concurrent_agents], 4)
+    start_dashboard(snapshot: snapshot)
+
+    {:ok, view, _html} = live(build_conn(), "/")
+
+    # Every project agrees: show the number, like the refresh field does.
+    assert has_element?(view, ~s|#drawer-global-concurrency[value="4"][placeholder="4"]|)
+
+    payload = view_payload(view)
+    [project | _rest] = payload.projects
+    other = %{project | name: "Other", max_concurrent_agents: 9}
+
+    send(view.pid, {:payload_loaded, view_assigns(view).payload_seq, %{payload | projects: [project, other]}})
+    render(view)
+
+    # Projects disagree: prefilling either number would flatten the other on Set.
+    assert has_element?(view, ~s|#drawer-global-concurrency[value=""][placeholder="mixed"]|)
+  end
+
+  test "the global concurrency field falls back to the documented default when no project reports one" do
+    start_dashboard()
+
+    {:ok, view, _html} = live(build_conn(), "/")
+
+    # An empty box beside Set looked unfinished; name the schema default instead.
+    assert has_element?(view, ~s|#drawer-global-concurrency[value=""][placeholder="10"]|)
+  end
+
+  test "the shell renders a nav rail, a main column, project anchors, and the session grid head" do
+    start_dashboard()
+    {:ok, view, html} = live(build_conn(), "/")
+
+    assert has_element?(view, ~s|#dashboard-root.dashboard-shell[phx-hook="OverlayDismiss"]|)
+    assert has_element?(view, ~s|nav.side-rail a.side-rail-brand[href="#dashboard-top"]|)
+    assert has_element?(view, "#dashboard-top.main-col")
+    assert has_element?(view, "#project-default.project-section")
+
+    # The band moved out of <header> and keeps the class tokens the
+    # section-visibility prefs key off.
+    assert html =~ ~s(class="instrument-band command-bar-row--metrics section--metrics")
+
+    # Head cells reuse the body column classes, so `data-hidden-cols` hides the
+    # header and its column together with no extra CSS.
+    assert has_element?(view, ".session-row-list .session-grid-head.advanced-only .sg-id", "Issue")
+    assert has_element?(view, ".session-grid-head .session-row-title", "Title")
+    assert has_element?(view, ".session-grid-head .session-row-runtime", "Time")
+    assert has_element?(view, ".session-grid-head .session-row-tokens", "Tokens")
+
+    # The disclosure chevron is CSS geometry now; the server renders no glyph.
+    disclosure = view |> element(~s|button.session-row-disclosure[phx-value-issue="MT-HTTP"]|) |> render()
+    refute disclosure =~ "▸"
+    refute disclosure =~ "▾"
+
+    # Always in the DOM; only painted while the socket is in `phx-error`.
+    assert has_element?(view, ~s|div.reconnect-note[role="status"]|)
+  end
+
+  test "flashes render in the fixed toast stack instead of shifting the board" do
+    start_dashboard()
+    {:ok, view, html} = live(build_conn(), "/")
+
+    assert has_element?(view, ~s|div.toast-stack[aria-live="polite"]|)
+    refute html =~ "alert-banner alert-info"
+
+    view
+    |> form(~s|form[phx-submit="set_refresh_interval"]|, %{value: "7"})
+    |> render_submit()
+
+    assert has_element?(view, ".toast-stack .alert-banner.alert-info", "Dashboard refresh set to 7s")
+  end
+
+  test "the rail renders vitals, fleet links with state LEDs, and the foot controls" do
+    start_dashboard()
+    {:ok, view, _html} = live(build_conn(), "/")
+
+    # Vitals read the same section assigns the band does — never a clock.
+    assert has_element?(view, ".side-rail .rail-vitals .rail-vitals-num", "1")
+    assert has_element?(view, ".side-rail .rail-vitals-copy", "Automatic work is on.")
+
+    # Fleet nav: an Overview anchor plus one anchor per project, pointing at the
+    # section ids Part A added.
+    assert has_element?(view, ~s|#rail-nav[phx-hook="RailNav"]|)
+    assert has_element?(view, ~s|.rail-group .rail-link[href="#dashboard-top"] .rail-link-name|, "Overview")
+    assert has_element?(view, ~s|.rail-link[href="#project-default"][title="default"] .rail-link-name|, "default")
+
+    # The fixture has one running and one retrying issue: retrying outranks
+    # running so the rail says "this project is not simply working".
+    assert has_element?(view, ~s|.rail-link[href="#project-default"] .rail-led.rail-led--retry|)
+
+    # Completions are empty in the fixture, so that anchor is absent.
+    refute has_element?(view, ~s|.rail-link[href="#completions-section"]|)
+
+    # Foot: mode + theme moved here; console and refresh sit beside them.
+    assert has_element?(view, ~s|.rail-foot #mode-switch-rail[phx-update="ignore"]|)
+    assert has_element?(view, ~s|.rail-foot .theme-toggle [data-theme-set="system"]|)
+    assert has_element?(view, ~s|.rail-foot button.rail-action[data-drawer-toggle][aria-label="Settings"]|)
+    assert has_element?(view, ~s|.rail-foot button.rail-action--refresh[phx-click="refresh_now"]|)
+  end
+
+  test "a paused project shows the amber rail LED" do
+    snapshot = static_snapshot()
+    paused = %{snapshot | running: [], retrying: [], polling: %{snapshot.polling | paused: true}}
+    start_dashboard(snapshot: paused)
+    {:ok, view, _html} = live(build_conn(), "/")
+
+    assert has_element?(view, ~s|.rail-link[href="#project-default"] .rail-led.rail-led--paused|)
+    assert has_element?(view, ".rail-vitals-copy", "Automatic work is paused.")
+  end
+
+  test "an idle project shows the neutral rail LED" do
+    start_dashboard(snapshot: %{static_snapshot() | running: [], retrying: []})
+    {:ok, view, _html} = live(build_conn(), "/")
+
+    assert has_element?(view, ~s|.rail-link[href="#project-default"] .rail-led.rail-led--idle|)
+  end
+
+  test "the narrow top strip keeps duplicate mode/theme controls and a jump menu" do
+    start_dashboard()
+    {:ok, view, _html} = live(build_conn(), "/")
+
+    assert has_element?(view, ".command-bar #mode-switch-top.mode-switch.topbar-only-narrow")
+    assert has_element?(view, ".command-bar .theme-toggle.topbar-only-narrow")
+    assert has_element?(view, ~s|.command-bar details.jump-menu.topbar-only-narrow .jump-menu-summary|, "Jump to")
+    assert has_element?(view, ~s|.jump-menu-panel .jump-menu-link[href="#project-default"]|, "default")
+
+    # `open` is browser-owned and never server-rendered, so morphdom strips it on
+    # every patch. Below 900px this is the only section-jump control, so it needs
+    # a hook to carry the flag across the morph — the rail's anchors are gone.
+    assert has_element?(view, ~s|details#jump-menu.jump-menu[phx-hook="JumpMenu"]|)
+  end
+
+  test "fleet-empty replaces the board only once a connected payload has no projects" do
+    start_dashboard()
+
+    # The dead render also has `projects: []`; it has not earned the claim.
+    dead = html_response(get(build_conn(), "/"), 200)
+    refute dead =~ "fleet-empty"
+
+    {:ok, view, html} = live(build_conn(), "/")
+    refute html =~ "fleet-empty"
+
+    send(view.pid, {:payload_loaded, view_assigns(view).payload_seq, %{projects: []}})
+
+    assert has_element?(view, "section.section-card.fleet-empty .fleet-empty-label", "No projects")
+    assert has_element?(view, ".fleet-empty-copy", "Connect Linear and add your first project.")
+    assert has_element?(view, ".fleet-empty-action[data-drawer-toggle]", "Open settings")
+  end
+
+  test "the settings console explains refresh interval against Linear polling" do
+    start_dashboard()
+    {:ok, view, _html} = live(build_conn(), "/")
+
+    # Operator complaint: "refresh" was read as the Linear poll cadence.
+    assert has_element?(
+             view,
+             ".settings-drawer .settings-control-row .settings-help",
+             "Refresh (s): how often this dashboard re-reads orchestrator state — not Linear polling."
+           )
+
+    assert has_element?(view, ".settings-drawer .settings-control-row form[phx-submit=\"set_refresh_interval\"]")
+    assert has_element?(view, ".settings-drawer .settings-help", "How many agent sessions may run at once, across every project.")
+    assert has_element?(view, ".settings-drawer .settings-help", "Running sessions finish.")
+
+    # Primary actions carry the accent; the destructive/quiet ones do not.
+    assert has_element?(view, ~s|#linear-connect-form button.subtle-button--accent|, "Connect")
+    assert has_element?(view, ~s|.settings-drawer button.settings-submit[phx-click="pause_dispatch"]|, "Pause all")
+    refute has_element?(view, ~s|.settings-drawer button.subtle-button--accent[phx-click="pause_dispatch"]|)
+  end
+
   test "queue board is hidden when waiting is empty" do
     start_dashboard()
     {:ok, view, html} = live(build_conn(), "/")
@@ -774,6 +944,10 @@ defmodule CymphonyElixir.DashboardLiveTest do
     assert has_element?(view, "section.queue-board.section--board")
     assert has_element?(view, "#queue-board-default.queue-board-list")
     assert has_element?(view, ~s|#queue-card-default-LLM-51[data-issue="LLM-51"][data-rank="0"]|)
+    # `data-rank` stays 0-based (the drag hook owns it); the printed rank is a
+    # separate 1-based label the CSS renders as a decorative numeral.
+    assert has_element?(view, ~s|#queue-card-default-LLM-51[data-rank-label="01"]|)
+    assert has_element?(view, ~s|#queue-card-default-LLM-12[data-rank-label="02"]|)
     assert has_element?(view, ~s|#queue-card-default-LLM-51.queue-card--next|)
     assert has_element?(view, "#queue-card-default-LLM-51 .queue-next-badge", "Next")
     refute has_element?(view, ~s|#queue-card-default-LLM-12.queue-card--next|)
@@ -809,6 +983,15 @@ defmodule CymphonyElixir.DashboardLiveTest do
 
     assert has_element?(view, "#queue-edit-default-LLM-51")
     refute has_element?(view, "#queue-edit-default-LLM-12")
+
+    # The sheet is a viewport-positioned popover: `QueueEditPanel` places it off
+    # the card's rect, and `phx-click-away` is the no-JS half of the same
+    # dismiss. Both must stay on the element — the hook has nothing to anchor to
+    # without the id, and the id alone does not open a popover.
+    assert has_element?(
+             view,
+             ~s|div.queue-card-edit#queue-edit-default-LLM-51[phx-hook="QueueEditPanel"][phx-click-away="dismiss_overlays"]|
+           )
 
     view
     |> element(~s|button.queue-card-edit-toggle[phx-value-issue="LLM-12"]|)
@@ -941,6 +1124,84 @@ defmodule CymphonyElixir.DashboardLiveTest do
     assert has_element?(view, "p.empty-state")
   end
 
+  test "idle States/Kinds cells show a muted placeholder instead of a blank value" do
+    start_dashboard(snapshot: static_snapshot() |> Map.put(:running, []) |> Map.put(:retrying, []) |> Map.put(:waiting, []))
+
+    {:ok, view, _html} = live(build_conn(), "/")
+
+    # Label-only compartments read as broken chrome on a first-run board.
+    assert has_element?(view, ".metric-pill--states .metric-pill-value.metric-pill-placeholder", "—")
+    assert has_element?(view, ".metric-pill--kinds .metric-pill-value.metric-pill-placeholder", "—")
+  end
+
+  test "a fresh board's Tput cell shows a flat baseline instead of an empty sparkline" do
+    start_dashboard()
+
+    {:ok, view, _html} = live(build_conn(), "/")
+
+    # Under two token samples there is no rate to draw, and an empty string left
+    # the cell reading as a bare "0" — the same broken-chrome impression the
+    # States/Kinds em dash exists to avoid.
+    assert has_element?(
+             view,
+             ".metric-pill--throughput .metric-pill-spark.metric-pill-placeholder",
+             "▁▁▁▁▁▁▁▁▁▁▁▁"
+           )
+  end
+
+  test "the simple band names the running count once and calls retries retries" do
+    start_dashboard()
+
+    {:ok, _view, html} = live(build_conn(), "/")
+
+    # The rail already counts `running · queued`. A band that said "Working" put
+    # two words on one count, and its "Waiting" meant *retrying* while the rail's
+    # meant *queued*. Counts are unchanged; only the words are.
+    assert html =~ ~s(<span class="metric-pill-label simple-only">Running</span>)
+    assert html =~ ~s(<span class="metric-pill-label simple-only">To retry</span>)
+    refute html =~ ~s(<span class="metric-pill-label simple-only">Working</span>)
+    refute html =~ ~s(<span class="metric-pill-label simple-only">Waiting</span>)
+  end
+
+  test "populated States/Kinds cells keep the breakdown text and no placeholder class" do
+    start_dashboard()
+
+    {:ok, view, html} = live(build_conn(), "/")
+
+    assert html =~ "In Progress 1"
+    refute has_element?(view, ".metric-pill--states .metric-pill-placeholder")
+    refute has_element?(view, ".metric-pill--kinds .metric-pill-placeholder")
+  end
+
+  test "a held retry gets a tag, not a bare muted sentence, and mutes the row's retry edge" do
+    snapshot = static_snapshot()
+    retrying = Enum.map(snapshot.retrying, &Map.put(&1, :held, true))
+
+    start_dashboard(snapshot: %{snapshot | retrying: retrying})
+
+    {:ok, view, _html} = live(build_conn(), "/")
+
+    # Held is a state, and every other state on this board is a tag. Its
+    # neighbour is `.chip.chip--warn` "Attempt N"; held is suppression rather
+    # than failure, so `.chip--held` is neutral and `.retry-row--held` drops the
+    # row's amber inset edge — a fully paused board is parked, not alarming.
+    assert has_element?(view, "article.retry-row.retry-row--held span.chip.chip--held", "Held")
+    refute render(view) =~ "held while paused"
+
+    # No due countdown while held: the presenter withholds `due_at` entirely.
+    refute has_element?(view, ~s|.retry-row--held span[data-clock="due"]|)
+  end
+
+  test "an armed retry row carries neither the held tag nor the held modifier" do
+    start_dashboard()
+
+    {:ok, view, _html} = live(build_conn(), "/")
+
+    assert has_element?(view, "article.retry-row")
+    refute has_element?(view, "article.retry-row.retry-row--held")
+    refute has_element?(view, "span.chip--held")
+  end
+
   test "time-derived values carry LiveClock anchors instead of absolute wall times" do
     start_dashboard()
 
@@ -993,9 +1254,17 @@ defmodule CymphonyElixir.DashboardLiveTest do
     [entry | rest] = payload.running
     stalled = entry |> Map.put(:stalled, true) |> Map.put(:last_event_at, "not-a-timestamp")
 
+    # `due_at` alone is a volatile key the change comparison ignores, so bump
+    # `attempt` too: a real reschedule always moves a non-volatile field with it,
+    # and without one the section legitimately keeps its previous value.
     projects =
       Enum.map(payload.projects, fn project ->
-        %{project | retrying: Enum.map(project.retrying, &Map.put(&1, :due_at, "not-a-timestamp"))}
+        retrying =
+          Enum.map(project.retrying, fn retry ->
+            retry |> Map.put(:due_at, "not-a-timestamp") |> Map.put(:attempt, retry.attempt + 1)
+          end)
+
+        %{project | retrying: retrying}
       end)
 
     unclocked = %{
@@ -1025,6 +1294,38 @@ defmodule CymphonyElixir.DashboardLiveTest do
     assert html =~ ~s(data-rate="0")
   end
 
+  # A minutes-only counter ("260m 44s") is a raw-counter tell in the band's
+  # largest numeral. The LiveClock `formatElapsed` in layouts.ex mirrors this
+  # exact string (pinned in extensions_test.exs).
+  test "elapsed times roll into hours past 60 minutes" do
+    started_at = DateTime.add(DateTime.utc_now(), -15_644, :second)
+
+    snapshot =
+      Map.update!(static_snapshot(), :running, fn [entry | rest] ->
+        [%{entry | started_at: started_at} | rest]
+      end)
+
+    start_dashboard(snapshot: snapshot)
+
+    {:ok, view, _html} = live(build_conn(), "/")
+
+    seconds = DateTime.diff(view_assigns(view).now, started_at, :second)
+    hours = div(seconds, 3_600)
+    minutes = div(rem(seconds, 3_600), 60)
+
+    assert hours == 4
+
+    assert has_element?(
+             view,
+             ~s|.session-row-runtime span[data-clock="elapsed"]|,
+             "#{hours}h #{minutes}m #{rem(seconds, 60)}s"
+           )
+
+    # Under the hour the format is unchanged (the stalled-banner test pins the
+    # `Mm Ss` shape directly).
+    refute render(view) =~ "0h "
+  end
+
   test "runtime_tick no longer re-renders time strings" do
     start_dashboard()
 
@@ -1050,7 +1351,7 @@ defmodule CymphonyElixir.DashboardLiveTest do
     assert changed_assign_keys(assigns_before, assigns_after) == []
   end
 
-  test "runtime_tick still drives the periodic payload refresh" do
+  test "runtime_tick still drives the periodic payload refresh once the payload is dirty" do
     start_dashboard()
 
     {:ok, view, _html} = live(build_conn(), "/")
@@ -1061,12 +1362,110 @@ defmodule CymphonyElixir.DashboardLiveTest do
 
     assigns_before = view_assigns(view)
 
+    # The tick is the only thing that loads a payload on a cadence, but it now
+    # waits for a dirty flag: an orchestrator broadcast marks the payload dirty
+    # and the next due tick coalesces it into exactly one load.
+    send(view.pid, :observability_updated)
+
     assert wait_until(fn ->
              assigns = view_assigns(view)
 
              assigns.last_payload_refresh > assigns_before.last_payload_refresh and
                assigns.payload_seq > assigns_before.payload_seq
            end)
+
+    assert view_assigns(view).payload_dirty == false
+  end
+
+  test "an orchestrator pubsub update marks the payload dirty and does not reload" do
+    start_dashboard()
+
+    {:ok, view, _html} = live(build_conn(), "/")
+
+    assigns_before = view_assigns(view)
+
+    send(view.pid, :observability_updated)
+    render(view)
+
+    assigns = view_assigns(view)
+
+    # The orchestrator broadcasts twice per Linear poll (default 5s) plus once
+    # per agent event. Reloading here — and re-stamping `:last_payload_refresh`
+    # while doing it — made the poll interval the refresh interval and disabled
+    # the configured gate outright.
+    assert assigns.payload_dirty == true
+    assert assigns.payload_seq == assigns_before.payload_seq
+    assert assigns.last_payload_refresh == assigns_before.last_payload_refresh
+    assert changed_assign_keys(assigns_before, assigns) == [:payload_dirty]
+  end
+
+  test "a burst of pubsub updates costs one payload load per configured interval" do
+    start_dashboard()
+
+    {:ok, view, _html} = live(build_conn(), "/")
+
+    view
+    |> form(~s|form[phx-submit="set_refresh_interval"]|, %{value: "1"})
+    |> render_submit()
+
+    # Put the window already past due so the very first tick is eligible.
+    backdate_payload_refresh(view, 5_000)
+    seq_before = view_assigns(view).payload_seq
+
+    for _ <- 1..20 do
+      send(view.pid, :observability_updated)
+      send(view.pid, :runtime_tick)
+    end
+
+    render(view)
+
+    # 20 broadcasts inside one window, exactly one load. Before the coalescing
+    # each broadcast spawned its own `Orchestrator.snapshot/2` task per open tab,
+    # into the hottest GenServer in the system.
+    assert view_assigns(view).payload_seq - seq_before == 1
+  end
+
+  test "a pubsub update never shortens the configured interval" do
+    start_dashboard()
+
+    {:ok, view, _html} = live(build_conn(), "/")
+
+    view
+    |> form(~s|form[phx-submit="set_refresh_interval"]|, %{value: "30"})
+    |> render_submit()
+
+    seq_before = view_assigns(view).payload_seq
+
+    send(view.pid, :observability_updated)
+
+    for _ <- 1..5 do
+      send(view.pid, :runtime_tick)
+    end
+
+    render(view)
+
+    # "I set refresh to 20s and it still refreshes every 5s": the poll broadcast
+    # must not pull the reload forward.
+    assert view_assigns(view).payload_seq == seq_before
+    assert view_assigns(view).payload_dirty == true
+  end
+
+  test "an idle board still resyncs when nothing broadcasts" do
+    start_dashboard()
+
+    {:ok, view, _html} = live(build_conn(), "/")
+
+    # The dirty gate cannot be the only trigger: a dropped broadcast, or a field
+    # nothing broadcasts about (`last_agent_timestamp`, the poll countdown),
+    # would otherwise freeze the board forever. Backdate the window past the
+    # 30s idle-resync safety net.
+    seq_before = view_assigns(view).payload_seq
+    backdate_payload_refresh(view, 60_000)
+
+    send(view.pid, :runtime_tick)
+    render(view)
+
+    assert view_assigns(view).payload_seq > seq_before
   end
 
   test "a payload load re-anchors :now only when a clock-bearing section moved" do
@@ -1121,9 +1520,11 @@ defmodule CymphonyElixir.DashboardLiveTest do
   end
 
   test "re-delivering an identical payload leaves every section assign and the render untouched" do
-    # No running/retrying rows: the render then carries no wall-clock-derived
-    # value, so an unchanged payload must produce byte-identical HTML.
-    orchestrator = start_dashboard(snapshot: static_snapshot() |> Map.put(:running, []) |> Map.put(:retrying, []))
+    # With sessions RUNNING and a retry queued — the operator-facing acceptance.
+    # Every wall-clock-derived value in the render is either a `data-clock`
+    # anchor derived from `:now` (which does not move on a load that changed
+    # nothing) or one of the volatile entry keys the signature ignores.
+    orchestrator = start_dashboard()
 
     {:ok, view, _html} = live(build_conn(), "/")
 
@@ -1138,8 +1539,13 @@ defmodule CymphonyElixir.DashboardLiveTest do
 
     # Rebuilt from the orchestrator rather than echoed back out of the view's own
     # assigns, so the sections have to come out equal on their own — echoing the
-    # assigns would make the assertions below true by construction.
-    send(view.pid, {:payload_loaded, assigns_before.payload_seq, Presenter.state_payload(orchestrator, 1_000)})
+    # assigns would make the assertions below true by construction. The poll
+    # countdown is advanced on top of it because a live orchestrator re-derives
+    # it from the wall clock on every snapshot: "identical payload" in production
+    # never includes an identical countdown, and the fixture freezes it.
+    reloaded = Presenter.state_payload(orchestrator, 1_000)
+    reloaded = %{reloaded | polling: %{reloaded.polling | next_poll_in_ms: 1_842}}
+    send(view.pid, {:payload_loaded, assigns_before.payload_seq, reloaded})
 
     assert render(view) == html_before
     assert view_payload(view) == payload_before
@@ -1155,8 +1561,8 @@ defmodule CymphonyElixir.DashboardLiveTest do
     # This is the shape of a real idle poll: the orchestrator snapshot is
     # re-read every few seconds and comes back with a fresh `generated_at` and
     # otherwise identical sections. Under the old monolithic `@payload` assign
-    # that alone re-rendered the whole template.
-    orchestrator = start_dashboard(snapshot: static_snapshot() |> Map.put(:running, []) |> Map.put(:retrying, []))
+    # that alone re-rendered the whole template. Sessions are running here too.
+    orchestrator = start_dashboard()
 
     {:ok, view, _html} = live(build_conn(), "/")
 
@@ -1173,18 +1579,24 @@ defmodule CymphonyElixir.DashboardLiveTest do
     assert changed_assign_keys(assigns_before, view_assigns(view)) -- [:token_samples] == []
   end
 
-  test "a poll that only moves the countdown leaves :now and the per-project section alone" do
+  test "a poll that only moves the countdown reassigns nothing at all" do
     start_dashboard()
 
     {:ok, view, _html} = live(build_conn(), "/")
 
+    # The throughput sparkline is seeded from the mount token sample and grows
+    # its first column on the first load, so take the baseline after one load.
     payload = view_payload(view)
+    send(view.pid, {:payload_loaded, view_assigns(view).payload_seq, payload})
+    render(view)
+
     assigns_before = view_assigns(view)
 
-    # The poll countdown is the one thing that moves on an otherwise idle poll.
-    # It carries its own `data-remaining-ms` anchor and reads no wall clock, so
-    # it must not drag `:now` — and through `:now`, the whole per-project
-    # comprehension — onto the wire with it.
+    # The poll countdown is the one thing that moves on every real orchestrator
+    # snapshot: it is re-derived as `max(0, next_poll_due_at_ms - now_ms)`. It is
+    # a `data-clock="countdown"` anchor the browser advances on its own, so an
+    # integer-to-integer tick must not reassign `:polling` — reassigning it meant
+    # no production payload load could ever ship an empty diff.
     ticked = %{payload | polling: %{payload.polling | next_poll_in_ms: 4_000}}
 
     send(view.pid, {:payload_loaded, assigns_before.payload_seq, ticked})
@@ -1192,10 +1604,43 @@ defmodule CymphonyElixir.DashboardLiveTest do
 
     assigns = view_assigns(view)
 
-    assert assigns.polling.next_poll_in_ms == 4_000
+    assert assigns.polling == assigns_before.polling
     assert assigns.now == assigns_before.now
     assert assigns.projects == assigns_before.projects
-    assert changed_assign_keys(assigns_before, assigns) -- [:polling, :token_samples] == []
+    assert changed_assign_keys(assigns_before, assigns) -- [:token_samples] == []
+  end
+
+  test "a poll that stops scheduling, or starts checking, still reassigns :polling" do
+    start_dashboard()
+
+    {:ok, view, _html} = live(build_conn(), "/")
+
+    payload = view_payload(view)
+    send(view.pid, {:payload_loaded, view_assigns(view).payload_seq, payload})
+    render(view)
+
+    # `nil` is not countdown drift: it means no poll is scheduled, which drops
+    # the anchor attribute and renders `n/a`. That has to land.
+    unscheduled = %{payload | polling: %{payload.polling | next_poll_in_ms: nil}}
+    send(view.pid, {:payload_loaded, view_assigns(view).payload_seq, unscheduled})
+    render(view)
+
+    assert view_assigns(view).polling.next_poll_in_ms == nil
+
+    # `checking?` flips true on every tick and false again when the cycle ends,
+    # and it is in the signature — which is what lands the refreshed countdown
+    # twice per poll despite the drift being ignored.
+    checking = %{payload | polling: %{payload.polling | checking?: true, next_poll_in_ms: nil}}
+    send(view.pid, {:payload_loaded, view_assigns(view).payload_seq, checking})
+    render(view)
+
+    assert view_assigns(view).polling.checking? == true
+
+    resumed = %{payload | polling: %{payload.polling | checking?: false, next_poll_in_ms: 29_000}}
+    send(view.pid, {:payload_loaded, view_assigns(view).payload_seq, resumed})
+    render(view)
+
+    assert view_assigns(view).polling.next_poll_in_ms == 29_000
   end
 
   test "a payload that only moves one section leaves the other section assigns alone" do
@@ -1220,38 +1665,100 @@ defmodule CymphonyElixir.DashboardLiveTest do
     assert assigns.token_totals == payload.token_totals
   end
 
-  test "a poll where only the wall-clock-derived rate moved leaves the entry sections alone" do
+  # Every one of these is re-derived from a wall clock (or poked by a
+  # timestamp-only heartbeat) on every single load, so comparing it would make
+  # `:running` / `:retrying` / `:projects` differ on every refresh while an agent
+  # runs — precisely when the dashboard is busiest — and re-serialize every
+  # Combobox in the project section.
+  @volatile_running_moves [
+    {:tokens_per_second, 99.5},
+    {:last_event_at, "2026-08-16T00:00:00Z"}
+  ]
+
+  for {key, value} <- @volatile_running_moves do
+    test "a poll where only a running entry's #{key} moved leaves the entry sections alone" do
+      start_dashboard()
+
+      {:ok, view, _html} = live(build_conn(), "/")
+
+      payload = view_payload(view)
+      send(view.pid, {:payload_loaded, view_assigns(view).payload_seq, payload})
+      render(view)
+
+      [entry | rest] = payload.running
+      moved = Map.put(entry, unquote(key), unquote(value))
+      refute moved == entry
+
+      assigns_before = view_assigns(view)
+      patched = %{payload | running: [moved | rest], projects: patch_running(payload.projects, moved)}
+
+      send(view.pid, {:payload_loaded, assigns_before.payload_seq, patched})
+
+      render(view)
+      assigns = view_assigns(view)
+
+      assert assigns.running == assigns_before.running
+      assert assigns.projects == assigns_before.projects
+      assert assigns.now == assigns_before.now
+
+      # The frozen value is the deliberate trade-off: the row keeps the `t/s`
+      # chip and the expanded `@ <timestamp>` from the last load that moved a
+      # real field rather than re-rendering the whole board for a number the
+      # server re-derived from nothing but the clock.
+      assert changed_assign_keys(assigns_before, assigns) -- [:token_samples] == []
+    end
+  end
+
+  test "a retry payload whose only movement is due_at leaves :retrying and :projects alone" do
     start_dashboard()
 
     {:ok, view, _html} = live(build_conn(), "/")
 
     payload = view_payload(view)
-    [entry | rest] = payload.running
+    send(view.pid, {:payload_loaded, view_assigns(view).payload_seq, payload})
+    render(view)
 
-    # What an idle poll actually looks like for a running agent: the tokens did
-    # not move, but `tokens_per_second` divides them by a wider window every
-    # load, so it drifts on its own. Without this being ignored, `:running` and
-    # `:projects` would be reassigned on every single refresh and the whole
-    # per-project section would re-render — the churn the split exists to remove.
-    drifted = Map.update!(entry, :tokens_per_second, &(&1 + 1.5))
-    refute drifted == entry
+    # `due_at` is an absolute time the presenter re-derives as `utc_now +
+    # due_in_ms`, so it jitters by the snapshot round-trip. Holding the previous
+    # value is lossless: every real reschedule also moves `attempt`, `held`, or
+    # `error`. Move it in both the top-level section and the nested project copy
+    # — the nested one pins `Map.replace_lazy(:retrying, …)` in the signature.
+    [retry | rest] = payload.retrying
+    moved = Map.put(retry, :due_at, "2026-08-16T00:00:09Z")
+    refute moved == retry
+
+    projects = Enum.map(payload.projects, fn project -> %{project | retrying: [moved | rest]} end)
 
     assigns_before = view_assigns(view)
 
-    patched = %{payload | running: [drifted | rest], projects: patch_running(payload.projects, drifted)}
-
-    send(view.pid, {:payload_loaded, assigns_before.payload_seq, patched})
+    send(
+      view.pid,
+      {:payload_loaded, assigns_before.payload_seq, %{payload | retrying: [moved | rest], projects: projects}}
+    )
 
     render(view)
     assigns = view_assigns(view)
 
-    assert assigns.running == assigns_before.running
+    assert assigns.retrying == assigns_before.retrying
     assert assigns.projects == assigns_before.projects
-
-    # The frozen rate is the deliberate trade-off: the row keeps the `t/s` from
-    # the last load that moved a real field rather than re-rendering the whole
-    # board to show a rate the server re-derived from nothing but the clock.
     assert changed_assign_keys(assigns_before, assigns) -- [:token_samples] == []
+  end
+
+  test "a retry reschedule still lands because attempt moves with due_at" do
+    start_dashboard()
+
+    {:ok, view, _html} = live(build_conn(), "/")
+
+    payload = view_payload(view)
+    [retry | rest] = payload.retrying
+    rescheduled = retry |> Map.put(:attempt, retry.attempt + 1) |> Map.put(:due_at, "2026-08-16T00:00:09Z")
+
+    send(view.pid, {:payload_loaded, view_assigns(view).payload_seq, %{payload | retrying: [rescheduled | rest]}})
+
+    render(view)
+
+    assert [%{attempt: attempt, due_at: "2026-08-16T00:00:09Z"}] = view_assigns(view).retrying
+    assert attempt == retry.attempt + 1
   end
 
   test "an error payload resets every section to its default" do
@@ -1297,6 +1804,261 @@ defmodule CymphonyElixir.DashboardLiveTest do
 
     render(view)
     assert view_assigns(view).counts == payload.counts
+  end
+
+  # morphdom rewrites `fromEl.value = toEl.value` on every `<input>` it walks and
+  # only spares the *focused*, non-hidden one, so any control whose rendered
+  # value can differ from the last payload while the operator edits it has to
+  # render from a draft assign. `field` names the draft slot; `value` is what was
+  # typed.
+  @field_draft_cases [
+    {"project concurrency", ~s|form[phx-submit="set_project_concurrency"]|, "concurrency:default", "7"},
+    {"project providers", ~s|form[phx-submit="set_project_providers"]|, "providers:default", "cz9,ck9"},
+    {"global concurrency", ~s|form[phx-submit="set_concurrency"]|, "global-concurrency", "5"},
+    {"refresh interval", ~s|form[phx-submit="set_refresh_interval"]|, "refresh-interval", "20"}
+  ]
+
+  for {label, _selector, key, typed} <- @field_draft_cases do
+    test "an in-progress #{label} edit survives a payload reload" do
+      start_dashboard()
+
+      {:ok, view, _html} = live(build_conn(), "/")
+
+      render_change(view, "preview_field", %{"field" => unquote(key), "value" => unquote(typed)})
+
+      # A payload load lands mid-edit — this is the ~10/s case while an agent
+      # runs. The typed value must still be what the input renders.
+      payload = view_payload(view)
+      counts = %{payload.counts | running: payload.counts.running + 1}
+      send(view.pid, {:payload_loaded, view_assigns(view).payload_seq, %{payload | counts: counts}})
+
+      html = render(view)
+
+      assert view_assigns(view).field_drafts[unquote(key)] == unquote(typed)
+      assert html =~ ~s(value="#{unquote(typed)}")
+    end
+  end
+
+  test "a successful submit clears the field draft so the payload value renders again" do
+    start_dashboard()
+
+    {:ok, view, _html} = live(build_conn(), "/")
+
+    render_change(view, "preview_field", %{"field" => "refresh-interval", "value" => "20"})
+    assert view_assigns(view).field_drafts["refresh-interval"] == "20"
+
+    view
+    |> form(~s|form[phx-submit="set_refresh_interval"]|, %{value: "20"})
+    |> render_submit()
+
+    # Holding the draft forever would freeze the control against
+    # `POST /api/v1/refresh-interval` and against another tab.
+    refute Map.has_key?(view_assigns(view).field_drafts, "refresh-interval")
+    assert view_assigns(view).payload_refresh_seconds == 20
+    assert render(view) =~ ~s(id="drawer-refresh-interval")
+  end
+
+  test "an in-progress add-project edit survives a payload reload" do
+    start_dashboard()
+    {:ok, config} = CymphonyConfig.load()
+    assert :ok = CymphonyConfig.save(Map.put(config, "linear_api_key", "lin_api_fake"))
+
+    {:ok, view, _html} = live(build_conn(), "/")
+
+    render_change(view, "preview_add_project", %{
+      "linear_project_slug" => "ailogic-ced4159f70c4",
+      "name" => "Agent Farm",
+      "github_repo_url" => "https://github.com/acme/farm",
+      "agent" => "codex",
+      "model" => "",
+      "effort" => "",
+      "provider" => ""
+    })
+
+    payload = view_payload(view)
+    counts = %{payload.counts | running: payload.counts.running + 1}
+    send(view.pid, {:payload_loaded, view_assigns(view).payload_seq, %{payload | counts: counts}})
+
+    html = render(view)
+    assigns = view_assigns(view)
+
+    assert assigns.add_project_slug == "ailogic-ced4159f70c4"
+    assert assigns.add_project_name == "Agent Farm"
+    assert assigns.add_project_github == "https://github.com/acme/farm"
+    assert html =~ ~s(value="Agent Farm")
+    assert html =~ ~s(value="https://github.com/acme/farm")
+    assert html =~ ~s(value="ailogic-ced4159f70c4")
+  end
+
+  test "preview_project_agent records a model draft when the project has no persisted kind" do
+    snapshot = static_snapshot() |> Map.put(:agent_kind, nil) |> Map.put(:agent_model, nil)
+    start_dashboard(snapshot: snapshot, recipient: self())
+
+    {:ok, view, _html} = live(build_conn(), "/")
+
+    seq_before = view_assigns(view).payload_seq
+
+    # A project with no persisted `agent_kind` renders `kind: ""`, so choosing a
+    # *model* posts `agent_kind=""`. Dropping that preview reverted the model on
+    # the next patch.
+    render_change(view, "preview_project_agent", %{
+      "project" => "default",
+      "agent_kind" => "",
+      "model" => "gpt-5.2-codex",
+      "effort" => ""
+    })
+
+    assert view_assigns(view).agent_setting_drafts["default"] == %{
+             kind: "",
+             model: "gpt-5.2-codex",
+             effort: ""
+           }
+
+    # An empty kind is nothing to persist, and a reload here would throw the
+    # draft away.
+    refute_receive {:orchestrator_call, {:set_agent_settings, _}}, 100
+    assert view_assigns(view).payload_seq == seq_before
+  end
+
+  test "client-owned controls are frozen with phx-update=ignore" do
+    start_dashboard()
+
+    {:ok, view, _html} = live(build_conn(), "/")
+
+    # The Linear key must never reach assigns, so the server has no correct value
+    # to render; density/section/column prefs and the mode switch are pure
+    # localStorage state. Freezing the subtree beats repairing it after every
+    # patch (morphdom re-applies `checked`/`aria-pressed`/`selected` on each one).
+    for id <- ~w(linear-connect-form settings-display settings-experience mode-switch-top) do
+      assert has_element?(view, ~s|##{id}[phx-update="ignore"]|)
+    end
+
+    # Freezing the form must not disarm its submit.
+    assert has_element?(view, ~s|#linear-connect-form[phx-submit="connect_linear"]|)
+    assert has_element?(view, "#linear-api-key")
+  end
+
+  @immediate_reload_events [
+    {"kill_issue", ~s|button[phx-click="kill_issue"][phx-value-issue="MT-HTTP"]|},
+    {"retry_issue", ~s|button[phx-click="retry_issue"][phx-value-issue="MT-RETRY"]|},
+    # Two Refresh buttons exist now: the rail foot owns it at wide widths and the
+    # top strip keeps its own copy. Scope to the top strip one.
+    {"refresh_now", ~s|.command-bar-meta button[phx-click="refresh_now"]|}
+  ]
+
+  for {event, selector} <- @immediate_reload_events do
+    test "#{event} reloads the payload immediately" do
+      start_dashboard(recipient: self())
+
+      {:ok, view, _html} = live(build_conn(), "/")
+
+      seq_before = view_assigns(view).payload_seq
+
+      view |> element(unquote(selector)) |> render_click()
+
+      # The repaint used to come for free from the orchestrator's broadcast. Now
+      # that a broadcast only marks the payload dirty, the command's own task has
+      # to ask for the reload — after the call, so it cannot race ahead of it.
+      assert_eventually(fn -> view_assigns(view).payload_seq > seq_before end)
+    end
+  end
+
+  test "set_issue_run_spec reloads the payload immediately" do
+    start_dashboard(recipient: self())
+
+    {:ok, view, _html} = live(build_conn(), "/")
+
+    view
+    |> element(~s|button[phx-click="toggle_logs"][phx-value-issue="MT-HTTP"]|)
+    |> render_click()
+
+    seq_before = view_assigns(view).payload_seq
+
+    render_submit(view, "set_issue_run_spec", %{"issue" => "MT-HTTP", "agent_kind" => "codex"})
+
+    assert_receive {:orchestrator_call, {:set_issue_run_spec, "issue-http", _overrides}}, 1_000
+    assert_eventually(fn -> view_assigns(view).payload_seq > seq_before end)
+  end
+
+  test "a payload load with no real change ships no diff, and a harness line does not re-render the board" do
+    start_dashboard()
+
+    {:ok, view, full_html} = live(build_conn(), "/")
+
+    # Park the periodic reload far away so nothing but the measured event can
+    # produce a diff.
+    view |> form(~s|form[phx-submit="set_refresh_interval"]|, %{value: "600"}) |> render_submit()
+    send(view.pid, {:payload_loaded, view_assigns(view).payload_seq, view_payload(view)})
+    render(view)
+
+    :erlang.trace(view.pid, true, [:send])
+
+    idle_bytes =
+      measure_diff_bytes(view, fn ->
+        # "No real change" has to mean what it means against a live orchestrator,
+        # where the poll countdown is re-derived from the wall clock on every
+        # snapshot. Echoing a frozen fixture back would prove nothing: it would
+        # pass even if the countdown reassigned `:polling` on every load, which
+        # is exactly the leak this pins shut.
+        payload = view_payload(view)
+        ticked = %{payload | polling: %{payload.polling | next_poll_in_ms: 3_137}}
+
+        send(view.pid, {:payload_loaded, view_assigns(view).payload_seq, ticked})
+      end)
+
+    # An unchanged load must produce an *empty* diff — LiveView skips the morph
+    # entirely for `%{}`, and a morph is what resets every non-focused input and
+    # closes every open Combobox panel.
+    assert idle_bytes == 0
+
+    heartbeat_bytes =
+      measure_diff_bytes(view, fn ->
+        payload = view_payload(view)
+        [entry | rest] = payload.running
+        moved = Map.put(entry, :last_event_at, "2026-08-16T00:00:00Z")
+        patched = %{payload | running: [moved | rest], projects: patch_running(payload.projects, moved)}
+
+        send(view.pid, {:payload_loaded, view_assigns(view).payload_seq, patched})
+      end)
+
+    assert heartbeat_bytes == 0
+
+    view
+    |> element(~s|button[phx-click="toggle_logs"][phx-value-issue="MT-HTTP"]|)
+    |> render_click()
+
+    render(view)
+
+    harness_diff =
+      capture_diff_text(view, fn ->
+        send(view.pid, %{
+          event: :harness_stream,
+          issue_id: "issue-http",
+          last_seq: 3,
+          lines: [%{seq: 3, at: DateTime.utc_now(), text: "hello world line"}],
+          dropped: 0
+        })
+      end)
+
+    # A streaming harness line patches up to ~12×/s, so what goes on the wire has
+    # to be the pane and only the pane. It used to be the whole project section:
+    # the pane hung off a `<% tail = … %>` binding inside the per-project
+    # comprehension, and one template-local variable disables change tracking for
+    # every dynamic after it, so the section's Comboboxes rode along. The row is
+    # now a `<.session_row>` function component whose attrs are tracked one by
+    # one — only `tail` moved — and the comprehensions are `:key`ed.
+    assert harness_diff =~ "hello world line"
+    refute harness_diff =~ "combobox"
+    refute harness_diff =~ "queue-card"
+    refute harness_diff =~ "session-row-summary"
+
+    # Re-serializing one project section's Comboboxes alone was ~2.5 KB; the pane
+    # (a `data-follow` attribute, the Follow/Paused label, one line, and the
+    # one-time static for `.harness-tail-line`) is an order of magnitude under it.
+    assert byte_size(harness_diff) < 1_024
+    assert byte_size(harness_diff) < div(byte_size(full_html), 50)
+
+    :erlang.trace(view.pid, false, [:send])
   end
 
   # Assign keys whose value moved between two snapshots of the socket. LiveView
@@ -1506,6 +2268,47 @@ defmodule CymphonyElixir.DashboardLiveTest do
       %{socket: %{assigns: assigns}} -> assigns
       %{assigns: assigns} -> assigns
     end
+  end
+
+  # The bytes LiveView actually pushed to the client for one event. Every other
+  # test here asserts on *assigns*, which is why a 12.5 Hz harness re-render of
+  # every Combobox on the board went unnoticed for so long: the assigns were
+  # right, the wire was not. Requires `:erlang.trace(view.pid, true, [:send])`.
+  defp measure_diff_bytes(view, fun), do: byte_size(capture_diff_text(view, fun))
+
+  # The diff itself, so a test can assert on *what* was resent and not only on
+  # how much. `byte_size(a) + byte_size(b) == byte_size(a <> b)`, so this is the
+  # same number `measure_diff_bytes/2` always reported.
+  defp capture_diff_text(view, fun) do
+    drain_diff_text("")
+    fun.()
+    render(view)
+    drain_diff_text("")
+  end
+
+  defp drain_diff_text(acc) do
+    receive do
+      {:trace, _pid, :send, %Phoenix.Socket.Message{event: "diff", payload: payload}, _to} ->
+        drain_diff_text(acc <> inspect(payload))
+
+      {:trace, _pid, :send, _msg, _to} ->
+        drain_diff_text(acc)
+    after
+      120 -> acc
+    end
+  end
+
+  # Move the refresh window into the past so the next `:runtime_tick` is due,
+  # instead of sleeping for the real interval (the idle resync is 30s).
+  # `:last_payload_refresh` is never rendered, so writing it behind change
+  # tracking's back costs nothing.
+  defp backdate_payload_refresh(view, ms) do
+    :sys.replace_state(view.pid, fn %{socket: socket} = state ->
+      assigns = Map.update!(socket.assigns, :last_payload_refresh, &(&1 - ms))
+      %{state | socket: %{socket | assigns: assigns}}
+    end)
+
+    :ok
   end
 
   # The LiveView keeps one assign per payload section instead of a single

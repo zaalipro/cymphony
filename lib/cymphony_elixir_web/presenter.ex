@@ -13,35 +13,7 @@ defmodule CymphonyElixirWeb.Presenter do
 
     case project_snapshots do
       [] ->
-        # Legacy single-orchestrator fallback
-        case Orchestrator.snapshot(orchestrator, snapshot_timeout_ms) do
-          %{} = snapshot ->
-            project_name = Map.get(snapshot, :project_name) || "default"
-            project = project_from_snapshot(project_name, snapshot)
-            running = project.running
-            retrying = project.retrying
-
-            %{
-              generated_at: generated_at,
-              counts: payload_counts(running, retrying, project.waiting),
-              running: running,
-              retrying: retrying,
-              recent_completed:
-                snapshot
-                |> Map.get(:recent_completed, [])
-                |> Enum.map(&completed_entry_payload/1),
-              token_totals: normalize_token_totals(snapshot.token_totals),
-              rate_limits: snapshot.rate_limits,
-              polling: Map.get(snapshot, :polling),
-              projects: [project]
-            }
-
-          :timeout ->
-            %{generated_at: generated_at, error: %{code: "snapshot_timeout", message: "Snapshot timed out"}}
-
-          :unavailable ->
-            %{generated_at: generated_at, error: %{code: "snapshot_unavailable", message: "Snapshot unavailable"}}
-        end
+        legacy_payload(orchestrator, snapshot_timeout_ms, generated_at)
 
       snapshots ->
         merged = merge_project_snapshots(snapshots)
@@ -564,6 +536,78 @@ defmodule CymphonyElixirWeb.Presenter do
   end
 
   defp iso8601(_datetime), do: nil
+
+  # Legacy single-orchestrator fallback: nothing is registered in the project
+  # registry, so ask the configured orchestrator name directly.
+  defp legacy_payload(orchestrator, snapshot_timeout_ms, generated_at) do
+    case Orchestrator.snapshot(orchestrator, snapshot_timeout_ms) do
+      %{} = snapshot ->
+        legacy_snapshot_payload(snapshot, generated_at)
+
+      :timeout ->
+        %{generated_at: generated_at, error: %{code: "snapshot_timeout", message: "Snapshot timed out"}}
+
+      :unavailable ->
+        unavailable_payload(orchestrator, generated_at)
+    end
+  end
+
+  defp legacy_snapshot_payload(snapshot, generated_at) do
+    project_name = Map.get(snapshot, :project_name) || "default"
+    project = project_from_snapshot(project_name, snapshot)
+    running = project.running
+    retrying = project.retrying
+
+    %{
+      generated_at: generated_at,
+      counts: payload_counts(running, retrying, project.waiting),
+      running: running,
+      retrying: retrying,
+      recent_completed:
+        snapshot
+        |> Map.get(:recent_completed, [])
+        |> Enum.map(&completed_entry_payload/1),
+      token_totals: normalize_token_totals(snapshot.token_totals),
+      rate_limits: snapshot.rate_limits,
+      polling: Map.get(snapshot, :polling),
+      projects: [project]
+    }
+  end
+
+  defp unavailable_payload(orchestrator, generated_at) do
+    if empty_fleet?(orchestrator) do
+      empty_fleet_payload(generated_at)
+    else
+      %{generated_at: generated_at, error: %{code: "snapshot_unavailable", message: "Snapshot unavailable"}}
+    end
+  end
+
+  # A daemon with no orchestrator anywhere is not a failed snapshot — it is a
+  # fleet with nothing in it, which is exactly what the dashboard's "No projects
+  # / connect Linear and add your first project" card is for. `Orchestrator.
+  # snapshot/2` cannot tell the two apart (a call to an unregistered name and a
+  # call to a process that dies mid-call both exit and both come back
+  # `:unavailable`), so ask the registry and the process table instead. A
+  # registry with projects in it whose snapshots all failed keeps reporting
+  # `snapshot_unavailable`: something is wrong there, and saying "no projects"
+  # would hide it.
+  defp empty_fleet?(orchestrator) do
+    ProjectSupervisor.list_orchestrators() == [] and is_nil(GenServer.whereis(orchestrator))
+  end
+
+  defp empty_fleet_payload(generated_at) do
+    %{
+      generated_at: generated_at,
+      counts: payload_counts([], [], []),
+      running: [],
+      retrying: [],
+      recent_completed: [],
+      token_totals: normalize_token_totals(nil),
+      rate_limits: nil,
+      polling: nil,
+      projects: []
+    }
+  end
 
   defp aggregate_project_snapshots(snapshot_timeout_ms) do
     ProjectSupervisor.list_orchestrators()
