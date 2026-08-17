@@ -161,14 +161,17 @@ defmodule CymphonyElixirWeb.DashboardLive do
 
   @impl true
   def handle_event("pause_dispatch", _params, socket) do
-    Control.pause(:all)
-    {:noreply, reload_payload_now(put_flash(socket, :info, "Dispatch paused — running sessions will complete normally"))}
+    {:noreply,
+     flash_dispatch_result(
+       socket,
+       Control.pause(:all),
+       "Dispatch paused — running sessions will complete normally"
+     )}
   end
 
   @impl true
   def handle_event("resume_dispatch", _params, socket) do
-    Control.resume(:all)
-    {:noreply, reload_payload_now(put_flash(socket, :info, "Dispatch resumed"))}
+    {:noreply, flash_dispatch_result(socket, Control.resume(:all), "Dispatch resumed")}
   end
 
   @impl true
@@ -362,6 +365,12 @@ defmodule CymphonyElixirWeb.DashboardLive do
 
       {:error, :not_found} ->
         {:noreply, put_flash(socket, :error, "Project orchestrator not found: #{project_name}")}
+
+      {:error, _reason} ->
+        # The orchestrator already flipped — only the durable half failed — so
+        # the board still has to be reloaded or the header pill keeps showing
+        # the old state.
+        {:noreply, reload_payload_now(put_flash(socket, :error, "Pause state for #{project_name} applied, but could not be saved to ~/.cymphony/config.json"))}
     end
   end
 
@@ -1506,6 +1515,9 @@ defmodule CymphonyElixirWeb.DashboardLive do
                       <%= if entry.due_at do %>
                         <span class="muted">due <span data-clock="due" data-remaining-ms={retry_remaining_ms(entry.due_at, @now)}><%= format_retry_countdown(entry.due_at, @now) %></span></span>
                       <% end %>
+                      <%= if Map.get(entry, :held) do %>
+                        <span class="muted">held while paused</span>
+                      <% end %>
                     </div>
                     <div class="retry-row-error advanced-only">
                       <%= if entry.error do %>
@@ -1878,30 +1890,31 @@ defmodule CymphonyElixirWeb.DashboardLive do
     Endpoint.config(:orchestrator) || CymphonyElixir.Orchestrator
   end
 
+  # Routed through `Control` (not `Orchestrator` directly) so the header toggle
+  # persists `dispatch_paused` exactly like the global Pause/Resume buttons and
+  # `POST /api/v1/pause`.
+  # `Control.pause/1` and `resume/1` apply to the orchestrators first and then
+  # persist `dispatch_paused`, so an error means "in effect now, but gone after
+  # the next daemon restart". Reporting that as plain success is how a paused
+  # fleet silently comes back dispatching; the board is reloaded either way
+  # because the orchestrator half did happen.
+  defp flash_dispatch_result(socket, :ok, message) do
+    reload_payload_now(put_flash(socket, :info, message))
+  end
+
+  defp flash_dispatch_result(socket, {:error, _reason}, message) do
+    reload_payload_now(put_flash(socket, :error, "#{message}, but the change could not be saved to ~/.cymphony/config.json"))
+  end
+
   defp toggle_project_pause(projects, project_name) do
-    case CymphonyElixir.ProjectSupervisor.lookup(project_name, :orchestrator) do
-      pid when is_pid(pid) ->
-        project = Enum.find(projects, &(&1.name == project_name))
-        currently_paused = project && Map.get(project, :paused, false)
-        action = if currently_paused, do: :resume, else: :pause
-        spawn_orchestrator_pause_action(pid, action)
-        :ok
+    project = Enum.find(projects, &(&1.name == project_name))
+    scope = {:project, project_name}
 
-      _ ->
-        {:error, :not_found}
+    if Map.get(project || %{}, :paused, false) == true do
+      Control.resume(scope)
+    else
+      Control.pause(scope)
     end
-  end
-
-  defp spawn_orchestrator_pause_action(pid, :pause) do
-    Task.Supervisor.start_child(CymphonyElixir.TaskSupervisor, fn ->
-      CymphonyElixir.Orchestrator.pause(pid)
-    end)
-  end
-
-  defp spawn_orchestrator_pause_action(pid, :resume) do
-    Task.Supervisor.start_child(CymphonyElixir.TaskSupervisor, fn ->
-      CymphonyElixir.Orchestrator.resume(pid)
-    end)
   end
 
   defp snapshot_timeout_ms do

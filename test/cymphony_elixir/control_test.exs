@@ -215,13 +215,61 @@ defmodule CymphonyElixirWeb.ControlTest do
       refute_receive {:orch, _, _}, 100
     end
 
-    test "pause(:all) fans out without writing config", %{tmp: tmp} do
+    test "pause(:all) fans out and persists dispatch_paused for every project", %{tmp: tmp} do
       start_orch!("alpha")
+      start_orch!("beta")
 
-      before = File.read!(Path.join(tmp, "config.json"))
       assert Control.pause(:all) == :ok
       assert_receive {:orch, _, :pause}
-      assert File.read!(Path.join(tmp, "config.json")) == before
+      assert_receive {:orch, _, :pause}
+
+      {:ok, cfg} = Jason.decode(File.read!(Path.join(tmp, "config.json")))
+      assert Enum.all?(cfg["projects"], &(&1["dispatch_paused"] == true))
+
+      assert Control.resume(:all) == :ok
+      assert_receive {:orch, _, :resume}
+      assert_receive {:orch, _, :resume}
+
+      {:ok, cfg} = Jason.decode(File.read!(Path.join(tmp, "config.json")))
+      assert Enum.all?(cfg["projects"], &(&1["dispatch_paused"] == false))
+    end
+
+    test "pause({:project, name}) persists only the named project", %{tmp: tmp} do
+      start_orch!("alpha")
+      start_orch!("beta")
+
+      assert Control.pause({:project, "alpha"}) == :ok
+      assert_receive {:orch, _, :pause}
+      refute_receive {:orch, _, :pause}, 100
+
+      {:ok, cfg} = Jason.decode(File.read!(Path.join(tmp, "config.json")))
+      assert Enum.find(cfg["projects"], &(&1["name"] == "alpha"))["dispatch_paused"] == true
+      refute Map.has_key?(Enum.find(cfg["projects"], &(&1["name"] == "beta")), "dispatch_paused")
+    end
+
+    test "pause surfaces persist errors", %{tmp: tmp} do
+      start_orch!("alpha")
+      File.write!(Path.join(tmp, "config.json"), "{not json")
+
+      assert {:error, msg} = Control.pause({:project, "alpha"})
+      assert is_binary(msg)
+      assert msg =~ "Invalid JSON"
+    end
+
+    # Legacy WORKFLOW.md mode: there is no config store, so there is no durable
+    # pause to lose and nothing to report. Failing here made every toggle of a
+    # working pause flash "could not be saved to ~/.cymphony/config.json".
+    test "pause and resume succeed when there is no config store to persist to", %{tmp: tmp} do
+      start_orch!("alpha")
+      File.rm!(Path.join(tmp, "config.json"))
+
+      assert Control.pause({:project, "alpha"}) == :ok
+      assert_receive {:orch, _, :pause}
+
+      assert Control.resume({:project, "alpha"}) == :ok
+      assert_receive {:orch, _, :resume}
+
+      refute File.exists?(Path.join(tmp, "config.json"))
     end
 
     test "set_agent_settings on :all with no orchestrators persists globally", %{tmp: tmp} do
@@ -292,18 +340,35 @@ defmodule CymphonyElixirWeb.ControlTest do
       assert alpha["queue_pins"]["LLM-51"]["model"] == "opus"
     end
 
-    test "an :all fan-out halts on the first project whose persist fails", %{tmp: tmp} do
+    test "an :all fan-out reaches every project even when a persist fails", %{tmp: tmp} do
       start_orch!("alpha")
       start_orch!("beta")
 
-      # Every persist now fails on load, so the reduce halts at the first project.
+      # Every persist now fails on load. The fan-out must still reach both
+      # orchestrators — halving a "pause everything" leaves the rest
+      # dispatching — and report the first error afterwards.
       File.rm!(Path.join(tmp, "config.json"))
 
       assert {:error, reason} = Control.set_concurrency(:all, 4)
       assert reason =~ "Failed to read"
 
       assert_receive {:orch, _, {:set_concurrency, 4}}
-      refute_receive {:orch, _, {:set_concurrency, 4}}, 100
+      assert_receive {:orch, _, {:set_concurrency, 4}}
+    end
+
+    test "pause(:all) pauses every project even when the persist fails", %{tmp: tmp} do
+      start_orch!("alpha")
+      start_orch!("beta")
+
+      # Unparseable rather than missing: a missing config store is legacy mode,
+      # where there is no durable pause to lose and pause reports success.
+      File.write!(Path.join(tmp, "config.json"), "{not json")
+
+      assert {:error, reason} = Control.pause(:all)
+      assert reason =~ "Invalid JSON"
+
+      assert_receive {:orch, _, :pause}
+      assert_receive {:orch, _, :pause}
     end
 
     test "set_queue_pin skips blank and \"keep\" fields on the incoming pin", %{tmp: tmp} do
@@ -360,20 +425,33 @@ defmodule CymphonyElixirWeb.ControlTest do
       refute_receive {:orch, _, _}, 100
     end
 
-    test "set_queue_order persists via nil name when no orchestrators are registered", %{tmp: tmp} do
+    test "set_queue_order persists only the named project when no orchestrators are registered", %{tmp: tmp} do
       assert Control.set_queue_order({:project, "alpha"}, ["LLM-51"]) == :ok
       refute_receive {:orch, _, _}, 100
 
       {:ok, cfg} = Jason.decode(File.read!(Path.join(tmp, "config.json")))
-      assert Enum.all?(cfg["projects"], &(&1["queue_order"] == ["LLM-51"]))
+      assert Enum.find(cfg["projects"], &(&1["name"] == "alpha"))["queue_order"] == ["LLM-51"]
+      refute Map.has_key?(Enum.find(cfg["projects"], &(&1["name"] == "beta")), "queue_order")
     end
 
-    test "set_queue_pin persists via nil name when no orchestrators are registered", %{tmp: tmp} do
+    test "set_queue_pin persists only the named project when no orchestrators are registered", %{tmp: tmp} do
       assert Control.set_queue_pin({:project, "alpha"}, "LLM-51", %{"effort" => "high"}) == :ok
       refute_receive {:orch, _, _}, 100
 
       {:ok, cfg} = Jason.decode(File.read!(Path.join(tmp, "config.json")))
-      assert Enum.all?(cfg["projects"], &(&1["queue_pins"]["LLM-51"]["effort"] == "high"))
+      assert Enum.find(cfg["projects"], &(&1["name"] == "alpha"))["queue_pins"]["LLM-51"]["effort"] == "high"
+      refute Map.has_key?(Enum.find(cfg["projects"], &(&1["name"] == "beta")), "queue_pins")
+    end
+
+    # The legacy fallback must stay keyed by the requested project: `nil` means
+    # "every project" to the config writers, so a per-project Pause in legacy
+    # WORKFLOW.md mode used to write `dispatch_paused` onto the whole fleet.
+    test "pause({:project, name}) with no orchestrators registered persists only that project", %{tmp: tmp} do
+      assert Control.pause({:project, "alpha"}) == :ok
+
+      {:ok, cfg} = Jason.decode(File.read!(Path.join(tmp, "config.json")))
+      assert Enum.find(cfg["projects"], &(&1["name"] == "alpha"))["dispatch_paused"] == true
+      refute Map.has_key?(Enum.find(cfg["projects"], &(&1["name"] == "beta")), "dispatch_paused")
     end
 
     test "set_queue_pin overlays a non-map existing pin and can delete an empty pin", %{tmp: tmp} do
@@ -486,6 +564,9 @@ defmodule CymphonyElixirWeb.ControlTest do
       File.write!(Path.join(tmp, "config.json"), Jason.encode!(%{"projects" => [project]}))
       workflow_path = Path.join(tmp, "WORKFLOW.md")
       File.write!(workflow_path, WorkflowGenerator.generate(project))
+      # A file left behind by an older build carries umask permissions; the
+      # rewrite re-stamps the plaintext Linear key, so it must tighten the mode.
+      File.chmod!(workflow_path, 0o644)
 
       store_name = ProjectSupervisor.via_tuple("alpha", :workflow_store)
 
@@ -498,6 +579,7 @@ defmodule CymphonyElixirWeb.ControlTest do
 
       assert :ok = Control.set_agent_settings({:project, "alpha"}, %{"agent" => "codex"})
       assert File.read!(workflow_path) =~ "\"kind\": \"codex\""
+      assert File.stat!(workflow_path).mode |> Bitwise.band(0o777) == 0o600
     end
   end
 
@@ -620,6 +702,7 @@ defmodule CymphonyElixirWeb.ControlTest do
       File.write!(Path.join(tmp, "config.json"), Jason.encode!(%{"projects" => [project]}))
       workflow_path = Path.join(tmp, "WORKFLOW.md")
       File.write!(workflow_path, WorkflowGenerator.generate(project))
+      File.chmod!(workflow_path, 0o644)
 
       store_name = ProjectSupervisor.via_tuple("alpha", :workflow_store)
 
@@ -638,6 +721,8 @@ defmodule CymphonyElixirWeb.ControlTest do
       {:ok, cfg} = CymphonyConfig.load()
       assert cfg["linear_api_key"] == @fake_key
       assert File.read!(workflow_path) =~ @fake_key
+      # The new key is now in this file, so the rewrite has to leave it 0600.
+      assert File.stat!(workflow_path).mode |> Bitwise.band(0o777) == 0o600
     end
   end
 
@@ -806,7 +891,13 @@ defmodule CymphonyElixirWeb.ControlTest do
     setup do
       previous = Application.get_env(:cymphony_elixir, Endpoint)
       on_exit(fn -> restore_app_env(Endpoint, previous) end)
-      :ok
+
+      # pause/resume persist `dispatch_paused`; without this the legacy
+      # (`project_name: nil`) persist would rewrite the developer's real
+      # ~/.cymphony/config.json.
+      %{path: path} = context = override_config_dir()
+      File.write!(path, ~s({"projects": [{"name": "legacy"}]}))
+      {:ok, Map.to_list(context)}
     end
 
     test "calls an endpoint-configured orchestrator pid" do

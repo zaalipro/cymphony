@@ -158,8 +158,121 @@ defmodule CymphonyElixir.Agent.RunnerTest do
         labels: ["backend"]
       }
 
-      assert {:error, {:agent_exit, 1, _}} =
+      assert {:error, {:agent_exit, 1, remaining}} =
                Runner.run(workspace, "do the thing", issue)
+
+      assert remaining =~ ~s({"result":null})
+    after
+      File.rm_rf(test_root)
+    end
+  end
+
+  test "non-zero exit keeps the completed error line the CLI printed" do
+    test_root =
+      Path.join(
+        System.tmp_dir!(),
+        "cymphony-elixir-app-server-exit-tail-#{System.unique_integer([:positive])}"
+      )
+
+    try do
+      workspace_root = Path.join(test_root, "workspaces")
+      workspace = Path.join(workspace_root, "MT-2002")
+      claude_binary = Path.join(test_root, "fake-claude")
+
+      File.mkdir_p!(workspace)
+
+      File.write!(claude_binary, """
+      #!/bin/sh
+      echo '{"type":"error","message":"invalid model selection: sonnet-9"}'
+      exit 1
+      """)
+
+      File.chmod!(claude_binary, 0o755)
+
+      write_workflow_file!(Workflow.workflow_file_path(),
+        workspace_root: workspace_root,
+        claude_command: claude_binary
+      )
+
+      issue = %Issue{
+        id: "issue-exit-tail",
+        identifier: "MT-2002",
+        title: "Exit error tail",
+        description: "The CLI error line must survive into the retry queue",
+        state: "In Progress",
+        url: "https://example.org/issues/MT-2002",
+        labels: ["backend"]
+      }
+
+      assert {:error, {:agent_exit, 1, remaining}} =
+               Runner.run(workspace, "do the thing", issue)
+
+      assert remaining =~ "invalid model selection: sonnet-9"
+    after
+      File.rm_rf(test_root)
+    end
+  end
+
+  test "non-zero exit output is bounded and sanitized" do
+    test_root =
+      Path.join(
+        System.tmp_dir!(),
+        "cymphony-elixir-app-server-exit-bound-#{System.unique_integer([:positive])}"
+      )
+
+    try do
+      workspace_root = Path.join(test_root, "workspaces")
+      workspace = Path.join(workspace_root, "MT-2003")
+      claude_binary = Path.join(test_root, "fake-claude")
+
+      File.mkdir_p!(workspace)
+
+      File.write!(claude_binary, """
+      #!/bin/sh
+      i=1
+      while [ $i -le 40 ]; do
+        printf 'noise-%03d %s\\n' "$i" '#{String.duplicate("x", 200)}'
+        i=$((i+1))
+      done
+      printf '\\033[31m{"error":"unknown provider for model"}\\033[0m\\n'
+      exit 1
+      """)
+
+      File.chmod!(claude_binary, 0o755)
+
+      write_workflow_file!(Workflow.workflow_file_path(),
+        workspace_root: workspace_root,
+        claude_command: claude_binary
+      )
+
+      issue = %Issue{
+        id: "issue-exit-bound",
+        identifier: "MT-2003",
+        title: "Exit error bound",
+        description: "The retained tail is capped and stripped of control bytes",
+        state: "In Progress",
+        url: "https://example.org/issues/MT-2003",
+        labels: ["backend"]
+      }
+
+      assert {:error, {:agent_exit, 1, remaining}} =
+               Runner.run(workspace, "do the thing", issue)
+
+      assert remaining =~ ~s({"error":"unknown provider for model"})
+      assert byte_size(remaining) <= 2048
+      refute remaining =~ "noise-001"
+      refute remaining =~ "\e["
+      assert String.valid?(remaining)
+
+      # The tail is front-loaded: the CLI's last line comes first, so it
+      # survives the fixed prefix plus the dashboard retry row's 120-character
+      # cut. Chronological order pushed it past every status surface.
+      assert String.starts_with?(remaining, ~s({"error":"unknown provider for model"}))
+
+      retry_row_error =
+        "agent exited: Agent run failed: #{inspect({:agent_exit, 1, remaining})} (issue_id=issue-exit-bound issue_identifier=MT-2003)"
+
+      assert String.slice(retry_row_error, 0, 120) =~ "unknown provider"
     after
       File.rm_rf(test_root)
     end

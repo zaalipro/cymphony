@@ -154,7 +154,7 @@ A personal API key that lets Cymphony read issues and post comments on your beha
 4. Click **Create key**, give it a label like "Cymphony", and copy the value (starts with `lin_api_...`)
 5. Paste it into the wizard
 
-> The key is stored in plain text in `~/.cymphony/config.json` as top-level `linear_api_key` (and stamped onto every project). If you'd rather not have it on disk, set `LINEAR_API_KEY` in your environment instead — that env var is a **fallback only** when the file has no key, and the wizard offers it as a default when set. You can also paste the key later in the dashboard Settings drawer (Linear → Connect) without re-running the wizard.
+> The key is stored in plain text in `~/.cymphony/config.json` as top-level `linear_api_key` (and stamped onto every project), and it is copied into each project's generated `WORKFLOW.md` as `tracker.api_key`. Both files are written owner-only (mode `0600`), including every rewrite. If you'd rather not have it on disk, set `LINEAR_API_KEY` in your environment instead — that env var is a **fallback only** when the file has no key, and the wizard offers it as a default when set. You can also paste the key later in the dashboard Settings drawer (Linear → Connect) without re-running the wizard.
 
 ### Step 5 — Workspace root  *(optional, has a default)*
 
@@ -461,7 +461,7 @@ The dashboard opens in **Simple** mode: plain-language autonomy status, the acti
 The dashboard shows:
 
 - **Command bar (top)** — autonomy state plus working / waiting / usage / runtime counters in Simple mode; throughput, polling cadence, and rate limits in Advanced mode. Advanced adds a `.metric-pill--queue.section--queue` for `counts.waiting`; the simple Waiting pill stays `counts.retrying`.
-- **Per-project sections** — one card per project with the project name, counts (`N/M running · Q queued · R retrying`), "tasks at once", and Pause/Resume. Advanced mode extracts labeled controls out of the cramped agent pill: `agent` (native `#agent-<project>` select), a `.model-switcher` Combobox (type-to-filter suggestions), `effort` (native `#effort-<project>` select), and `providers` (visible only when the selected kind is `claude`). Changing the kind persists immediately (kind only) and hides/shows the providers field on the next render. **Set** still saves kind + model + effort together. Both paths rewrite the project's generated `WORKFLOW.md` and overlay `config.json` so the select stays on the new kind after the next refresh.
+- **Per-project sections** — one card per project with the project name, counts (`N/M running · Q queued · R retrying`), "tasks at once", and Pause/Resume. Pause is durable: it persists `dispatch_paused` for that project in `~/.cymphony/config.json`, so the project comes back paused after a daemon restart, and queued retries hold (without burning retry attempts) until you resume. Advanced mode extracts labeled controls out of the cramped agent pill: `agent` (native `#agent-<project>` select), a `.model-switcher` Combobox (type-to-filter suggestions), `effort` (native `#effort-<project>` select), and `providers` (visible only when the selected kind is `claude`). Changing the kind persists immediately (kind only) and hides/shows the providers field on the next render. **Set** still saves kind + model + effort together. Both paths rewrite the project's generated `WORKFLOW.md` and overlay `config.json` so the select stays on the new kind after the next refresh.
 - **Up next / Queue board** — `section.queue-board.section--board` **above** In Progress. Cards are dispatch-ready Linear issues that are not running (and not in the retry list). Hidden when `waiting` is empty. Drag permutes the sticky operator order (`reorder_queue`); Cymphony rank is the left-to-right then wrap index (`0` = next slot). Card **Edit** preselects the project header harness/model/effort (or an existing pin) and pins those fields for the next dispatch (does not kill). Display pref `{Board, board}` hides the board (`html[data-hidden-sections~=board]`).
 - **Compact session rows** — Linear ID, title, state, runtime, and Stop. Advanced mode adds provider, host, token, workspace, log, and restart details. Expanding a row shows a **Harness** pane (live CLI stdout, Follow/Paused) and a restart form that can pin `agent_kind` / provider / model / effort. Restart model is the same type-to-filter Combobox; the Provider field is Claude-only. Session provider chips stay visible for every kind.
 - **Retry queue** — inline at the **bottom** of each project section (below In Progress; not on the board)
@@ -476,7 +476,7 @@ Open **Settings**. After Experience and before Automation (visible in Simple and
 
 1. **Linear** — paste a personal API key into the password field (`#linear-api-key`) and click **Connect** (`phx-submit="connect_linear"`, also `POST /api/v1/linear`). Status becomes **Connected** and shows a last-4 mask (`••••xxxx`). The key is stored in `~/.cymphony/config.json` as `linear_api_key` (file mode `0600`) and stamped onto every project. `LINEAR_API_KEY` is only a fallback when the file has no key. The raw key is never shown again in the UI, flashes, or API responses.
 2. **Projects** — once connected, type-to-filter a Linear project from the `#add-project-slug` Combobox (not a native select), enter a Cymphony name, optionally a GitHub repo URL, and click **Add project** (`phx-submit="add_project"`, also `POST /api/v1/projects`). Advanced add-project fields include a model Combobox; `#add-project-provider` is visible only when the selected agent is `claude` (`preview_add_project`). The project is appended to `config.json`, a temp `WORKFLOW.md` is written, and the orchestrator starts immediately — no daemon restart. Duplicate name or Linear slug is rejected with a visible error.
-3. **Automation / Orchestrator** — global Pause/Resume, global concurrency, and dashboard payload refresh (`#drawer-refresh-interval`, min 1, default 3 seconds). Submit (`set_refresh_interval`, also `POST /api/v1/refresh-interval`) persists top-level `dashboard_refresh_seconds` in `~/.cymphony/config.json`. This is **not** Linear polling (`polling.interval_ms` / `POST /api/v1/refresh`). Open dashboards keep their current interval until remount or a successful set.
+3. **Automation / Orchestrator** — global Pause/Resume (persists `dispatch_paused` on every project), global concurrency, and dashboard payload refresh (`#drawer-refresh-interval`, min 1, default 3 seconds). Submit (`set_refresh_interval`, also `POST /api/v1/refresh-interval`) persists top-level `dashboard_refresh_seconds` in `~/.cymphony/config.json`. This is **not** Linear polling (`polling.interval_ms` / `POST /api/v1/refresh`). Open dashboards keep their current interval until remount or a successful set.
 
 Drawer inputs use class `settings-field`. CLI `cymphony setup` and `cymphony add` still work the same way.
 
@@ -507,8 +507,8 @@ All under `/api/v1/`:
 | `GET` | `/<issue_identifier>/harness` | live CLI stdout ring (`HarnessStream` snapshot) |
 | `POST` | `/refresh` | force a Linear poll right now |
 | `POST` | `/refresh-interval` | body `{"value": N}` — persist `dashboard_refresh_seconds`; `202` or `422` `invalid_refresh_interval`. **Not** `POST /refresh`. Declared before `/<issue_identifier>`. |
-| `POST` | `/pause` `?project=Name` | stop dispatching new issues |
-| `POST` | `/resume` `?project=Name` | resume |
+| `POST` | `/pause` `?project=Name` | stop dispatching new issues and persist `dispatch_paused: true`; `202` `{paused,project}`, `422` `project_not_found`, or `422` `dispatch_pause_not_persisted` when the orchestrators flipped but `config.json` could not be written (the pause would be lost on the next daemon restart). Legacy WORKFLOW.md mode has no config store and no flag to lose, so it still answers `202`. |
+| `POST` | `/resume` `?project=Name` | resume dispatching and persist `dispatch_paused: false`; same `202` / `422` shapes as `/pause` |
 | `POST` | `/concurrency` `?project=Name` | body `{"value": 5}` |
 | `POST` | `/providers` `?project=Name` | body `{"value": "cv1,cz"}` |
 | `POST` | `/agent` `?project=Name` | body `{"kind","model","effort"}` — persist + rewrite project `WORKFLOW.md` so `agent_kind` survives refresh |
@@ -577,6 +577,20 @@ workspace:
   root: ~/code/workspaces
   retention_days: 14
 ```
+
+### Stalled runs
+
+Step 6 covers agents that crash. The nastier case is an agent that hangs without failing: it runs a foreground server (`mix phx.server`, `npm run dev`), waits on an interactive prompt, or blocks on a wedged network call. It emits no more events and never exits, so nothing would ever reclaim its slot. Cymphony watches each running session and, after **5 minutes** of silence, kills it and puts the issue back in the retry queue with backoff.
+
+Projects with long quiet stretches (big builds, slow test suites) can raise the timeout in `~/.cymphony/config.json` — milliseconds, per project:
+
+```json
+"projects": [
+  { "name": "Monorepo", "stall_timeout_ms": 1800000, ... }
+]
+```
+
+It must be a positive integer; anything else (`0`, a negative number, `"1800000"` quoted as a string) falls back to the `300000` default, so a typo can't quietly switch the watchdog off. The value is written into that project's generated `WORKFLOW.md` as `agent.stall_timeout_ms` the next time the file is generated — a daemon restart, or any dashboard action that rewrites it (agent change, Linear connect).
 
 ---
 

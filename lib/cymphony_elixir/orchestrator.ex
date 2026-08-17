@@ -87,6 +87,7 @@ defmodule CymphonyElixir.Orchestrator do
       config: config,
       project_name: project_name,
       prompt_template: prompt_template,
+      paused: load_project_dispatch_paused(project_name),
       poll_interval_ms: config.polling.interval_ms,
       max_concurrent_agents: config.agent.max_concurrent_agents,
       providers: extract_providers(config),
@@ -191,7 +192,7 @@ defmodule CymphonyElixir.Orchestrator do
 
               maybe_retry_or_abandon(state, issue_id, next_attempt, failures, %{
                 identifier: running_entry.identifier,
-                error: "agent exited: #{inspect(reason)}",
+                error: "agent exited: #{format_exit_reason(reason)}",
                 worker_host: Map.get(running_entry, :worker_host),
                 workspace_path: Map.get(running_entry, :workspace_path),
                 failures: failures
@@ -265,6 +266,12 @@ defmodule CymphonyElixir.Orchestrator do
   end
 
   def handle_info({:agent_worker_update, _issue_id, _update}, state), do: {:noreply, state}
+
+  def handle_info({:retry_issue, issue_id, retry_token}, %State{paused: true} = state) do
+    state = hold_retry_attempt(state, issue_id, retry_token)
+    notify_dashboard()
+    {:noreply, state}
+  end
 
   def handle_info({:retry_issue, issue_id, retry_token}, state) do
     result =
@@ -1142,6 +1149,49 @@ defmodule CymphonyElixir.Orchestrator do
     }
   end
 
+  # A retry timer that fires while dispatch is paused must not consume its
+  # attempt: launching is forbidden, and rescheduling would inflate `attempt`
+  # (and therefore the backoff) once per cycle for the whole pause. The entry
+  # is instead held in place — same `attempt`, same `failures`, no armed timer
+  # — and stays in the retry queue reading as due now until `resume`.
+  defp hold_retry_attempt(%State{} = state, issue_id, retry_token) do
+    case Map.get(state.retry_attempts, issue_id) do
+      %{retry_token: ^retry_token} = retry_entry ->
+        held = Map.merge(retry_entry, %{timer_ref: nil, held: true})
+        %{state | retry_attempts: Map.put(state.retry_attempts, issue_id, held)}
+
+      _ ->
+        state
+    end
+  end
+
+  # Resume re-arms every held entry immediately (0ms) with a fresh token,
+  # keeping `attempt` untouched so the backoff schedule picks up where it left
+  # off rather than restarting or skipping ahead.
+  defp release_held_retries(%State{} = state) do
+    %{state | retry_attempts: Map.new(state.retry_attempts, &release_held_retry/1)}
+  end
+
+  defp release_held_retry({issue_id, %{held: true} = retry_entry}) do
+    retry_token = make_ref()
+    timer_ref = Process.send_after(self(), {:retry_issue, issue_id, retry_token}, 0)
+
+    Logger.info("Releasing held retry for issue_id=#{issue_id} issue_identifier=#{retry_entry[:identifier] || issue_id} (attempt #{retry_entry.attempt})")
+
+    released =
+      retry_entry
+      |> Map.merge(%{
+        timer_ref: timer_ref,
+        retry_token: retry_token,
+        due_at_ms: System.monotonic_time(:millisecond)
+      })
+      |> Map.delete(:held)
+
+    {issue_id, released}
+  end
+
+  defp release_held_retry({issue_id, retry_entry}), do: {issue_id, retry_entry}
+
   defp pop_retry_attempt_state(%State{} = state, issue_id, retry_token) when is_reference(retry_token) do
     case Map.get(state.retry_attempts, issue_id) do
       %{attempt: attempt, retry_token: ^retry_token} = retry_entry ->
@@ -1354,6 +1404,16 @@ defmodule CymphonyElixir.Orchestrator do
   # agent failures (crash, spawn failure, stall) increment `failures`;
   # backpressure ("no slots") and transient poll failures preserve it, so a
   # healthy-but-slot-starved issue is never abandoned.
+  # A crashed agent task exits with {exception, stacktrace}. The exception
+  # message already carries the agent CLI's own failure text; inspecting the
+  # whole tuple buries it behind the struct and the stacktrace, past the
+  # truncation the dashboard retry row applies.
+  defp format_exit_reason({%{__exception__: true} = exception, stacktrace}) when is_list(stacktrace) do
+    Exception.message(exception)
+  end
+
+  defp format_exit_reason(reason), do: inspect(reason)
+
   defp maybe_retry_or_abandon(%State{} = state, issue_id, attempt, failures, metadata)
        when is_integer(failures) do
     if failures > max_retry_attempts(state) do
@@ -1693,6 +1753,12 @@ defmodule CymphonyElixir.Orchestrator do
         %{
           issue_id: issue_id,
           attempt: attempt,
+          # A held entry keeps its original (now past) `due_at_ms`, so this
+          # clamps to 0 and reads as "due now" forever. `held` is what tells
+          # the status surfaces apart: parked until resume, versus due this
+          # instant. Without it a paused board also churns, because a
+          # presenter deriving `due_at` from `now + 0` moves every load.
+          held: Map.get(retry, :held) == true,
           due_in_ms: max(0, due_at_ms - now_ms),
           identifier: Map.get(retry, :identifier),
           error: Map.get(retry, :error),
@@ -1734,7 +1800,7 @@ defmodule CymphonyElixir.Orchestrator do
   end
 
   def handle_call(:resume, _from, state) do
-    state = %{state | paused: false}
+    state = release_held_retries(%{state | paused: false})
     notify_dashboard()
     {:reply, :ok, state}
   end
@@ -2359,6 +2425,34 @@ defmodule CymphonyElixir.Orchestrator do
       _ ->
         []
     end)
+  end
+
+  # Seeded in `init/1` so the very first `maybe_dispatch/1` — scheduled with a
+  # 0ms tick before any `handle_call` can be delivered — already sees the
+  # operator's persisted pause instead of dispatching once and pausing after.
+  defp load_project_dispatch_paused(project_name) do
+    case CymphonyConfig.load() do
+      {:ok, config} ->
+        CymphonyConfig.dispatch_paused?(config, project_name)
+
+      {:error, reason} ->
+        warn_unreadable_pause_seed(project_name, reason)
+        false
+    end
+  end
+
+  # No config.json at all is the normal legacy WORKFLOW.md setup: there is no
+  # persisted pause to lose, so it boots unpaused without comment. A config
+  # that exists but cannot be read or parsed is different — the seed silently
+  # discards an operator's stop-work order and the project starts dispatching
+  # agents on the very first tick — so that case is always logged, since the
+  # only other evidence is the sessions that appear.
+  defp warn_unreadable_pause_seed(project_name, reason) do
+    if CymphonyConfig.exists?() do
+      Logger.warning("Could not read the persisted dispatch-pause flag for project=#{project_name || "default"} (#{inspect(reason)}); starting unpaused")
+    end
+
+    :ok
   end
 
   defp load_project_queue(project_name) do

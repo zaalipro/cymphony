@@ -221,14 +221,33 @@ defmodule CymphonyElixirWeb.ObservabilityApiController do
 
   @spec pause(Conn.t(), map()) :: Conn.t()
   def pause(conn, params) do
-    Control.pause(Control.scope(params["project"]))
-    conn |> put_status(202) |> json(%{paused: true, project: params["project"]})
+    respond_dispatch_paused(conn, Control.pause(Control.scope(params["project"])), params["project"], true)
   end
 
   @spec resume(Conn.t(), map()) :: Conn.t()
   def resume(conn, params) do
-    Control.resume(Control.scope(params["project"]))
-    conn |> put_status(202) |> json(%{paused: false, project: params["project"]})
+    respond_dispatch_paused(conn, Control.resume(Control.scope(params["project"])), params["project"], false)
+  end
+
+  # `dispatch_paused` is documented as durable, so a persist failure is not a
+  # 202: the orchestrators flipped, but the next daemon restart undoes it.
+  # Answering `{"paused": true}` here is how a fleet an operator stopped comes
+  # back dispatching with nothing having reported a problem.
+  defp respond_dispatch_paused(conn, :ok, project, paused?) do
+    conn |> put_status(202) |> json(%{paused: paused?, project: project})
+  end
+
+  defp respond_dispatch_paused(conn, {:error, :not_found}, project, _paused?) do
+    error_response(conn, 422, "project_not_found", "No orchestrator is registered for project #{inspect(project)}")
+  end
+
+  defp respond_dispatch_paused(conn, {:error, _reason}, _project, paused?) do
+    error_response(
+      conn,
+      422,
+      "dispatch_pause_not_persisted",
+      "Dispatch is now #{if paused?, do: "paused", else: "resumed"}, but the flag could not be written to config.json"
+    )
   end
 
   @spec concurrency(Conn.t(), map()) :: Conn.t()

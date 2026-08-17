@@ -184,6 +184,44 @@ defmodule CymphonyElixir.Orchestrator.QueueDispatchTest do
     assert :sys.get_state(pid).paused
   end
 
+  test "a project persisted as dispatch_paused starts paused and skips its first dispatch" do
+    project_name = "queue-paused-#{System.unique_integer([:positive])}"
+
+    with_config_dir(fn _tmp ->
+      :ok =
+        CymphonyConfig.save(%{
+          "projects" => [
+            %{"name" => project_name, "linear_project_slug" => "demo", "dispatch_paused" => true}
+          ]
+        })
+
+      write_workflow_file!(Workflow.workflow_file_path(), tracker_kind: "memory", poll_interval_ms: 60_000)
+      put_issues([issue("iss-boot", "MT-BOOT", priority: 1, created_at: ~U[2026-01-01 00:00:00Z])])
+
+      pid = start_named_orchestrator(:PausedBoot, project_name)
+
+      # init/1 seeded it before the 0ms boot tick could dispatch.
+      assert :sys.get_state(pid).paused
+      :ok = Orchestrator.run_poll_cycle_for_test(pid)
+
+      snapshot = GenServer.call(pid, :snapshot)
+      assert Enum.map(snapshot.waiting, & &1.identifier) == ["MT-BOOT"]
+      assert snapshot.running == []
+      assert snapshot.polling.paused == true
+
+      # Persisted resume, then a fresh process: it comes back dispatching.
+      assert {:ok, _} = CymphonyConfig.update_dispatch_paused(project_name, false)
+      GenServer.stop(pid)
+
+      resumed = start_named_orchestrator(:ResumedBoot, project_name)
+      refute :sys.get_state(resumed).paused
+      :ok = Orchestrator.run_poll_cycle_for_test(resumed)
+
+      assert Enum.map(GenServer.call(resumed, :snapshot).running, & &1.identifier) == ["MT-BOOT"]
+      :ok = Orchestrator.pause(resumed)
+    end)
+  end
+
   test "fetch and config errors keep the last waiting list" do
     pid = start_queue_orchestrator(:ErrorKeep, slots: 0)
     kept = issue("iss-e1", "MT-E1", priority: 2, created_at: ~U[2026-01-01 00:00:00Z])
@@ -348,6 +386,14 @@ defmodule CymphonyElixir.Orchestrator.QueueDispatchTest do
       }
     end)
 
+    pid
+  end
+
+  # Unlike start_queue_orchestrator/2 this does not force `paused` afterwards,
+  # so `init/1`'s seeded value is what the boot tick observes.
+  defp start_named_orchestrator(suffix, project_name) do
+    {:ok, pid} = Orchestrator.start_link(name: Module.concat(__MODULE__, suffix), project_name: project_name)
+    on_exit(fn -> if Process.alive?(pid), do: Process.exit(pid, :normal) end)
     pid
   end
 

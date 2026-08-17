@@ -4,8 +4,8 @@ defmodule CymphonyElixir.CLI do
   """
 
   alias CymphonyElixir.Agent
+  alias CymphonyElixir.Daemon
   alias CymphonyElixir.LogFile
-  alias CymphonyElixir.Shell
 
   alias CymphonyElixir.Cymphony.Config, as: CymphonyConfig
   alias CymphonyElixir.Cymphony.Onboarding
@@ -13,6 +13,8 @@ defmodule CymphonyElixir.CLI do
   alias CymphonyElixir.Cymphony.WorkflowGenerator
 
   @acknowledgement_switch :i_understand_that_this_will_be_running_without_the_usual_guardrails
+  @background_start_timeout_ms 60_000
+  @background_poll_interval_ms 200
   @cymphony_mode_opt_keys [:project, :setup, :agent, :model, :effort, :provider, :concurrency]
   @switches [
     {@acknowledgement_switch, :boolean},
@@ -34,12 +36,16 @@ defmodule CymphonyElixir.CLI do
   ]
 
   @type ensure_started_result :: {:ok, [atom()]} | {:error, term()}
+  @type daemon_executable_result :: {:ok, String.t()} | {:error, String.t()}
   @type deps :: %{
-          file_regular?: (String.t() -> boolean()),
-          set_workflow_file_path: (String.t() -> :ok | {:error, term()}),
-          set_logs_root: (String.t() -> :ok | {:error, term()}),
-          set_server_port_override: (non_neg_integer() | nil -> :ok | {:error, term()}),
-          ensure_all_started: (-> ensure_started_result())
+          :file_regular? => (String.t() -> boolean()),
+          :set_workflow_file_path => (String.t() -> :ok | {:error, term()}),
+          :set_logs_root => (String.t() -> :ok | {:error, term()}),
+          :set_server_port_override => (non_neg_integer() | nil -> :ok | {:error, term()}),
+          :ensure_all_started => (-> ensure_started_result()),
+          # Injected by tests so the background-start conformance cases can
+          # launch a stand-in binary instead of the real daemon.
+          optional(:daemon_executable) => (-> daemon_executable_result())
         }
 
   @spec main([String.t()]) :: no_return()
@@ -53,13 +59,28 @@ defmodule CymphonyElixir.CLI do
         # tree is already running and would keep the VM (and the status TUI)
         # alive forever, so halt explicitly; for the escript this matches the
         # normal exit-0 it did by returning.
-        System.halt(0)
+        halt(0)
 
       {:error, message} ->
         cleanup_pidfile()
         IO.puts(:stderr, message)
-        System.halt(1)
+        halt(1)
     end
+  end
+
+  @doc """
+  Flushes the log sinks, then halts the VM.
+
+  The disk log handlers buffer (`delayed_write` / `disk_log`) and
+  `System.halt/1` does not unwind the VM, so a failure logged immediately
+  before the halt would never reach the log files. Every exit path — including
+  `BurritoCLI.run_cli/1`'s unhandled-error handler, which is the only place a
+  crash in the shipped binary is recorded — goes through here.
+  """
+  @spec halt(non_neg_integer()) :: no_return()
+  def halt(status) when is_integer(status) and status >= 0 do
+    Logger.flush()
+    System.halt(status)
   end
 
   @spec evaluate([String.t()], deps()) :: :ok | :done | {:error, String.t()}
@@ -405,22 +426,37 @@ defmodule CymphonyElixir.CLI do
 
   defp cymphony_evaluate(args, deps) do
     {opts, _, _} = OptionParser.parse(args, strict: @switches)
-    maybe_write_daemon_pidfile(opts)
 
     case load_or_onboard_config(opts) do
       {:ok, cfg} ->
-        start_from_config(cfg, opts, deps)
+        cfg
+        |> start_from_config(opts, deps)
+        |> maybe_write_daemon_pidfile(opts)
 
       {:error, reason} ->
         {:error, "Configuration error: #{inspect(reason)}"}
     end
   end
 
-  defp maybe_write_daemon_pidfile(opts) do
+  # The pidfile is the daemon's liveness signal: `cymphony start` blocks until
+  # it appears and only then prints "Cymphony started in background (PID …)".
+  # Writing it as the first statement of the run made that message report a
+  # process that had been *spawned*, not one that had *booted* — an
+  # unreadable config, a missing workflow file or a taken dashboard port all
+  # still printed success. Only a run that reached the started state (`:ok`,
+  # i.e. `wait_for_shutdown/0` is next) claims the pidfile; every other outcome
+  # leaves it absent so the launcher reports the failure with the daemon output
+  # tail instead. The Burrito build already had this ordering: `BurritoCLI`
+  # starts the supervision tree before handing off to `CLI.main/1`.
+  defp maybe_write_daemon_pidfile(:ok, opts) do
     if Keyword.get(opts, :daemon_internal, false) do
       :ok = write_pidfile(System.pid())
     end
+
+    :ok
   end
+
+  defp maybe_write_daemon_pidfile(result, _opts), do: result
 
   defp load_or_onboard_config(opts) do
     if Keyword.get(opts, :setup, false) or not CymphonyConfig.exists?() do
@@ -590,31 +626,24 @@ defmodule CymphonyElixir.CLI do
 
   defp legacy_evaluate(args, deps) do
     case OptionParser.parse(args, strict: @switches) do
-      {opts, [], []} ->
-        if Keyword.get(opts, :daemon_internal, false) do
-          :ok = write_pidfile(System.pid())
-        end
-
-        with :ok <- maybe_require_guardrails(opts),
-             :ok <- maybe_set_logs_root(opts, deps),
-             :ok <- maybe_set_server_port(opts, deps) do
-          run(Path.expand("WORKFLOW.md"), deps)
-        end
-
-      {opts, [workflow_path], []} ->
-        if Keyword.get(opts, :daemon_internal, false) do
-          :ok = write_pidfile(System.pid())
-        end
-
-        with :ok <- maybe_require_guardrails(opts),
-             :ok <- maybe_set_logs_root(opts, deps),
-             :ok <- maybe_set_server_port(opts, deps) do
-          run(workflow_path, deps)
-        end
-
-      _ ->
-        {:error, usage_message()}
+      {opts, [], []} -> legacy_run(opts, Path.expand("WORKFLOW.md"), deps)
+      {opts, [workflow_path], []} -> legacy_run(opts, workflow_path, deps)
+      _ -> {:error, usage_message()}
     end
+  end
+
+  # Same pidfile ordering as `cymphony_evaluate/2`: the daemon only claims the
+  # pidfile once `run/2` has validated the workflow path and started the
+  # supervision tree.
+  defp legacy_run(opts, workflow_path, deps) do
+    result =
+      with :ok <- maybe_require_guardrails(opts),
+           :ok <- maybe_set_logs_root(opts, deps),
+           :ok <- maybe_set_server_port(opts, deps) do
+        run(workflow_path, deps)
+      end
+
+    maybe_write_daemon_pidfile(result, opts)
   end
 
   @spec run(String.t(), deps()) :: :ok | {:error, String.t()}
@@ -717,7 +746,7 @@ defmodule CymphonyElixir.CLI do
       nil ->
         cleanup_pidfile()
         IO.puts(:stderr, "Cymphony supervisor is not running")
-        System.halt(1)
+        halt(1)
 
       pid ->
         ref = Process.monitor(pid)
@@ -727,8 +756,8 @@ defmodule CymphonyElixir.CLI do
             cleanup_pidfile()
 
             case reason do
-              :normal -> System.halt(0)
-              _ -> System.halt(1)
+              :normal -> halt(0)
+              _ -> halt(1)
             end
         end
     end
@@ -751,33 +780,45 @@ defmodule CymphonyElixir.CLI do
     end
   end
 
-  defp do_run_background(args, _deps) do
+  defp do_run_background(args, deps) do
+    # Never emit a nohup command with a blank or unqualified argv[0]: under
+    # Burrito the process cannot identify itself through escript/progname, and
+    # the resulting command failed in the background while the CLI reported
+    # success.
+    resolve = Map.get(deps, :daemon_executable, &Daemon.executable_path/0)
+
+    case resolve.() do
+      {:ok, executable} -> launch_background(executable, args)
+      {:error, message} -> {:error, message}
+    end
+  end
+
+  defp launch_background(executable, args) do
     filtered_args =
       args
       |> Enum.reject(&(&1 == "--background"))
       |> Kernel.++(["--daemon-internal"])
 
-    escript = escript_path()
-    log_file = Path.join(CymphonyConfig.config_dir(), "cymphony.log")
+    log_file = LogFile.daemon_output_file()
 
     # Use nohup to detach from terminal; the inner & backgrounds the process
     # so the outer sh exits immediately. Each token is shell-escaped so paths
     # or args containing spaces/metacharacters are treated literally.
-    escaped_command = Enum.map_join([escript | filtered_args], " ", &Shell.escape/1)
+    {raw_launcher_output, _status} =
+      System.cmd("sh", ["-c", Daemon.background_command(executable, filtered_args, log_file)], stderr_to_stdout: true)
 
-    cmd = "nohup #{escaped_command} > #{Shell.escape(log_file)} 2>&1 </dev/null &"
+    {child_pid, launcher_output} = Daemon.split_launcher_pid(raw_launcher_output)
 
-    _ = System.cmd("sh", ["-c", cmd], stderr_to_stdout: true)
-
-    # Give the child process a moment to write its pidfile
-    case wait_for_pidfile(5_000) do
+    case wait_for_daemon_pidfile(child_pid, @background_start_timeout_ms) do
       {:ok, pid} ->
         IO.puts("Cymphony started in background (PID: #{pid})")
         :done
 
+      :exited ->
+        {:error, Daemon.startup_failure_message(log_file, launcher_output, :exited)}
+
       :timeout ->
-        IO.puts("Cymphony started in background (PID unknown)")
-        :done
+        {:error, Daemon.startup_failure_message(log_file, launcher_output, @background_start_timeout_ms)}
     end
   end
 
@@ -900,38 +941,39 @@ defmodule CymphonyElixir.CLI do
     end
   end
 
-  defp escript_path do
-    case :escript.script_name() do
-      script when is_list(script) and script != [] ->
-        List.to_string(script)
-
-      _ ->
-        progname_or_default()
-    end
-  end
-
-  defp progname_or_default do
-    case :init.get_argument(:progname) do
-      {:ok, [[path]]} when path != ~c"erl" and path != ~c"erlexec" ->
-        List.to_string(path)
-
-      _ ->
-        System.find_executable("cymphony") || "cymphony"
-    end
-  end
-
-  defp wait_for_pidfile(timeout_ms) when timeout_ms > 0 do
+  # The daemon writes its own pidfile late in boot, so "no pidfile yet" is not
+  # evidence of failure: a Burrito binary decompresses its whole ERTS payload
+  # and deletes the previous version's install tree before the BEAM even
+  # starts, which after an upgrade routinely takes longer than the old 5s wait.
+  # Aborting on that clock reported a healthy start as a failure and exited 1,
+  # and a service wrapper that retries on nonzero exit could then bring up a
+  # second daemon on the same port and double-dispatch every issue.
+  #
+  # Liveness of the detached process — not the clock — is what separates slow
+  # from dead, so the deadline is generous and a child that is already gone
+  # ends the wait immediately.
+  defp wait_for_daemon_pidfile(child_pid, timeout_ms) when timeout_ms > 0 do
     case read_pidfile() do
-      {:ok, pid} ->
-        {:ok, pid}
-
-      :error ->
-        Process.sleep(200)
-        wait_for_pidfile(max(0, timeout_ms - 200))
+      {:ok, pid} -> {:ok, pid}
+      :error -> continue_waiting_for_pidfile(child_pid, timeout_ms)
     end
   end
 
-  defp wait_for_pidfile(_timeout_ms), do: :timeout
+  defp wait_for_daemon_pidfile(_child_pid, _timeout_ms), do: :timeout
+
+  defp continue_waiting_for_pidfile(child_pid, timeout_ms) do
+    if daemon_gone?(child_pid) do
+      :exited
+    else
+      Process.sleep(@background_poll_interval_ms)
+      wait_for_daemon_pidfile(child_pid, max(0, timeout_ms - @background_poll_interval_ms))
+    end
+  end
+
+  # Without a captured pid there is nothing to probe, so only the deadline can
+  # end the wait.
+  defp daemon_gone?(nil), do: false
+  defp daemon_gone?(child_pid), do: not process_alive?(child_pid)
 
   defp wait_for_process_death(pid, timeout_ms) when timeout_ms > 0 do
     if process_alive?(pid) do

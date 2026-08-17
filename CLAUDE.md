@@ -55,6 +55,61 @@ Defined in `lib/cymphony_elixir/cli.ex`.
 
 The short forms `b`, `bs`, `r`, `s`, `p`, `a`, `l` / `ls`, `log`, and the long flag `--port` still work as aliases for backward compatibility but are no longer documented in `--help`.
 
+### Background daemon and log files
+
+`cymphony start` re-executes the running binary under `nohup` and waits up to 5s for the daemon to
+write `~/.cymphony/cymphony.pid`.
+
+`CymphonyElixir.Daemon.executable_path/1` resolves argv[0] before anything is spawned, in order:
+Burrito wrapper path (`Burrito.Util.Args.get_bin_path/0`, i.e. `__BURRITO_BIN_PATH`) → escript path
+(`:escript.script_name/0`) → launcher `progname` (never `erl`/`erlexec`) → `cymphony` on `PATH`.
+Each candidate must be an executable file (bare names must resolve through `PATH`). Burrito
+releases boot the BEAM directly, so escript/progname cannot name the wrapper — only the exported
+wrapper path can. If nothing resolves, `start` aborts with an error instead of emitting a `nohup`
+command with a blank/unqualified argv[0].
+
+`Daemon.background_command/3` also prints the detached child's OS pid on a `cymphony-daemon-pid=`
+line, which `Daemon.split_launcher_pid/1` strips back out of the operator-facing launcher output.
+The wait for `cymphony.pid` is driven by that pid, not by a stopwatch: a child that is already
+gone fails immediately (`the daemon exited before writing its pidfile`), while a live child gets
+the full 60s deadline. The daemon writes its own pidfile late in boot, and a Burrito binary
+decompresses its payload and deletes the previous version's install tree before the BEAM starts,
+so the old 5s abort failed healthy first-run-after-upgrade starts — and a wrapper retrying on the
+nonzero exit could bring up a second daemon on the same port. Either failure exits nonzero with
+the launcher output plus a sanitized tail of `daemon.out` (scrubbed of invalid UTF-8: the tail is
+read from a byte offset into a terminal capture, and `IO.puts(:stderr, …)` raises on a split
+codepoint). It never claims success with an unknown PID.
+
+"Late in boot" is load-bearing and holds for both builds. In the escript path
+`maybe_write_daemon_pidfile/2` runs on the **result** of `start_from_config/3` (and of
+`legacy_run/3`): only `:ok` claims the pidfile, so a bad `config.json`, a missing workflow file or
+a taken dashboard port leaves it absent and the launcher reports the failure with the `daemon.out`
+tail. Writing it first made `Cymphony started in background (PID …)` a report that the process was
+*spawned*, not that it *booted*. The Burrito build gets the ordering for free — `BurritoCLI.start/2`
+brings up the supervision tree before `Task.start(__MODULE__, :run_cli, …)`.
+
+All paths derive from `CymphonyConfig.config_dir/0` (`~/.cymphony` by default), never a separate
+hardcoded `~`:
+
+| Path | Written by | Contents |
+|------|-----------|----------|
+| `~/.cymphony/log/cymphony.log.N` | `:logger_disk_log_h` (wrap) | Full `debug`+ transcript; what `cymphony logs` reads |
+| `~/.cymphony/daemon.log` | `:logger_std_h` (file, 2 MB × 2) | `warning`+ only, plainly named and tailable |
+| `~/.cymphony/daemon.out` | `nohup` redirect | Raw daemon stdout/stderr — status TUI repaints plus any pre-Logger crash |
+| `~/.cymphony/cymphony.pid` | `--daemon-internal` | Daemon OS pid |
+
+Both file handlers buffer and `System.halt/1` does not unwind the VM, so every exit path goes
+through `CLI.halt/1`, which calls `Logger.flush()` first; without it a startup failure leaves both
+log files empty. That includes `BurritoCLI.run_cli/1`'s unhandled-error handler — the only record
+of a crash in the shipped binary, running after `LogFile.configure/0` removed the console handler.
+There must stay exactly one `System.halt/1` call site in `lib/`, inside `CLI.halt/1`.
+
+`Application.start/2` installs both handlers unconditionally, so `config/config.exs` pins
+`:log_file` and `:daemon_log_file` to `tmp/test-logs` under `config_env() == :test`. Without that,
+`mix test` appends the whole suite's warning noise — raw agent stdout included — to the real
+`~/.cymphony/daemon.log` and rotates it. `LogFileTest` unsets both to exercise the config-dir
+defaults and must **restore** them in `on_exit`, not delete them.
+
 ### Concurrency control
 
 ```bash
@@ -134,7 +189,7 @@ CLI → CymphonyConfig → WorkflowStore → Orchestrator (GenServer, per-projec
 5. **Orchestrator** (`orchestrator.ex`) — Central GenServer per project. Poll tick loop reconciles `waiting` via `Queue.reconcile`, dispatches the leftmost waiting card, enforces concurrency via `available_slots/1`, selects providers via `select_provider/1` (random rotation from `providers` list), handles retries with exponential backoff, tracks token usage, and detects stalled agents.
 6. **AgentRunner** (`agent_runner.ex`) — Spawns a Task per issue. Creates workspace, runs lifecycle hooks, then calls `Agent.Runner` for multi-turn execution. Accepts `agent_kind`/`model`/`effort`/`provider_override` opts for this session.
 7. **ShellProvider** (`cymphony/shell_provider.ex`) — Reads provider env vars (API keys, model config) from shell functions in `~/.cld`, `~/.zshrc`, or `~/.bashrc`. Sources the rc files in a zsh subprocess with `claude`/`codex`/`agy`/`antigravity` noop'd, calls the provider function, and captures env vars matching the active agent's prefixes (Claude: `ANTHROPIC_*`/`CLAUDE_CODE_*`; Codex: `OPENAI_*`/`CODEX_*`; Antigravity: `ANTIGRAVITY_*`/`GOOGLE_*`/`GEMINI_*` plus `API_TIMEOUT`; fallback keys `GOOGLE_API_KEY`/`GEMINI_API_KEY`). Results are cached via `persistent_term`.
-8. **Agent behaviour** (`agent.ex`, `agent/runner.ex`, `agent/claude.ex`, `agent/codex.ex`, `agent/antigravity.ex`) — `Agent.Runner` owns the shared machinery (port spawn, SSH remoting, env injection, timeouts, workspace validation) and delegates argv construction + output parsing to the `CymphonyElixir.Agent` adapter for `agent.kind`. The Claude adapter drives `claude --bare -p … --resume`; the Codex adapter drives `codex exec --json` / `codex exec resume <id>` and parses its JSONL events; the Antigravity adapter drives `agy -p … --output-format stream-json` and resumes with `--conversation <id>` (never `-c`/`--continue`).
+8. **Agent behaviour** (`agent.ex`, `agent/runner.ex`, `agent/claude.ex`, `agent/codex.ex`, `agent/antigravity.ex`) — `Agent.Runner` owns the shared machinery (port spawn, SSH remoting, env injection, timeouts, workspace validation) and delegates argv construction + output parsing to the `CymphonyElixir.Agent` adapter for `agent.kind`. The Claude adapter drives `claude --bare -p … --resume`; the Codex adapter drives `codex exec --json` / `codex exec resume <id>` and parses its JSONL events; the Antigravity adapter drives `agy -p … --output-format stream-json` and resumes with `--conversation <id>` (never `-c`/`--continue`). A nonzero CLI exit returns `{:agent_exit, status, tail}` where `tail` is a bounded tail of everything the CLI printed (newest 20 lines, then 2048 bytes, ANSI/control bytes stripped) — not just the unterminated leftover buffer, which is empty whenever the CLI printed a newline-terminated error line. That text is what the dashboard retry queue and the Linear abandonment comment show, so `AgentRunner` raises with the reason first (issue context follows in parentheses; the `Logger.error` above it is unchanged) and the Orchestrator records `Exception.message/1` for a `{exception, stacktrace}` task exit rather than the inspected tuple — the retry row truncates to 120 characters. The tail is ordered **newest line first** and the byte cap keeps the head, because every display truncates from the front after a ~50-character `agent exited: Agent run failed: {:agent_exit, 1, "` prefix; chronological order put the CLI's own error line past the cut on any streaming turn. `failure_tail/2` sanitizes lazily (`Stream`, then `Enum.take/2`) so the regexes run on the ~20 retained lines, not on a multi-megabyte transcript.
 9. **Workspace** (`workspace.ex`) — Isolated per-issue directories with path safety validation, lifecycle hooks (after_create, before_run, after_run, before_remove), and SSH worker support. Optional retention sweep (`workspace.retention_days` in config) deletes stale workspaces every 6 hours, skipping currently-running ones.
 10. **Tracker** (`tracker.ex`) — Behaviour-based adapter for issue trackers. `Linear.Adapter` is the production implementation; `Tracker.Memory` is for testing.
 
@@ -145,6 +200,91 @@ CLI → CymphonyConfig → WorkflowStore → Orchestrator (GenServer, per-projec
 - `cr N` CLI shorthand sets concurrency at startup and persists to config
 - Per-host limit: `max_concurrent_agents_per_host` caps concurrent sessions per worker
 - Auto-dispatch: as sessions finish, waiting issues fill open slots on next poll tick
+
+### Dispatch pause (durable)
+
+- Pause is a **persisted per-project preference**, not just process state. `Control.pause/resume`
+  writes `dispatch_paused` (boolean) onto each in-scope `projects[]` entry in
+  `~/.cymphony/config.json` via `CymphonyConfig.update_dispatch_paused/2`, alongside
+  `queue_order` / `queue_pins` / `queue_priority_seen`.
+- `Orchestrator.init/1` seeds `state.paused` from `CymphonyConfig.dispatch_paused?/2` **before**
+  `schedule_tick(state, 0)`. A `handle_call` cannot be delivered until `init/1` returns, so the
+  first `maybe_dispatch` already sees the persisted value — a paused project never dispatches once
+  on boot and pauses afterwards. `refresh_runtime_config/1` never touches `paused`.
+- All three surfaces persist: `POST /api/v1/pause|resume`, the drawer's global Pause/Resume
+  (`pause_dispatch` / `resume_dispatch`), and the per-project header toggle
+  (`toggle_project_pause`). None of them may call `Orchestrator.pause/1` directly.
+- `Control.apply_scope/3` fans out to **every** in-scope orchestrator even after one project's
+  persist fails, and returns the first error afterwards. Halting the fold left the projects
+  behind the failure dispatching — the opposite of what "pause everything" asked for.
+- The legacy single-orchestrator fallback for `{:project, name}` persists under `name`, never
+  `nil`: `nil` means "every project" to `CymphonyConfig`, so a per-project Pause in legacy
+  WORKFLOW.md mode used to write `dispatch_paused: true` onto the whole fleet.
+- Because the flag is durable, all three surfaces must **report** a persist failure rather than
+  claim success: the API answers `422 dispatch_pause_not_persisted` (and `422 project_not_found`),
+  and the LiveView flashes "applied, but could not be saved …" while still reloading the board
+  (the orchestrator half did happen).
+- Every `CymphonyConfig` read-modify-write runs inside one node-wide lock
+  (`:global.trans`), and `save/1` stages to a sibling temp file and renames. The orchestrator
+  persists `queue_order` from its own poll tick, so an unsynchronized dashboard write silently
+  dropped whichever field the other writer had just saved.
+- `load_project_dispatch_paused/1` logs a warning when `config.json` exists but cannot be read
+  or parsed (the seed is silently discarding a stop-work order); a missing file is legacy mode
+  and stays silent.
+- The write side mirrors that guard: `Control.persist_dispatch_paused/2` skips the write (and
+  returns `:ok`) when `CymphonyConfig.exists?()` is false. In legacy WORKFLOW.md mode there is no
+  config store, so nothing durable was lost — failing there made every pause/resume of a working
+  pause answer `422` / flash "could not be saved". A config store that exists and cannot be read,
+  parsed, or written is still an error.
+- **Retries hold while paused.** A retry timer that fires while `state.paused` neither dispatches
+  nor reschedules: the entry keeps its `attempt`, `failures`, `identifier`, `error` and original
+  `due_at_ms`, gains `held: true`, and drops its `timer_ref`. Rescheduling would add `+1` to
+  `attempt` per backoff cycle for the whole pause, inflating the delay and burning the
+  `max_retry_attempts` budget on work that never ran. Stale `retry_token`s are still ignored;
+  repeated firings are idempotent.
+- `held` is in the orchestrator snapshot, the presenter payload, and `/api/v1/state`. A held
+  entry's `due_in_ms` clamps to `0` forever, so the presenter must render **no** `due_at` for it
+  (deriving `now + 0` produces a value that moves every second, which re-renders every project
+  section on every payload load of an idle paused board) and the surfaces show "held" instead.
+- Fresh failures (crash, stall, spawn failure) still record a retry entry while paused — pause
+  suppresses re-litigating an existing backoff, not the recording of a failure.
+- `handle_call(:resume, …)` calls `release_held_retries/1`: every `held` entry is re-armed at 0ms
+  with a fresh `retry_token` and the **same** `attempt`, so it is eligible immediately without a
+  new backoff wait. Entries whose timer never fired keep their armed schedule untouched.
+- The dashboard's per-row **Retry** button (`retry_issue` → `{:retry_issue_now, id}`) is an
+  explicit operator override and still dispatches while paused; the gate covers the timer-driven
+  backoff loop only.
+
+### Stall watchdog (`stall_timeout_ms`)
+
+- Every tick, `reconcile_stalled_running_issues/1` compares each running session's silence
+  (time since its last agent event, else since `started_at`) against
+  `config.agent.stall_timeout_ms`. Past the timeout the worker is killed and the issue goes back
+  through the retry queue. It exists to catch runs that hang without failing — a foreground
+  server command (`mix phx.server`, `npm run dev`), an interactive prompt waiting on stdin, a
+  wedged network read — which stop emitting events but never exit, so the slot would otherwise be
+  held forever. `<= 0` disables detection (hand-authored `WORKFLOW.md` only).
+- Per-project override: `stall_timeout_ms` (milliseconds) on a `projects[]` entry in
+  `~/.cymphony/config.json`. `CymphonyConfig.to_schema_map/1` writes it into the generated
+  `WORKFLOW.md` `agent` section next to `max_concurrent_agents`/`max_turns`, so it takes effect on
+  the next generation/rewrite (add-project, agent-settings change, Linear connect) or daemon start.
+- Only a **positive integer** is honored. Absent, `0`, negative, float, or stringified values fall
+  back to `Defaults.stall_timeout_ms()` (`300000`, matching the schema default) — a typo must not
+  silently disable the watchdog or emit front matter that fails `Schema.parse/1`. There is no CLI
+  flag, API route, or dashboard control for it; it is a hand-edited config key.
+
+### Generated `WORKFLOW.md` files (mode 0600)
+
+- Generated per-project workflow files embed the Linear API key in cleartext
+  (`tracker.api_key`), so they are written owner-only. `WorkflowGenerator.write/2` is the single
+  writer: it stages the content in a `<path>.tmp-<n>` sibling that is chmod'd `0600` while still
+  empty, then renames it over the target. The key never lands under a umask-derived mode (`0644`
+  on the usual `022`), a file left loose by an older build is replaced with a `0600` one, the
+  rewrite is atomic for the `WorkflowStore` reload poll, and a failed write leaves the previous
+  file intact (the staged file is removed).
+- All write paths go through it — `write_temp/2` (multi-project startup, dashboard/API
+  add-project) and `ProjectSupervisor.rewrite_workflow/1` (agent-settings change, Linear connect).
+  Never `File.write` a generated workflow directly.
 
 ### Provider Rotation
 
@@ -182,7 +322,7 @@ The Phoenix LiveView dashboard (`lib/cymphony_elixir_web/live/dashboard_live.ex`
 - **Metrics strip** — One row of stat tiles: running count, retrying count, total tokens (input/output), runtime, throughput sparkline (10-minute window), plus compact polling-countdown and rate-limit (Primary/Secondary/Credits) tiles. Advanced adds `.metric-pill--queue.section--queue` = `counts.waiting`. Simple Waiting pill stays `counts.retrying`.
 - **Per-project sections** — One section per project. Header shows project name, counts (`N/M running · Q queued · R retrying`), paused state, and inline controls: concurrency input (`cr`), wrapping `form.project-agent-form` (`phx-change="preview_project_agent"`, `phx-submit="set_project_agent"`) with labeled pills `.agent-switcher` (`claude`/`codex`/`antigravity`, stable id `agent-<project>` — never embed kind), `.model-switcher` Combobox (type-to-filter; `AgentCatalog.models/1`; not `<datalist>`), `.effort-switcher` (native `#effort-<project>` select), and **Set**. Providers input (`form[phx-submit=set_project_providers]`, `#providers-<project.name>`) is visible only when the selected kind is `claude` (`agent_settings.kind`). Changing the agent kind persists immediately (kind only; do not persist model/effort on preview) and hides/shows providers on the next render — do not delete persisted providers when hidden. Header **Set** still saves kind+model+effort. Both paths rewrite the project's generated `WORKFLOW.md` and overlay `config.json` so `snapshot.agent_kind` survives refresh. **Up next / Queue** (`section.queue-board.section--board`) sits **above** In Progress (`.session-row-list`): `div#queue-board-<project.name>.queue-board-list` (`phx-hook="QueueBoard"`) of `article.queue-card` rows. Hide the board when `waiting == []`. Empty-state iff `running`, `retrying`, **and** `waiting` are empty. Card face is id + title + Edit only (no Linear priority/state/agent chips). Edit (`div.queue-card-edit`, `form.queue-edit-form`) pins `agent_kind` / model / effort for the next dispatch — empty/`keep` skips; no provider; do not kill. Each running session is a compact one-line row with issue identifier (linked), title (or last activity), state/provider/agent/model/effort/host chips, runtime, tokens, and a Kill button. Click a row to expand and see session ID (copyable), workspace path (copyable), recent log events, a live **Harness** stdout pane (Follow/Paused; `HarnessStream` ring of 400 × 2048-byte lines; `section#harness-tail-<id>` unchanged), and `form.restart-form` (`phx-change="preview_issue_run_spec"`, `phx-submit="set_issue_run_spec"`) with labeled Harness / Provider (Claude only via `session_spec.suggestion_kind`) / Model Combobox / Effort pills. Session provider chips and the read-only Provider stat stay visible for every kind. The retry queue lives inline **below** In Progress (not on the board).
 - **Recent completions** — Last 100 sessions that wrapped up: identifier, agent/model chips, runtime, total tokens, ended-at timestamp. Collapsible; backed by the persistent completion store.
-- **Settings drawer** — Right-side panel. After Experience and before Automation (simple and advanced): **Linear** (`#linear-connect-form`, `phx-submit="connect_linear"`, `#linear-api-key`) and **Projects** (`#add-project-form`, `phx-submit="add_project"`; `#add-project-slug` is a searchable Combobox, not a native select; `#add-project-provider` visible only when assign `:add_project_kind` is `claude`, drafted by `preview_add_project`). Then orchestrator controls (global Pause/Resume, global concurrency, `#drawer-refresh-interval` / `set_refresh_interval` persisting `dashboard_refresh_seconds`) and client-side display preferences (density, section visibility including `{Board, board}`, session-row columns, completions length). Drawer fields use class `settings-field`. Display prefs persist per browser in localStorage (`cymphony-prefs`) as `data-*` attributes on `<html>` (`html[data-hidden-sections~=board] .section--board { display: none }`); no server state. Never put the raw Linear key in assigns or flashes. Model and slug Comboboxes use the LiveSocket `Combobox` hook (`layouts.ex`, beside `HarnessTail`, `QueueBoard` and `LiveClock`; root `.combobox` `phx-hook="Combobox"`). `Combobox.setChrome` also toggles the closest `.queue-card`.
+- **Settings drawer** — Right-side panel. After Experience and before Automation (simple and advanced): **Linear** (`#linear-connect-form`, `phx-submit="connect_linear"`, `#linear-api-key`) and **Projects** (`#add-project-form`, `phx-submit="add_project"`; `#add-project-slug` is a searchable Combobox, not a native select; `#add-project-provider` visible only when assign `:add_project_kind` is `claude`, drafted by `preview_add_project`). Then orchestrator controls (global Pause/Resume — persists `dispatch_paused` per project, global concurrency, `#drawer-refresh-interval` / `set_refresh_interval` persisting `dashboard_refresh_seconds`) and client-side display preferences (density, section visibility including `{Board, board}`, session-row columns, completions length). Drawer fields use class `settings-field`. Display prefs persist per browser in localStorage (`cymphony-prefs`) as `data-*` attributes on `<html>` (`html[data-hidden-sections~=board] .section--board { display: none }`); no server state. Never put the raw Linear key in assigns or flashes. Model and slug Comboboxes use the LiveSocket `Combobox` hook (`layouts.ex`, beside `HarnessTail`, `QueueBoard` and `LiveClock`; root `.combobox` `phx-hook="Combobox"`). `Combobox.setChrome` also toggles the closest `.queue-card`.
 
 ### User actions
 
@@ -200,8 +340,8 @@ The Phoenix LiveView dashboard (`lib/cymphony_elixir_web/live/dashboard_live.ex`
 | `preview_queue_run_spec` | Draft `:queue_run_spec_drafts[{project, id}]` like `preview_issue_run_spec`. Kind change clears model/effort. No persist. No provider. |
 | `set_queue_run_spec` | Hidden `project` + `issue`. Comboboxes preselect the card pin or the project header spec (no `keep`). Empty / keep in the payload still skip. `Control.set_queue_pin`. Does **not** kill (issue is not running). |
 | `toggle_harness_follow` | Flip Follow/Paused on the expanded session's Harness stdout pane |
-| `pause_dispatch` / `resume_dispatch` | Stop/start dispatching new issues for **all** projects; running sessions complete normally |
-| `toggle_project_pause` | Pause or resume dispatching for a single project from its section header |
+| `pause_dispatch` / `resume_dispatch` | Stop/start dispatching new issues for **all** projects; running sessions complete normally. `Control.pause/resume` persists `dispatch_paused` per project; a persist failure flashes an error (the orchestrators still paused) instead of reporting success |
+| `toggle_project_pause` | Pause or resume dispatching for a single project from its section header. Goes through `Control.pause/resume({:project, name})` (never `Orchestrator.pause/1` directly) so it persists like the global buttons; a persist failure flashes "applied, but could not be saved" and still reloads the board |
 | `set_concurrency` | Update `max_concurrent_agents` for **all** projects (legacy global form); persists to `~/.cymphony/config.json` |
 | `set_project_concurrency` | Update `max_concurrent_agents` for a single project from its section header; persists to config |
 | `set_project_providers` | Update the provider list (`provider` + `providers`) for a single project from its section header; persists to config and applies to next dispatch (running sessions unchanged) |
@@ -256,8 +396,8 @@ Routes defined in `lib/cymphony_elixir_web/router.ex`:
 | `/api/v1/:issue_identifier` | GET | Single issue details (optional `?project=` filter) |
 | `/api/v1/refresh` | POST | Trigger Linear refresh (returns 202). **Not** `POST /refresh-interval`. |
 | `/api/v1/refresh-interval` | POST | Body `{"value": N}` (pos int ≥ 1). Persist top-level `dashboard_refresh_seconds`. `202` `{"dashboard_refresh_seconds":N}` or `422` `{"error":{"code":"invalid_refresh_interval","message":"..."}}`. Declare (and `match :*`) **before** `/api/v1/:issue_identifier`. Other methods `405`. Does not change Linear poll timing. |
-| `/api/v1/pause` | POST | Stop dispatching new issues; running sessions continue. Optional `?project=<name>` to scope to one project. Returns 202. |
-| `/api/v1/resume` | POST | Resume dispatching new issues. Optional `?project=<name>`. Returns 202. |
+| `/api/v1/pause` | POST | Stop dispatching new issues; running sessions continue. Optional `?project=<name>` to scope to one project. **Durable**: persists `dispatch_paused: true` on each in-scope project in `~/.cymphony/config.json`, so the project is still paused after a restart. Returns 202 `{"paused":true,"project":<name|null>}`, or `422` `dispatch_pause_not_persisted` when the flag could not be written (the orchestrators are paused but the next restart undoes it) / `422` `project_not_found`. Legacy WORKFLOW.md mode has no `config.json` and no flag to lose, so it still answers 202. |
+| `/api/v1/resume` | POST | Resume dispatching new issues; persists `dispatch_paused: false` and releases retries held during the pause. Optional `?project=<name>`. Same 202 / 422 shapes as `/pause`. |
 | `/api/v1/concurrency` | POST | Update `max_concurrent_agents` at runtime. JSON body `{"value": <int>}`, optional `?project=<name>`. Persists to `~/.cymphony/config.json`. Returns 202. |
 | `/api/v1/providers` | POST | Update provider list at runtime. JSON body `{"value": "cv1,cz2,ck1"}` (comma-separated aliases), optional `?project=<name>`. Persists `provider` (head) + `providers` (full list) to `~/.cymphony/config.json`. Applies to next dispatch only — running sessions unchanged. Returns 202 with `{"providers": [...]}`. |
 | `/api/v1/agent` | POST | Update agent settings at runtime. JSON body `{"kind": "codex", "model": "...", "effort": "..."}` (each optional, at least one required; `kind` must be one of `claude`, `codex`, `antigravity`; empty string clears model/effort), optional `?project=<name>`. Persists to `~/.cymphony/config.json`, rewrites the project's generated `WORKFLOW.md`, and overlays `config.json` so `snapshot.agent_kind` survives refresh. Applies to next dispatch. Returns 202. |
@@ -273,6 +413,7 @@ All other methods return 405; all other paths return 404.
 - `defp` specs are optional; `@impl` callbacks are exempt
 - Runtime config comes from `WORKFLOW.md` YAML front matter, accessed through `CymphonyElixir.Config` (never read env vars directly in business logic)
 - Workspace safety is critical: Claude Code must never run in the source repo cwd; all workspaces are validated to stay under the configured root
+- Secret-bearing files are owner-only (`0600`): `~/.cymphony/config.json` via `CymphonyConfig.save/1`, the completion store, the MCP config, and generated `WORKFLOW.md` files via `WorkflowGenerator.write/2`
 - Regexes must be compiled at runtime with `Regex.compile!/1` (not sigils) for OTP 28 compat
 - Keep implementation aligned with `SPEC.md`; update spec when behavior changes meaningfully
 - PR body must follow `.github/pull_request_template.md` exactly (validated by `.github/workflows/pr-description-lint.yml`)

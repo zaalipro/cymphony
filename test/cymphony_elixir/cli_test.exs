@@ -3,6 +3,8 @@ defmodule CymphonyElixir.CLITest do
   # :config_dir_override.
   use ExUnit.Case, async: false
 
+  import ExUnit.CaptureIO
+
   alias CymphonyElixir.CLI
 
   @ack_flag "--i-understand-that-this-will-be-running-without-the-usual-guardrails"
@@ -309,6 +311,83 @@ defmodule CymphonyElixir.CLITest do
       assert result in [:ok, :done] or match?({:error, _}, result)
     end
   end
+
+  describe "background start" do
+    setup do
+      tmp = Path.join(System.tmp_dir!(), "cymphony-cli-background-#{System.unique_integer([:positive])}")
+      File.mkdir_p!(tmp)
+      Application.put_env(:cymphony_elixir, :config_dir_override, tmp)
+
+      on_exit(fn ->
+        Application.delete_env(:cymphony_elixir, :config_dir_override)
+        File.rm_rf!(tmp)
+      end)
+
+      deps = %{
+        file_regular?: fn _path -> true end,
+        set_workflow_file_path: fn _path -> :ok end,
+        set_logs_root: fn _path -> :ok end,
+        set_server_port_override: fn _port -> :ok end,
+        ensure_all_started: fn -> {:ok, [:cymphony_elixir]} end
+      }
+
+      %{deps: deps, config_dir: tmp}
+    end
+
+    test "start refuses to launch a second daemon and never spawns one", %{deps: deps, config_dir: config_dir} do
+      File.write!(Path.join(config_dir, "cymphony.pid"), System.pid())
+
+      assert {:error, message} = CLI.evaluate(["start"], deps)
+      assert message =~ "already running in background"
+      refute File.exists?(CymphonyElixir.LogFile.daemon_output_file())
+    end
+
+    test "start reports the daemon output tail when the daemon dies before writing a pidfile", %{
+      deps: deps,
+      config_dir: config_dir
+    } do
+      binary = fake_daemon!(config_dir, "echo '** (RuntimeError) boom'\nexit 1\n")
+
+      assert {:error, message} = CLI.evaluate(["start"], with_daemon_executable(deps, binary))
+
+      assert message =~ "the daemon exited before writing its pidfile"
+      assert message =~ "** (RuntimeError) boom"
+      refute message =~ "PID unknown"
+    end
+
+    test "start waits out a slow daemon instead of calling a live start a failure", %{
+      deps: deps,
+      config_dir: config_dir
+    } do
+      # A first-run Burrito binary decompresses its payload and deletes the
+      # previous version's install tree before the BEAM starts, so the pidfile
+      # can be seconds late on a perfectly healthy start.
+      pidfile = Path.join(config_dir, "cymphony.pid")
+      binary = fake_daemon!(config_dir, "sleep 0.6\nprintf '%s' \"$$\" > '#{pidfile}'\nsleep 5\n")
+
+      assert capture_io(fn ->
+               assert CLI.evaluate(["start"], with_daemon_executable(deps, binary)) == :done
+             end) =~ "Cymphony started in background"
+
+      System.cmd("kill", ["-TERM", String.trim(File.read!(pidfile))], stderr_to_stdout: true)
+    end
+
+    test "start surfaces an unresolvable executable without spawning anything", %{deps: deps} do
+      deps = Map.put(deps, :daemon_executable, fn -> {:error, "Cannot determine the Cymphony executable"} end)
+
+      assert {:error, "Cannot determine the Cymphony executable"} = CLI.evaluate(["start"], deps)
+      refute File.exists?(CymphonyElixir.LogFile.daemon_output_file())
+    end
+
+    defp with_daemon_executable(deps, binary), do: Map.put(deps, :daemon_executable, fn -> {:ok, binary} end)
+
+    defp fake_daemon!(dir, script) do
+      path = Path.join(dir, "fake-daemon-#{System.unique_integer([:positive])}")
+      File.write!(path, "#!/bin/sh\n" <> script)
+      File.chmod!(path, 0o755)
+      path
+    end
+  end
 end
 
 defmodule CymphonyElixir.CLIAgentOverrideTest do
@@ -411,5 +490,83 @@ defmodule CymphonyElixir.CLIAgentOverrideTest do
     [_preamble, front_matter, _body] = String.split(content, "---", parts: 3)
     {:ok, parsed} = Jason.decode(String.trim(front_matter))
     parsed["agent"]["kind"]
+  end
+end
+
+defmodule CymphonyElixir.CLIDaemonPidfileTest do
+  # async: false — mutates the global :config_dir_override and starts a project
+  # under the global ProjectDynamicSupervisor.
+  use ExUnit.Case, async: false
+
+  import ExUnit.CaptureIO
+
+  alias CymphonyElixir.CLI
+  alias CymphonyElixir.ProjectSupervisor
+
+  setup do
+    tmp = Path.join(System.tmp_dir!(), "cymphony-cli-pidfile-#{System.unique_integer([:positive])}")
+    File.mkdir_p!(tmp)
+    Application.put_env(:cymphony_elixir, :config_dir_override, tmp)
+
+    on_exit(fn ->
+      _ = ProjectSupervisor.stop_project("Farm")
+      Application.delete_env(:cymphony_elixir, :config_dir_override)
+      File.rm_rf!(tmp)
+    end)
+
+    {:ok, tmp: tmp}
+  end
+
+  defp deps(parent) do
+    %{
+      file_regular?: fn _path -> true end,
+      set_workflow_file_path: fn path ->
+        send(parent, {:workflow_set, path})
+        :ok
+      end,
+      set_logs_root: fn _path -> :ok end,
+      set_server_port_override: fn _port -> :ok end,
+      ensure_all_started: fn -> {:ok, [:cymphony_elixir]} end
+    }
+  end
+
+  defp write_config!(tmp, projects) do
+    File.write!(Path.join(tmp, "config.json"), Jason.encode!(%{"projects" => projects}))
+  end
+
+  defp farm_project(tmp) do
+    %{
+      "name" => "Farm",
+      "github_repo_url" => "git@github.com:example/repo.git",
+      "linear_project_slug" => "team-abc",
+      "linear_api_key" => "lin_test",
+      "workspace_root" => Path.join(tmp, "ws"),
+      "polling_interval_ms" => 5000
+    }
+  end
+
+  # `cymphony start` waits for the pidfile and prints "Cymphony started in
+  # background (PID …)" as soon as it appears, so a pidfile written before the
+  # config load turned a failed boot into a reported success.
+  test "a startup failure leaves no pidfile behind", %{tmp: tmp} do
+    write_config!(tmp, [])
+
+    assert {:error, message} = CLI.evaluate(["--daemon-internal"], deps(self()))
+    assert message =~ "No projects configured"
+    refute File.exists?(Path.join(tmp, "cymphony.pid"))
+  end
+
+  test "the pidfile is claimed only once the supervision tree is up", %{tmp: tmp} do
+    write_config!(tmp, [farm_project(tmp)])
+    parent = self()
+
+    capture_io(:stderr, fn ->
+      assert :ok = CLI.evaluate(["--daemon-internal"], deps(parent))
+    end)
+
+    assert_received {:workflow_set, workflow_path}
+    File.rm(workflow_path)
+
+    assert File.read!(Path.join(tmp, "cymphony.pid")) == System.pid()
   end
 end

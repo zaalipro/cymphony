@@ -246,10 +246,25 @@ Fields:
 - `attempt` (integer, 1-based for retry queue)
 - `due_at_ms` (monotonic clock timestamp)
 - `timer_handle` (runtime-specific timer reference)
+- `held` (boolean; timer disarmed while dispatch is paused, §8.5)
 - `error` (string or null)
 
 Retry/backoff stays its own list (`retry_attempts`), rendered **below** In Progress. Retrying
 issues are not waiting-board members and must not appear on `section.queue-board`.
+
+`held` is part of the snapshot and of `/api/v1/state`. A held entry keeps its original — now
+past — `due_at_ms`, so its `due_in_ms` clamps to `0` for the whole pause: without `held`, a retry
+parked indefinitely is indistinguishable from one due this instant, and any presenter deriving an
+absolute `due_at` from `now + due_in_ms` produces a value that advances one second per second,
+which re-renders every project section on every payload load of an otherwise idle paused board.
+Status surfaces therefore render "held" for such an entry and no due time at all.
+
+`error` is truncated by status surfaces (the dashboard retry row shows 120 characters), so it must
+be front-loaded with the failure itself. A crashed agent task exits with `{exception, stacktrace}`:
+record the exception message, not the inspected tuple, and keep the issue context (already present
+in the log line) after the reason. Otherwise the agent CLI's own error text — which the runner
+retains as the `{:agent_exit, status, tail}` tail (§10.8), newest line first for the same reason —
+is pushed past the cut.
 
 #### 4.1.8 Orchestrator Runtime State
 
@@ -259,6 +274,7 @@ Fields:
 
 - `poll_interval_ms` (current effective poll interval)
 - `max_concurrent_agents` (current effective global concurrency limit)
+- `paused` (dispatch suspended; seeded at init from the persisted `dispatch_paused`, Section 8.1)
 - `running` (map `issue_id -> running entry`)
 - `claimed` (set of issue IDs reserved/running/retrying)
 - `retry_attempts` (map `issue_id -> RetryEntry`)
@@ -274,16 +290,30 @@ Fields:
 - `claude_totals` (aggregate tokens + runtime seconds)
 - `claude_rate_limits` (latest rate-limit snapshot from agent events)
 
-`queue_order`, `queue_pins`, and `queue_priority_seen` persist on the matching
-`projects[]` object in `~/.cymphony/config.json` (file mode `0600` via existing
-`save/1`). They are **not** WORKFLOW.md front matter and must not be added to
+`queue_order`, `queue_pins`, `queue_priority_seen`, and `dispatch_paused` persist on
+the matching `projects[]` object in `~/.cymphony/config.json` (file mode `0600` via
+existing `save/1`). They are **not** WORKFLOW.md front matter and must not be added to
 `Config.Schema`. `Orchestrator.init` loads them via `CymphonyConfig.load` /
-`find_project`. `CymphonyConfig.update_project_queue/2` merges any of those three
-keys onto the named project (`nil` name = legacy flat/all) and `save/1`. Pin maps
-omit empty keys. Example:
+`find_project`. `CymphonyConfig.update_project_queue/2` merges any of the three queue
+keys onto the named project (`nil` name = legacy flat/all) and `save/1`;
+`CymphonyConfig.update_dispatch_paused/2` does the same for the pause boolean and
+`CymphonyConfig.dispatch_paused?/2` reads it back (unknown project or non-list
+`projects` falls back to the top-level key; anything other than stored `true` is
+`false`). Pin maps omit empty keys.
+
+These are read-modify-write sequences run from unrelated processes — the dashboard
+LiveView, the JSON API, and each project's orchestrator (which persists queue state from
+its own poll tick whenever the waiting set moves). They must therefore be **serialized**
+against each other, and `save/1` must be **atomic** (stage to a sibling temp file, chmod
+`0600` while empty, rename over the target). Without both, an interleaved save writes back
+a config loaded before the other writer's save and silently drops a field — a just-persisted
+`dispatch_paused` (the daemon stays paused in memory, so nothing looks wrong until the next
+restart resumes it) or a drag-reordered `queue_order` — and a reader can observe a
+half-written file. Example:
 
 ```json
 {
+  "dispatch_paused": true,
   "queue_order": ["LLM-51", "LLM-12"],
   "queue_pins": {
     "LLM-51": {"agent_kind": "codex", "model": "gpt-5.2-codex", "effort": "high"}
@@ -381,7 +411,14 @@ Fields:
   - Durable operator store for Linear credentials is `~/.cymphony/config.json`:
     top-level `linear_api_key`, also stamped onto every `projects[].linear_api_key`
     (a shared key on the project map; **not** a Symphony `tracker.provider` nest).
-  - Generated per-project `WORKFLOW.md` files write that value as `tracker.api_key`.
+  - Generated per-project `WORKFLOW.md` files write that value as `tracker.api_key`. Because
+    they carry the key in cleartext, every generated workflow file must end up mode `0600` —
+    initial generation, the agent-settings rewrite, and the Linear-connect rewrite all go
+    through one writer. That writer stages the content in a sibling temp file that is chmod'd
+    while still empty and then renamed over the target, so the key is never on disk under a
+    umask-derived mode such as `0644`, a file left `0644` by an older build is replaced rather
+    than patched, the rewrite is atomic for the reload poll, and a failed write leaves the
+    previous file intact.
   - Resolution when building runtime config: non-empty `config.json` `linear_api_key`,
     else the first project's non-empty `linear_api_key`, else process env
     `LINEAR_API_KEY`. The env var is a fallback only (`Schema.finalize_settings/1`);
@@ -470,7 +507,17 @@ Fields:
   - Maximum wall-clock time for one agent turn, regardless of agent kind.
 - `stall_timeout_ms` (integer)
   - Default: `300000` (5 minutes)
+  - Milliseconds of agent-event silence tolerated before the stall watchdog terminates the
+    session and queues a retry (Section 8.5). It exists to catch runs that hang without ever
+    failing — a foreground server command (`mix phx.server`, `npm run dev`), an interactive
+    prompt waiting on stdin, a wedged network read — which stop emitting events but never exit,
+    so nothing else in the service would ever reclaim the slot.
   - If `<= 0`, stall detection is disabled.
+  - Config-store write-through: a per-project `stall_timeout_ms` in `~/.cymphony/config.json`
+    is generated into this field. Only a positive integer is honored; a missing key, `0`, a
+    negative number, a float, or a stringified number generates the `300000` default instead,
+    so a typo can neither silently disable the watchdog nor produce front matter that fails
+    schema validation. Long-running builds should raise the value rather than disable it.
 
 #### 5.3.6 `claude` (object)
 
@@ -751,13 +798,14 @@ This section is intentionally redundant so a coding agent can implement the conf
 - `agent.max_turns`: integer, default `20`
 - `agent.max_retry_backoff_ms`: integer, default `300000` (5m)
 - `agent.max_concurrent_agents_by_state`: map of positive integers, default `{}`
+- `agent.stall_timeout_ms`: integer, default `300000` (5m); generated from the project's optional
+  `stall_timeout_ms` config-store key (positive integer only)
 - `claude.command`: shell command string, default `claude`
 - `claude.approval_policy`: Claude Code approval policy value, default implementation-defined
 - `claude.permission_mode`: Claude Code permission mode value, default implementation-defined
 - `claude.allowed_tools`: list of strings, default implementation-defined
 - `claude.turn_timeout_ms`: integer, default `3600000`
 - `claude.read_timeout_ms`: integer, default `5000`
-- `claude.stall_timeout_ms`: integer, default `300000`
 - `antigravity.command`: shell command string, default `agy`
 - `antigravity.output_format`: `text` | `json` | `stream-json`, default `stream-json`
 - `antigravity.extra_args`: string or null
@@ -874,6 +922,29 @@ At startup, the service validates config, performs startup cleanup, schedules an
 then repeats every `polling.interval_ms`.
 
 The effective poll interval should be updated when workflow config changes are re-applied.
+
+**Durable pause.** Pause is a persisted per-project preference, not just process state. The
+orchestrator seeds `paused` during initialization from the project's `dispatch_paused` boolean in
+the operator config store (falling back to a top-level key for a legacy flat config, and to `false`
+when unreadable or absent). Seeding must happen **before** the immediate first tick is scheduled, so
+a project persisted as paused cannot dispatch once and then pause; the first poll already observes
+the operator's choice. A config store that exists but cannot be read or parsed loses a persisted
+pause, so that case must be logged; a config store that is simply absent (legacy WORKFLOW.md mode)
+has no flag to lose and boots unpaused silently. Pause/resume from any surface
+(`POST /api/v1/pause`, the dashboard's global Pause/Resume, the per-project header toggle) writes
+the flag for every project in scope. An `:all` fan-out must reach **every** in-scope orchestrator
+even when one project's persist fails — stopping halfway leaves the rest dispatching — and report
+the first error afterwards. A per-project scope must stay keyed by the requested project on every
+path, including the legacy single-orchestrator fallback: a `nil` project name means "all projects"
+to the config writers, so passing it there paused the whole fleet on disk. The periodic
+runtime-config refresh never touches `paused`, so a seeded value survives config reloads.
+
+The write-side mirrors the seed on the absent-config-store case: with **no** config store at all
+there is nothing durable to write and nothing was lost, so pause/resume report success (a failure
+there would fail every toggle of a pause that worked, in the one mode where it can never fail). A
+config store that exists and cannot be read, parsed, or written **is** a failure — that one really
+does lose the flag — and must be reported as such rather than as a plain success, because the
+orchestrators flipped and the next daemon restart silently undoes it.
 
 Tick sequence:
 
@@ -1064,6 +1135,7 @@ Backoff formula:
 
 Retry handling behavior:
 
+0. If dispatch is paused, **hold** the entry instead of handling it (below).
 1. Fetch active candidate issues (not all issues).
 2. Find the specific issue by `issue_id`.
 3. If not found, release claim.
@@ -1071,6 +1143,22 @@ Retry handling behavior:
    - Dispatch if slots are available.
    - Otherwise requeue with error `no available orchestrator slots`.
 5. If found but no longer active, release claim.
+
+Paused retries (hold semantics):
+
+- A retry timer that fires while `paused` neither dispatches nor reschedules. Rescheduling would
+  add `+1` to `attempt` once per backoff cycle for the whole pause, inflating the delay and
+  spending the `max_retry_attempts` budget on work that never ran.
+- The entry stays in `retry_attempts` with its `attempt`, `failures`, `identifier` and `error`
+  unchanged, no armed timer, and its original `due_at_ms` — so it stays visible in the retry list
+  and reads as due now.
+- Repeated firings while paused are idempotent; a stale `retry_token` is still ignored.
+- Fresh failures (crash, stall, spawn failure) that occur while paused still record a retry entry
+  normally — pause suppresses re-litigating an existing backoff, not the recording of a failure.
+- `resume` re-arms every held entry immediately (0 ms, fresh `retry_token`) with the same
+  `attempt`, so a held retry becomes eligible on the next tick without a fresh backoff wait.
+- The explicit "retry now" operator action is an override and still dispatches while paused; hold
+  semantics apply to the timer-driven backoff loop only.
 
 Note:
 
@@ -1088,8 +1176,11 @@ Part A: Stall detection
 - For each running issue, compute `elapsed_ms` since:
   - `last_claude_timestamp` if any event has been seen, else
   - `started_at`
-- If `elapsed_ms > claude.stall_timeout_ms`, terminate the worker and queue a retry.
+- If `elapsed_ms > agent.stall_timeout_ms`, terminate the worker and queue a retry.
 - If `stall_timeout_ms <= 0`, skip stall detection entirely.
+- The timeout is per project: `agent.stall_timeout_ms` in the project's `WORKFLOW.md`, generated
+  from the optional `stall_timeout_ms` key on that project in `~/.cymphony/config.json`
+  (Section 5.3.5).
 
 Part B: Tracker state refresh
 
@@ -1428,7 +1519,8 @@ Timeouts:
 
 - `claude.read_timeout_ms`: request/response timeout during startup and sync requests
 - `claude.turn_timeout_ms`: total turn stream timeout
-- `claude.stall_timeout_ms`: enforced by orchestrator based on event inactivity
+- `agent.stall_timeout_ms`: enforced by orchestrator based on event inactivity (the key lives
+  under `agent`, not `claude` — see §5 and §8.5)
 
 Error mapping (recommended normalized categories):
 
@@ -1470,9 +1562,24 @@ Pipeline:
    after each completed stdout line (`{:eol, chunk}`) and for a leftover buffer
    on exit 0. `raw` is truncated to 2048 bytes. `{:noeol, _}` chunks stay
    buffered and are not emitted. `parse_output` still runs only after a
-   successful (exit 0) process; a nonzero exit is `{:agent_exit, status, remaining}`
+   successful (exit 0) process; a nonzero exit is `{:agent_exit, status, tail}`
    with no parse. Adapter `:stream_event` emissions stay post-exit (or still go
    through `on_message` if an adapter later streams parse).
+   `tail` is a **bounded tail of everything the CLI printed**, not just the
+   unterminated leftover buffer: the newest complete lines plus any leftover,
+   each stripped of ANSI escapes and control bytes, blank lines dropped, capped
+   at 20 lines and then at 2048 bytes (truncated from the back, never mid
+   codepoint). A CLI that rejects its arguments prints one newline-terminated
+   error line and exits, so reporting only the leftover buffer surfaced
+   `{:agent_exit, 1, ""}` in the retry queue and in the tracker abandonment
+   comment. The tail is ordered **newest line first**, and the byte cap keeps
+   the head: every surface that renders it truncates from the front (§4.1.7),
+   so chronological order pushed the CLI's own error line — the last thing it
+   printed — past every cut on any turn with more than a line or two of output,
+   which for a streaming agent CLI is every turn. Sanitizing is applied to the
+   retained lines only, not to the whole accumulated transcript. The harness
+   contract is unchanged: a leftover buffer on a nonzero exit is still not
+   emitted as `:harness_stdout`.
 2. `AgentRunner` does **not** forward `:harness_stdout` to the orchestrator. It
    calls `HarnessStream.append(issue_id, raw)` and may send
    `%{event: :harness_heartbeat, timestamp}` to the orchestrator at most once
@@ -1652,6 +1759,70 @@ Requirements:
 - Implementations may write to one or more sinks.
 - If a configured log sink fails, the service should continue running when possible and emit an
   operator-visible warning through any remaining sink.
+
+This implementation writes every sink under the config directory (`~/.cymphony` by default;
+never a separately hardcoded home path), because a detached daemon has no terminal:
+
+| Path | Written by | Contents |
+|------|-----------|----------|
+| `<config_dir>/log/cymphony.log.N` | `:logger_disk_log_h` (`type: :wrap`) | Full transcript, `debug` and up. Read back by `cymphony logs`. |
+| `<config_dir>/daemon.log` | `:logger_std_h` (`type: :file`, `max_no_bytes`/`max_no_files`) | `warning` and up, plainly named and directly tailable. |
+| `<config_dir>/daemon.out` | the `nohup` redirect of the background daemon | Raw stdout/stderr. This is a terminal capture (status TUI repaints), **not** a log; it exists so a startup crash that never reaches Logger is still recoverable. |
+
+Rules:
+
+- Installing a disk sink removes the default console handler, as before. Console behaviour is
+  otherwise unchanged.
+- Handler registration failure logs a warning through the remaining sink and startup continues.
+- Both file handlers buffer, and the CLI halts the VM without unwinding it, so every exit path
+  flushes Logger before `System.halt/1`. Without that, a startup failure leaves both files empty.
+  This includes the release entrypoint's own unhandled-error handler, which is the **only**
+  record of a crash in the shipped binary: it logs the reason and halts after the console
+  handler has already been removed, so an unflushed halt there leaves the operator with a
+  nonzero exit and nothing anywhere. There must be exactly one halt helper, and every
+  `System.halt/1` call site must go through it.
+- Both sink paths are overridable, and the test environment **must** override them. The
+  application callback installs both handlers unconditionally at boot, so an unconfigured test run
+  appends the whole suite's warning noise — raw agent stdout included — to the very `daemon.log`
+  an operator tails, and rotates their real one out from under them. Test runs write to a
+  build-local, ignored directory instead; a test that deliberately unsets an override must restore
+  it, not delete it.
+
+### 13.2.1 Background Daemon Lifecycle
+
+`cymphony start` re-executes the running binary under `nohup` and waits for the daemon to write
+`<config_dir>/cymphony.pid`.
+
+- The executable path is resolved before anything is spawned, in order: the Burrito wrapper's
+  exported path, the escript path, the launcher `progname` (never `erl`/`erlexec`), then
+  `cymphony` on `PATH`. Each candidate must resolve to an executable file; a bare name must
+  resolve through `PATH`. Burrito-wrapped releases boot the BEAM directly, so escript/progname
+  cannot identify them and only the wrapper's exported path is correct.
+- If no candidate resolves, the CLI **must** abort with an operator-readable error instead of
+  emitting a `nohup` command with a blank or unqualified argv[0].
+- The launch command **must** report the detached child's OS pid on a marked line, and the CLI
+  **must** separate that line from the operator-facing launcher output. "No pidfile yet" is not
+  evidence of failure — the daemon writes the pidfile itself, late in boot, and a Burrito binary
+  decompresses its whole payload and deletes the previous version's install tree before the BEAM
+  even starts — so *liveness of that pid*, not the clock, is what distinguishes a slow start from
+  a dead one. A child that is already gone ends the wait immediately; otherwise the deadline is
+  generous. Aborting a healthy-but-slow start with a nonzero exit invites a service wrapper to
+  retry and bring up a second daemon on the same port, double-dispatching every issue.
+- If the child exits, or no pidfile appears before the deadline, the CLI **must** report failure
+  (nonzero exit) and include the launcher output plus a bounded, sanitized tail of
+  `<config_dir>/daemon.out`, naming which of the two happened. Reporting success with an unknown
+  PID hides a daemon that never started.
+- That tail is read from a byte offset into a raw terminal capture, so it **must** be scrubbed of
+  invalid UTF-8 before it is printed: the message goes to stderr, where invalid character data
+  raises and replaces the diagnostic with a crash.
+- The pidfile is the daemon's only liveness signal, so the daemon **must** write it only after it
+  has actually reached the started state — configuration loaded, projects started, supervision tree
+  up — and never as the first statement of the run. A pidfile written before startup makes
+  "started in background (PID …)" a report that a process was *spawned*, not that it *booted*: an
+  unreadable config, a missing workflow file, or a taken dashboard port all still read as success.
+  Every non-started outcome must leave the pidfile absent so the launcher reports the failure with
+  the daemon output tail. (A build whose application callback starts the supervision tree before
+  handing off to the CLI already satisfies this ordering.)
 
 ### 13.3 Runtime Snapshot / Monitoring Interface (Optional but Recommended)
 
@@ -2170,7 +2341,15 @@ Optional operational-control endpoints (extension; all return `202 Accepted` and
 optional `?project=<name>` scope):
 
 - `POST /api/v1/pause` / `POST /api/v1/resume` — stop/start dispatching new issues; running
-  sessions complete normally.
+  sessions complete normally. The flag is **durable**: each in-scope project's
+  `dispatch_paused` boolean is persisted to the operator config store, so a paused project is
+  still paused after a daemon restart (Section 8.1). Success shape is unchanged
+  (`202 {"paused": <bool>, "project": <name|null>}`). Because the flag is durable, a failed
+  persist is **not** a success: the orchestrators are already stopped but the next restart
+  undoes it, so the response is `422 {"error":{"code":"dispatch_pause_not_persisted", …}}`
+  (and `422 project_not_found` when `?project=` names no registered orchestrator). The
+  dashboard's global Pause/Resume and per-project header toggle flash the same distinction
+  instead of reporting plain success.
 - `POST /api/v1/concurrency` — body `{"value": <int>}`; updates `max_concurrent_agents` at
   runtime and persists to the operator config store.
 - `POST /api/v1/providers` — body `{"value": "a1,a2"}`; updates the active agent kind's
@@ -2377,6 +2556,9 @@ function start_service():
   state = {
     poll_interval_ms: get_config_poll_interval_ms(),
     max_concurrent_agents: get_config_max_concurrent_agents(),
+    # Seeded before schedule_tick(0) below, so a persisted pause is already in
+    # effect for the very first dispatch.
+    paused: load_project_dispatch_paused(),
     running: {},
     claimed: set(),
     retry_attempts: {},
@@ -2597,7 +2779,15 @@ on_worker_exit(issue_id, reason, state):
 ```
 
 ```text
-on_retry_timer(issue_id, state):
+on_retry_timer(issue_id, retry_token, state):
+  if state.paused:
+    # Hold: same attempt, same failures, no timer, original due_at_ms.
+    # A stale retry_token is still ignored.
+    if state.retry_attempts[issue_id].retry_token == retry_token:
+      state.retry_attempts[issue_id].timer_ref = null
+      state.retry_attempts[issue_id].held = true
+    return state
+
   retry_entry = state.retry_attempts.pop(issue_id)
   if missing:
     return state
@@ -2621,6 +2811,22 @@ on_retry_timer(issue_id, state):
     })
 
   return dispatch_issue(issue, state, attempt=retry_entry.attempt)
+```
+
+```text
+on_resume(state):
+  state.paused = false
+
+  for issue_id, retry_entry in state.retry_attempts:
+    if retry_entry.held:
+      # Same attempt: pick the backoff schedule back up, do not restart or skip it.
+      retry_entry.retry_token = new_token()
+      retry_entry.timer_ref = send_after({retry_issue, issue_id, retry_entry.retry_token}, 0)
+      retry_entry.due_at_ms = now_ms()
+      retry_entry.held = removed
+
+  notify_observers()
+  return state
 ```
 
 ## 17. Test and Validation Matrix
@@ -2659,6 +2865,12 @@ Unless otherwise noted, Sections 17.1 through 17.7 are `Core Conformance`. Bulle
 - Per-state concurrency override map normalizes state names and ignores invalid values
 - Prompt template renders `issue` and `attempt`
 - Prompt rendering fails on unknown variables (strict mode)
+- A generated workflow file lands at mode `0600` on a fresh write, and a pre-existing looser mode
+  is tightened rather than inherited — the file carries the tracker API key in cleartext
+- A generated-workflow write that cannot be completed surfaces the posix error and leaves no
+  staged temp file beside the target
+- A per-project `stall_timeout_ms` in the config store reaches `agent.stall_timeout_ms` in the
+  generated workflow; only a positive integer overrides the default
 
 ### 17.2 Workspace Manager and Safety
 
@@ -2711,6 +2923,19 @@ Unless otherwise noted, Sections 17.1 through 17.7 are `Core Conformance`. Bulle
 - Retry queue entries include attempt, due time, identifier, and error
 - Stall detection kills stalled sessions and schedules retry
 - Slot exhaustion requeues retries with explicit error reason
+- A project persisted as `dispatch_paused` is already paused on the first tick: `paused` is seeded
+  during initialization, before the immediate first dispatch is scheduled, so it never dispatches
+  once and pauses afterwards. A config store that exists but cannot be read logs the discarded
+  seed; an absent one boots unpaused silently
+- A retry timer that fires while paused holds the entry: it neither dispatches nor reschedules,
+  and the entry's `attempt` does not move. Repeated firings are idempotent and a stale
+  `retry_token` is still ignored
+- `resume` re-arms every held entry immediately with the same `attempt` (no fresh backoff wait);
+  a `resume` with nothing held leaves the retry queue untouched
+- Pause/resume persist `dispatch_paused` for every project in scope and report a persist failure
+  rather than a plain success; with no config store at all (legacy mode) there is nothing durable
+  to lose and they still report success
+- A worker task that crashes records the agent CLI's own error text, not the raw exception tuple
 - If a snapshot API is implemented, it returns running rows, waiting rows
   (`waiting` / `waiting_count` / `counts.waiting`), retry rows, token totals, and rate
   limits
@@ -2733,6 +2958,11 @@ Unless otherwise noted, Sections 17.1 through 17.7 are `Core Conformance`. Bulle
 - Unsupported dynamic tool calls are rejected without stalling the session
 - User input requests are handled according to the implementation's documented policy and do not
   stall indefinitely
+- A non-zero agent exit reports the error line the CLI actually printed, not just whatever was
+  left unterminated in the read buffer — a CLI that rejects its arguments prints a complete,
+  newline-terminated line and exits, so the buffer alone is empty
+- That tail is bounded (by lines and by bytes), stripped of ANSI/control sequences, and ordered
+  newest line first, because every surface that renders it truncates from the front
 - Usage and rate-limit payloads are extracted from nested payload shapes
 - Compatible payload variants for approvals, user-input-required signals, and usage/rate-limit
   telemetry are accepted when they preserve the same logical meaning
@@ -2750,6 +2980,15 @@ Unless otherwise noted, Sections 17.1 through 17.7 are `Core Conformance`. Bulle
 - Validation failures are operator-visible
 - Structured logging includes issue/session context fields
 - Logging sink failures do not crash orchestration
+- Both disk sinks are installed from the config directory: the full transcript at `debug` and up,
+  and a plainly-named, size-capped sink at `warning` and up that excludes lower levels. Installing
+  them removes the default console handler
+- Both sink paths are overridable and the test environment overrides them, so a test run never
+  appends to (or rotates) the operator's real logs; a test that unsets an override restores it
+- Every exit path flushes the buffering sinks before halting the VM
+- If the LiveView dashboard is implemented, pause/resume from the global buttons and from a
+  project header both go through the durable-pause control and flash an error — while still
+  reloading the board — when the orchestrators flipped but the flag could not be persisted
 - Token/rate-limit aggregation remains correct across repeated agent updates
 - If a human-readable status surface is implemented, it is driven from orchestrator state and does
   not affect correctness
@@ -2780,6 +3019,15 @@ Unless otherwise noted, Sections 17.1 through 17.7 are `Core Conformance`. Bulle
 - CLI surfaces startup failure cleanly
 - CLI exits with success when application starts and shuts down normally
 - CLI exits nonzero when startup fails or the host process exits abnormally
+- Background start resolves the running executable (Burrito wrapper path, escript path,
+  launcher progname, `PATH`) and aborts with an error when none resolves to an executable file
+- Background start reports failure with the daemon output tail when the detached process exits
+  before writing a pidfile, or when none appears before the deadline, instead of claiming success
+  with an unknown PID — and does not fail a start that is merely slow while the child is alive
+- Background start refuses to launch a second daemon while a live pidfile exists
+- The daemon writes its pidfile only after it has reached the started state; a run that fails to
+  load its configuration or to start its projects leaves no pidfile behind, so the launcher's wait
+  cannot mistake a spawned-but-dead process for a booted one
 
 ### 17.8 Real Integration Profile (Recommended)
 
