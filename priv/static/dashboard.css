@@ -140,13 +140,13 @@
   --surface-well: #08090a;
   /* Below --page, so the rail reads as anchored furniture instead of floating
      text on the same white as the panels. Measured: --ink 15.3:1, --ink-soft
-     7.3:1, --ink-mute 4.1:1 — the muted labels land in the same band they
-     already sit in on --page (4.3:1), so this costs no legibility the light
-     theme was not already spending. Keep rail body copy at --ink-soft or above. */
+     7.3:1, --ink-mute (#63686f) 4.87:1 here, 5.10:1 on --page, 5.61:1 on
+     --surface — WCAG AA everywhere muted small text is used. Keep rail body
+     copy at --ink-soft or above. */
   --rail-surface: #efefec;
   --ink: #17191c;
   --ink-soft: #4a4e55;
-  --ink-mute: #6e737b;
+  --ink-mute: #63686f;
   --ink-faint: #a5a9b0;
   --well-ink: #c9cdd3;
   --line: rgba(23, 25, 28, 0.09);
@@ -184,7 +184,7 @@
     --rail-surface: #efefec;
     --ink: #17191c;
     --ink-soft: #4a4e55;
-    --ink-mute: #6e737b;
+    --ink-mute: #63686f;
     --ink-faint: #a5a9b0;
     --well-ink: #c9cdd3;
     --line: rgba(23, 25, 28, 0.09);
