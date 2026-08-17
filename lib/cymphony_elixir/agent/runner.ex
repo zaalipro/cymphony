@@ -464,9 +464,16 @@ defmodule CymphonyElixir.Agent.Runner do
   # printed, and the whole point of retaining a tail — past every cut, so a
   # streaming turn showed nothing but its oldest retained noise line.
   #
-  # `Stream` (not `Enum`) so the sanitizing regexes run on the ~20 lines that
-  # are kept rather than on the entire turn's stdout: `acc` holds every line of
-  # a stream-json transcript, which is routinely tens of megabytes.
+  # `Stream` (not `Enum`) so the sanitizing and redacting regexes run on the ~20
+  # lines that are kept rather than on the entire turn's stdout: `acc` holds
+  # every line of a stream-json transcript, which is routinely tens of
+  # megabytes.
+  #
+  # This is the single choke point for the tail: whatever it returns is what the
+  # retry entry stores, `/api/v1/state` serves, the dashboard renders, and the
+  # tracker abandonment comment publishes. A CLI that dies mid-request prints
+  # its own environment, so the tail is redacted here — once — rather than at
+  # each of those four surfaces.
   defp failure_tail(acc, remaining) do
     [remaining | acc]
     |> Stream.map(&sanitize_output_line/1)
@@ -480,6 +487,7 @@ defmodule CymphonyElixir.Agent.Runner do
     line
     |> to_string()
     |> Text.strip_ansi_and_control()
+    |> Text.redact_secrets()
     |> String.trim()
   end
 
