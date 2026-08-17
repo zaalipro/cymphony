@@ -84,6 +84,11 @@ defmodule CymphonyElixirWeb.DashboardLive do
       |> assign(:field_drafts, %{})
       |> assign_token_throughput(update_token_samples([], initial_payload))
       |> assign(:version, @version)
+      # Assigned once and never again: the dead render also has `projects: []`,
+      # and "no projects yet" is a statement about the fleet that a disconnected
+      # render has not earned. Without this the fleet-empty card flashes on every
+      # first paint of a board that does have projects.
+      |> assign(:live_connected, connected?)
       |> assign(:last_payload_refresh, last_refresh)
       |> assign(:payload_dirty, false)
       |> assign(:payload_refresh_seconds, refresh_seconds)
@@ -661,9 +666,76 @@ defmodule CymphonyElixirWeb.DashboardLive do
           <span class="brand-wordmark">CYMPHONY</span>
           <span class="version-badge">v<%= @version %></span>
         </a>
-        <%!-- PART B: rail vitals --%>
-        <%!-- PART B: rail nav --%>
-        <%!-- PART B: rail foot --%>
+
+        <%= unless @payload_error do %>
+          <div class="rail-vitals">
+            <p class="rail-vitals-line">
+              <span class="rail-vitals-num numeric"><%= @counts.running %></span>
+              <span class="rail-vitals-word">running</span>
+              <span class="rail-vitals-num numeric"><%= Map.get(@counts, :waiting, 0) %></span>
+              <span class="rail-vitals-word">queued</span>
+            </p>
+            <p class="rail-vitals-copy">
+              <%= case autonomy_state(@projects, @polling) do %>
+                <% :unknown -> %>
+                  Checking status…
+                <% :paused -> %>
+                  Automatic work is paused.
+                <% {:partial, active_count, project_count} -> %>
+                  On for <%= active_count %> of <%= project_count %> projects.
+                <% :on -> %>
+                  Automatic work is on.
+              <% end %>
+            </p>
+          </div>
+        <% end %>
+
+        <%!-- `RailNav` only paints `aria-current`; every anchor works without it. --%>
+        <div class="rail-group" id="rail-nav" phx-hook="RailNav" aria-label="Fleet">
+          <p class="rail-group-label">Fleet</p>
+          <a class="rail-link" href="#dashboard-top" title="Overview">
+            <span class="rail-led rail-led--idle" aria-hidden="true"></span>
+            <span class="rail-link-name">Overview</span>
+          </a>
+          <%= for project <- @projects do %>
+            <a class="rail-link" href={"#project-" <> project_dom_id(project.name)} title={project.name}>
+              <span class={"rail-led rail-led--" <> rail_state(project)} aria-hidden="true"></span>
+              <span class="rail-link-name"><%= project.name %></span>
+              <span class="rail-link-meta numeric advanced-only"><%= Map.get(project, :running_count, length(project.running)) %>·<%= project_waiting_count(project) %></span>
+            </a>
+          <% end %>
+          <%= if @completions != [] do %>
+            <a class="rail-link" href="#completions-section" title="Completions">
+              <span class="rail-led rail-led--done" aria-hidden="true"></span>
+              <span class="rail-link-name">Completions</span>
+              <span class="rail-link-meta numeric advanced-only"><%= length(@completions) %></span>
+            </a>
+          <% end %>
+        </div>
+
+        <div class="rail-foot">
+          <%!-- Same client-owned `aria-pressed` as the topbar copy: freeze it. --%>
+          <div id="mode-switch-rail" class="mode-switch settings-mode-switch" role="group" aria-label="Dashboard mode" phx-update="ignore">
+            <button type="button" class="mode-switch-button" data-mode-set="simple" aria-pressed="true">
+              Simple
+            </button>
+            <button type="button" class="mode-switch-button" data-mode-set="advanced" aria-pressed="false">
+              Advanced
+            </button>
+          </div>
+
+          <div class="rail-foot-actions">
+            <div class="theme-toggle" role="group" aria-label="Theme">
+              <button type="button" class="theme-toggle-button" data-theme-set="light" title="Light theme" aria-label="Light theme"></button>
+              <button type="button" class="theme-toggle-button" data-theme-set="dark" title="Dark theme" aria-label="Dark theme"></button>
+              <button type="button" class="theme-toggle-button" data-theme-set="system" title="Follow system" aria-label="Follow system"></button>
+            </div>
+            <button type="button" class="subtle-button rail-action" data-drawer-toggle aria-label="Settings" title="Settings"></button>
+            <button type="button" class="subtle-button rail-action rail-action--refresh" phx-click="refresh_now" title="Refresh">
+              <span class="rail-action-label">Refresh</span>
+            </button>
+          </div>
+        </div>
       </nav>
 
       <div class="main-col" id="dashboard-top">
@@ -675,6 +747,20 @@ defmodule CymphonyElixirWeb.DashboardLive do
               <span class="brand-tagline simple-only">Work status</span>
               <span class="brand-tagline advanced-only">Operations</span>
             </div>
+            <%!-- Below 900px the rail is gone, so the same anchors come back as a
+            native disclosure — no JS, no hook, no server state. --%>
+            <details class="jump-menu topbar-only-narrow">
+              <summary class="jump-menu-summary">Jump to</summary>
+              <nav class="jump-menu-panel" aria-label="Jump to section">
+                <a class="jump-menu-link" href="#dashboard-top">Overview</a>
+                <%= for project <- @projects do %>
+                  <a class="jump-menu-link" href={"#project-" <> project_dom_id(project.name)}><%= project.name %></a>
+                <% end %>
+                <%= if @completions != [] do %>
+                  <a class="jump-menu-link" href="#completions-section">Completions</a>
+                <% end %>
+              </nav>
+            </details>
             <div class="command-bar-meta">
               <span class="status-badge status-badge-offline status-badge-transport">
                 <span class="status-badge-dot"></span>
@@ -697,7 +783,7 @@ defmodule CymphonyElixirWeb.DashboardLive do
               The server has no correct value to render, and morphdom reset it on
               every patch, so freeze the subtree instead of repairing it after the
               fact. --%>
-              <div id="mode-switch-top" class="mode-switch" role="group" aria-label="Dashboard mode" phx-update="ignore">
+              <div id="mode-switch-top" class="mode-switch topbar-only-narrow" role="group" aria-label="Dashboard mode" phx-update="ignore">
                 <button type="button" class="mode-switch-button" data-mode-set="simple" aria-pressed="true">
                   Simple
                 </button>
@@ -706,7 +792,10 @@ defmodule CymphonyElixirWeb.DashboardLive do
                 </button>
               </div>
 
-              <div class="theme-toggle" role="group" aria-label="Theme">
+              <%!-- The rail owns mode + theme at wide widths; these duplicates are
+              painted only below 900px, where the rail is hidden. The delegated
+              layout script syncs every instance, so both stay in step. --%>
+              <div class="theme-toggle topbar-only-narrow" role="group" aria-label="Theme">
                 <button type="button" class="theme-toggle-button" data-theme-set="light" title="Light theme" aria-label="Light theme"></button>
                 <button type="button" class="theme-toggle-button" data-theme-set="dark" title="Dark theme" aria-label="Dark theme"></button>
                 <button type="button" class="theme-toggle-button" data-theme-set="system" title="Follow system" aria-label="Follow system"></button>
@@ -894,6 +983,16 @@ defmodule CymphonyElixirWeb.DashboardLive do
               </div>
               <button type="button" class="subtle-button" phx-click="dismiss_stalled_alert">Dismiss</button>
             </div>
+          <% end %>
+
+          <%= if @live_connected and @projects == [] do %>
+            <section class="section-card fleet-empty">
+              <p class="fleet-empty-label">No projects</p>
+              <p class="fleet-empty-copy">Connect Linear and add your first project.</p>
+              <button type="button" class="subtle-button subtle-button--accent fleet-empty-action" data-drawer-toggle>
+                Open settings
+              </button>
+            </section>
           <% end %>
 
           <%= for project <- @projects do %>
@@ -1527,6 +1626,7 @@ defmodule CymphonyElixirWeb.DashboardLive do
             <button type="button" class="mode-switch-button" data-mode-set="simple" aria-pressed="true">Simple</button>
             <button type="button" class="mode-switch-button" data-mode-set="advanced" aria-pressed="false">Advanced</button>
           </div>
+          <p class="settings-help">Simple hides operator detail. Advanced shows every tag, column and control.</p>
         </section>
 
         <section class="settings-group settings-group--linear">
@@ -1553,8 +1653,9 @@ defmodule CymphonyElixirWeb.DashboardLive do
               placeholder="lin_api_…"
               value=""
             />
-            <button type="submit" class="subtle-button">Connect</button>
+            <button type="submit" class="subtle-button subtle-button--accent">Connect</button>
           </form>
+          <p class="settings-help">The key is stored in ~/.cymphony/config.json and never shown again — only its last four characters.</p>
           <%= if @linear_error do %>
             <p class="settings-error"><%= @linear_error %></p>
           <% end %>
@@ -1636,8 +1737,9 @@ defmodule CymphonyElixirWeb.DashboardLive do
                   </label>
                 <% end %>
               </div>
-              <button type="submit" class="subtle-button settings-submit">Add project</button>
+              <button type="submit" class="subtle-button subtle-button--accent settings-submit">Add project</button>
             </form>
+            <p class="settings-help">The project starts immediately — no daemon restart.</p>
             <%= if @add_project_error do %>
               <p class="settings-error"><%= @add_project_error %></p>
             <% end %>
@@ -1651,45 +1753,54 @@ defmodule CymphonyElixirWeb.DashboardLive do
           <h3 class="settings-group-title advanced-only">Orchestrator</h3>
 
           <%= if @polling do %>
-            <%= if autonomy_state(@projects, @polling) == :paused do %>
-              <button type="button" class="subtle-button subtle-button--accent settings-submit" phx-click="resume_dispatch">Resume all</button>
-            <% else %>
-              <button type="button" class="subtle-button settings-submit" phx-click="pause_dispatch">Pause all</button>
-            <% end %>
+            <div class="settings-control-row">
+              <%= if autonomy_state(@projects, @polling) == :paused do %>
+                <button type="button" class="subtle-button subtle-button--accent settings-submit" phx-click="resume_dispatch">Resume all</button>
+              <% else %>
+                <button type="button" class="subtle-button settings-submit" phx-click="pause_dispatch">Pause all</button>
+              <% end %>
+              <p class="settings-help">Pausing stops new dispatches for every project and is remembered across restarts. Running sessions finish.</p>
+            </div>
           <% end %>
 
-          <form phx-change="preview_field" phx-submit="set_concurrency" class="settings-inline settings-form">
-            <input type="hidden" name="field" value="global-concurrency" />
-            <label class="inline-label" for="drawer-global-concurrency">
-              <span class="simple-only">tasks</span>
-              <span class="advanced-only">concurrency</span>
-            </label>
-            <input
-              id="drawer-global-concurrency"
-              type="number"
-              name="value"
-              min="1"
-              value={field_value(@field_drafts, "global-concurrency", "")}
-              phx-debounce="400"
-              class="settings-field"
-            />
-            <button type="submit" class="subtle-button">Set</button>
-          </form>
+          <div class="settings-control-row">
+            <form phx-change="preview_field" phx-submit="set_concurrency" class="settings-inline settings-form">
+              <input type="hidden" name="field" value="global-concurrency" />
+              <label class="inline-label" for="drawer-global-concurrency">
+                <span class="simple-only">tasks</span>
+                <span class="advanced-only">concurrency</span>
+              </label>
+              <input
+                id="drawer-global-concurrency"
+                type="number"
+                name="value"
+                min="1"
+                value={field_value(@field_drafts, "global-concurrency", "")}
+                phx-debounce="400"
+                class="settings-field"
+              />
+              <button type="submit" class="subtle-button">Set</button>
+            </form>
+            <p class="settings-help">How many agent sessions may run at once, across every project.</p>
+          </div>
 
-          <form phx-change="preview_field" phx-submit="set_refresh_interval" class="settings-inline settings-form">
-            <input type="hidden" name="field" value="refresh-interval" />
-            <label class="inline-label" for="drawer-refresh-interval">refresh (s)</label>
-            <input
-              id="drawer-refresh-interval"
-              type="number"
-              name="value"
-              min="1"
-              value={field_value(@field_drafts, "refresh-interval", @payload_refresh_seconds)}
-              phx-debounce="400"
-              class="settings-field"
-            />
-            <button type="submit" class="subtle-button">Set</button>
-          </form>
+          <div class="settings-control-row">
+            <form phx-change="preview_field" phx-submit="set_refresh_interval" class="settings-inline settings-form">
+              <input type="hidden" name="field" value="refresh-interval" />
+              <label class="inline-label" for="drawer-refresh-interval">refresh (s)</label>
+              <input
+                id="drawer-refresh-interval"
+                type="number"
+                name="value"
+                min="1"
+                value={field_value(@field_drafts, "refresh-interval", @payload_refresh_seconds)}
+                phx-debounce="400"
+                class="settings-field"
+              />
+              <button type="submit" class="subtle-button">Set</button>
+            </form>
+            <p class="settings-help">Refresh (s): how often this dashboard re-reads orchestrator state — not Linear polling.</p>
+          </div>
         </section>
 
         <%!-- Density, section/column visibility and the completions limit are pure
@@ -1727,6 +1838,8 @@ defmodule CymphonyElixirWeb.DashboardLive do
               <option value="100" selected>100</option>
             </select>
           </div>
+
+          <p class="settings-help">Display preferences live in this browser only — they never reach the orchestrator.</p>
         </section>
       </aside>
 
@@ -2088,13 +2201,25 @@ defmodule CymphonyElixirWeb.DashboardLive do
 
   defp non_id_char_regex, do: Regex.compile!("[^A-Za-z0-9_-]+")
 
-  # Anchor target for a project section (and, in Part B, the rail link that
-  # jumps to it). Case is preserved so two projects differing only by case keep
-  # distinct ids; only characters an HTML id cannot carry are folded.
+  # Anchor target for a project section and for the rail link that jumps to it.
+  # Case is preserved so two projects differing only by case keep distinct ids;
+  # only characters an HTML id cannot carry are folded.
   defp project_dom_id(name) do
     name
     |> to_string()
     |> String.replace(non_id_char_regex(), "-")
+  end
+
+  # LED colour for a rail link. Paused outranks retrying outranks running so the
+  # rail answers "is this project working?" in one glance; it reads the same
+  # `@projects` section the board does and never a clock.
+  defp rail_state(project) do
+    cond do
+      Map.get(project, :paused, false) -> "paused"
+      Map.get(project, :retrying, []) != [] -> "retry"
+      Map.get(project, :running, []) != [] -> "run"
+      true -> "idle"
+    end
   end
 
   defp orchestrator do

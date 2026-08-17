@@ -1992,8 +1992,38 @@ Enablement (extension):
   intentional and both blocks must be edited together. Terminal wells (`.harness-tail`,
   `.log-list`) stay dark in both themes by token construction (`--surface-well` / `--well-ink`
   are identical across palettes).
-- Responsive breakpoints are 1200 / 900 / 640: full rail, 64px condensed rail, and no rail
-  (the top strip regains the brand) respectively.
+- `nav.side-rail[aria-label]` is chrome, not a section, and is not hideable by the display
+  prefs. It renders, in order: `a.side-rail-brand[href="#dashboard-top"]`; a `.rail-vitals`
+  block (running/queued numerals plus the autonomy sentence, inside the `unless payload_error`
+  guard); `div#rail-nav.rail-group` with a `.rail-link` per anchor — Overview, one per project
+  (`href="#project-<dom-id>"`, `title` = project name, `.rail-link-meta` = `running·waiting`),
+  and Completions when non-empty — each opening with a `.rail-led--run|retry|paused|idle|done`
+  LED; then `.rail-foot` with the mode switch (`#mode-switch-rail`, `phx-update=ignore`), the
+  theme toggle, the settings `[data-drawer-toggle]` and Refresh. The rail reads only existing
+  section assigns (`counts`, `projects`, `completions`, `polling`, `version`) and never `now`,
+  so a clock re-anchor cannot re-render it. LED precedence is paused > retrying > running >
+  idle. `RailNav` (`phx-hook` on `#rail-nav`) only paints `aria-current`; every anchor works
+  without it.
+- At ≥900px the rail owns the mode switch and theme toggle; the top strip keeps duplicate
+  copies marked `.topbar-only-narrow` that are painted only below 900px, plus a native
+  `details.jump-menu` project-jump disclosure (no JS). The delegated layout script syncs every
+  instance, so the copies never disagree.
+- Responsive breakpoints are 1200 / 900 / 640: full rail, 64px condensed rail (names become
+  `title` tooltips; the rail's mode switch hides because no label fits — the console keeps it),
+  and no rail (the top strip regains the brand and the jump menu) respectively.
+- When a **connected** payload has no projects and no error, the board is replaced by
+  `section.section-card.fleet-empty` — "No projects", one sentence, and an accent
+  `[data-drawer-toggle]` button. The disconnected first render never shows it: `projects: []`
+  is also the default payload, and a dead render has not earned the claim.
+- Settings drawer (`aside.settings-drawer`) is scrimmed while open: `html[data-drawer="open"]
+  body::after` is a real fixed element box, so it intercepts clicks (a box-shadow scrim would
+  let them through). The click target becomes `<body>`, which `OverlayDismiss` treats as
+  outside, so the console closes and nothing underneath activates. `Escape` closes it too, via
+  a delegated `keydown` listener in `layouts.ex` — not a hook, because the open flag is an
+  attribute on `<html>`, outside the LiveView container. Each console control is one
+  `div.settings-control-row` = control + exactly one `p.settings-help` line; the refresh row's
+  copy must distinguish it from Linear polling. Primary actions (Connect, Add project, Resume
+  all, queue Pin) carry `.subtle-button--accent`; Pause all and Restart stay quiet.
 - Settings drawer (`aside.settings-drawer`) includes, after Experience and before Automation,
   visible in both simple and advanced modes:
   - **Linear** (`section.settings-group.settings-group--linear`): connect status

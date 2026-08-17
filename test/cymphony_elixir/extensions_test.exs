@@ -1030,7 +1030,11 @@ defmodule CymphonyElixir.ExtensionsTest do
       assert html =~ "data-drawer-toggle"
 
       # Simple is the approachable default; Advanced preserves expert controls.
-      assert html =~ ~s(class="mode-switch")
+      # The rail foot owns the switch at wide widths, the top strip keeps a
+      # narrow-only duplicate, and the console keeps its own copy.
+      assert has_element?(view, ~s|nav.side-rail #mode-switch-rail.mode-switch|)
+      assert has_element?(view, "#mode-switch-top.mode-switch.topbar-only-narrow")
+      assert has_element?(view, ".settings-drawer .mode-switch.settings-mode-switch")
       assert html =~ ~s(data-mode-set="simple")
       assert html =~ ~s(data-mode-set="advanced")
       assert html =~ ~s(aria-label="Dashboard mode")
@@ -1189,6 +1193,40 @@ defmodule CymphonyElixir.ExtensionsTest do
       assert dashboard_css =~ ".side-rail {"
       assert dashboard_css =~ ".instrument-band {"
       assert dashboard_css =~ ".toast-stack {"
+
+      # Light theme ships two ways: an explicit choice and — new in v3 — the OS
+      # preference when no choice was made. The `:not([data-theme])` guard keeps
+      # an explicit dark choice winning on a light OS.
+      assert dashboard_css =~ ~s|:root[data-theme="light"] {|
+      assert dashboard_css =~ "@media (prefers-color-scheme: light) {"
+      assert dashboard_css =~ ":root:not([data-theme]) {"
+
+      # The console scrim is a real element box (`body::after`), so it actually
+      # intercepts clicks; a box-shadow scrim would let them through.
+      assert dashboard_css =~ ~s|html[data-drawer="open"] body::after|
+      assert dashboard_css =~ "z-index: var(--z-scrim)"
+
+      # Esc closes the console; the listener is delegated, not a hook, because
+      # the open flag is an attribute on <html> outside the LiveView container.
+      assert html =~ "if (e.key === 'Escape' &&"
+      assert html =~ ~s|document.documentElement.getAttribute('data-drawer') === 'open'|
+
+      # The rail's scroll-spy is additive: every anchor works without it.
+      assert html =~ "RailNav: {"
+      assert html =~ ~s|link.setAttribute('aria-current', 'true')|
+
+      # Rail content + Part B surfaces.
+      assert dashboard_css =~ ".rail-vitals {"
+      assert dashboard_css =~ ".rail-led--paused {"
+      assert dashboard_css =~ ".rail-foot {"
+      assert dashboard_css =~ ".fleet-empty {"
+      assert dashboard_css =~ ".jump-menu-panel {"
+      assert dashboard_css =~ ".topbar-only-narrow { display: none; }"
+
+      # The layout script still rewrites this button's textContent to a glyph, so
+      # the glyph is hidden and the chevron is CSS geometry.
+      assert dashboard_css =~ "[data-collapse-toggle] {"
+      assert dashboard_css =~ ~s|[data-collapse-toggle][aria-expanded="false"]::before|
 
       # Custom-property NAMES the QueueBoard hook resolves at runtime through
       # getComputedStyle. Values are free to change; a rename breaks drag.

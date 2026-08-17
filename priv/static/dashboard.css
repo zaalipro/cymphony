@@ -1533,6 +1533,8 @@ button,
   font: inherit;
   font-size: var(--text-body-sm);
   font-weight: 500;
+  /* A two-word label must shrink the row, never wrap inside its own box. */
+  white-space: nowrap;
   cursor: pointer;
   transition:
     background-color var(--dur-fast) var(--ease),
@@ -1733,8 +1735,13 @@ form.project-agent-form.inline-form--agent {
 .model-switcher {
   min-width: 160px;
   flex: 1 1 160px;
+  /* Model names are the longest value in the toolbars, but an unbounded grow
+     leaves a field several times wider than its own text. */
+  max-width: 280px;
   white-space: normal;
 }
+
+.settings-drawer .model-switcher { max-width: none; }
 
 .agent-switcher,
 .effort-switcher,
@@ -1762,6 +1769,9 @@ input[type="radio"] { accent-color: var(--accent); }
   position: relative;
   display: flex;
   align-items: center;
+  /* The trigger is a <button>, and the button base rule centres its content.
+     A field label reads from the left edge like every other field's value. */
+  justify-content: flex-start;
   width: 100%;
   min-width: 0;
   height: auto;
@@ -2004,6 +2014,36 @@ html[data-drawer="open"] .settings-drawer {
   box-shadow: var(--shadow-pop);
 }
 
+/* Scrim. `body::after` needs no template change and — being a real element box —
+   actually intercepts clicks (a box-shadow scrim does not). The click target
+   becomes <body>, which OverlayDismiss treats as "outside": the console closes
+   and nothing underneath is activated. Esc closes it too (layouts.ex). */
+html[data-drawer="open"] body::after {
+  content: "";
+  position: fixed;
+  inset: 0;
+  z-index: var(--z-scrim);
+  /* 0.35 black is invisible over a #0C0D0F page: the dark theme needs the
+     heavier value, and light reads it as a normal dim either way. */
+  background: rgba(0, 0, 0, 0.55);
+  animation: scrim-in var(--dur-mid) var(--ease) both;
+}
+
+html[data-theme="light"][data-drawer="open"] body::after {
+  background: rgba(0, 0, 0, 0.35);
+}
+
+@media (prefers-color-scheme: light) {
+  html:not([data-theme])[data-drawer="open"] body::after {
+    background: rgba(0, 0, 0, 0.35);
+  }
+}
+
+@keyframes scrim-in {
+  from { opacity: 0; }
+  to { opacity: 1; }
+}
+
 .settings-drawer-header {
   position: sticky;
   top: 0;
@@ -2061,6 +2101,20 @@ html[data-drawer="open"] .settings-drawer {
   color: var(--ink-mute);
   font-size: var(--text-caption);
   line-height: 1.5;
+  text-wrap: pretty;
+}
+
+/* One control + its one explanatory line: the console's repeating unit. */
+.settings-control-row {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  min-width: 0;
+}
+
+.settings-control-row + .settings-control-row {
+  padding-top: var(--space-2);
+  border-top: 1px solid var(--line);
 }
 
 .linear-status {
@@ -2108,6 +2162,7 @@ html[data-drawer="open"] .settings-drawer {
   flex-wrap: nowrap;
   align-items: center;
   gap: 6px;
+  width: 100%;
   padding: 0;
   background: transparent;
   border: none;
@@ -2187,8 +2242,19 @@ html[data-drawer="open"] .settings-drawer {
   display: flex;
   flex-wrap: wrap;
   gap: 4px 10px;
-  align-items: center;
+  align-items: baseline;
   font-size: var(--text-body-sm);
+}
+
+.settings-row + .settings-row {
+  padding-top: var(--space-2);
+  border-top: 1px solid var(--line);
+}
+
+/* A fixed label column so the pref rows line up down the console. */
+.settings-row > .inline-label {
+  flex: 0 0 7rem;
+  color: var(--ink-soft);
 }
 
 .settings-row label {
@@ -2196,7 +2262,10 @@ html[data-drawer="open"] .settings-drawer {
   align-items: center;
   gap: 4px;
   cursor: pointer;
+  color: var(--ink-soft);
 }
+
+.settings-row label:hover { color: var(--ink); }
 
 /* ==========================================================================
    16 — EXPANDED DETAIL / TERMINAL WELLS
@@ -2257,6 +2326,18 @@ html[data-drawer="open"] .settings-drawer {
   grid-column: 1 / -1;
   overflow: visible;
 }
+
+/* Three surfaces so the restart cluster reads as a tool, not loose controls:
+   row (--surface-soft) > panel (--surface) > fields (--surface-deep). */
+.restart-with.session-stat--wide {
+  gap: var(--space-2);
+  padding: var(--space-3);
+  background: var(--surface);
+  border: 1px solid var(--line);
+  border-radius: var(--radius-row);
+}
+
+.restart-with .muted.small { font-size: var(--text-caption); }
 
 .workspace-path {
   font-family: var(--font-mono);
@@ -2346,6 +2427,8 @@ html[data-drawer="open"] .settings-drawer {
 }
 
 .harness-tail-body {
+  /* A session that has not printed yet still gets a well, not a hairline. */
+  min-height: 2.75rem;
   max-height: 20rem;
   overflow: auto;
   margin: 0;
@@ -2502,27 +2585,73 @@ html[data-drawer="open"] .settings-drawer {
 /* ==========================================================================
    18 — RESPONSIVE (1200 / 900 / 640)
    ========================================================================== */
+/* The rail owns mode + theme at wide widths; the topbar keeps duplicates that
+   are painted only once the rail is gone. The delegated layout script syncs
+   every instance, so the two copies never disagree. */
+.topbar-only-narrow { display: none; }
+
 @media (max-width: 1199px) {
   .dashboard-shell { grid-template-columns: var(--rail-w-mid) minmax(0, 1fr); }
 
-  .side-rail { padding: var(--space-3) var(--space-2); align-items: center; }
+  .side-rail { padding: var(--space-3) var(--space-2); }
 
   .side-rail .brand-wordmark,
   .side-rail .version-badge,
   .side-rail .rail-vitals,
   .side-rail .rail-link-name,
   .side-rail .rail-link-meta,
-  .side-rail .rail-group-label {
+  .side-rail .rail-group-label,
+  .side-rail .rail-action-label {
     display: none;
   }
 
-  .side-rail .mode-switch-button { padding: 0 6px; font-size: 9px; }
+  /* No label fits in 64px, and a two-letter abbreviation is not a control.
+     The console's Experience group keeps the same switch one click away. */
+  .side-rail .rail-foot .settings-mode-switch { display: none; }
+
+  /* Names survive as `title` tooltips; the LED alone stays as the state signal. */
+  .side-rail .rail-link { justify-content: center; padding: 8px var(--space-1); }
+
+  .side-rail .side-rail-brand { justify-content: center; padding: var(--space-1) 0; }
+
+  .side-rail .rail-foot-actions {
+    flex-direction: column;
+    align-items: stretch;
+    gap: var(--space-1);
+  }
+
+  /* 3 × 26px does not fit a 64px rail; wrap to 2 + 1 at 20px each. */
+  .side-rail .theme-toggle { flex-wrap: wrap; justify-content: center; }
+
+  .side-rail .theme-toggle-button { width: 20px; }
+
+  .side-rail .rail-action,
+  .side-rail .rail-action--refresh {
+    width: 100%;
+    min-width: 0;
+    padding: 0;
+    position: relative;
+  }
+
+  /* Refresh loses its label, so give it a glyph: a broken ring. */
+  .side-rail .rail-action--refresh::before {
+    content: "";
+    width: 11px;
+    height: 11px;
+    border: 1.5px solid currentColor;
+    border-right-color: transparent;
+    border-radius: 50%;
+  }
 }
 
 @media (max-width: 899px) {
   .dashboard-shell { grid-template-columns: minmax(0, 1fr); }
 
   .side-rail { display: none; }
+
+  .command-bar .topbar-only-narrow { display: inline-flex; }
+
+  .command-bar details.jump-menu.topbar-only-narrow { display: block; }
 
   .main-col { padding: 0 var(--space-3) var(--space-6); }
 
@@ -2550,6 +2679,8 @@ html[data-drawer="open"] .settings-drawer {
   .retry-row { flex-wrap: wrap; }
 
   .retry-row-error { flex: 1 1 100%; }
+
+  .session-row-detail-grid { grid-template-columns: repeat(auto-fit, minmax(130px, 1fr)); }
 }
 
 @media (max-width: 639px) {
@@ -2603,6 +2734,33 @@ html[data-drawer="open"] .settings-drawer {
   html[data-ui-mode="advanced"] .inline-form--wide { width: 100%; }
 
   html[data-ui-mode="simple"] .project-concurrency-control { width: 100%; }
+
+  .session-row-detail { padding: var(--space-2); }
+
+  /* The three-column log grid cannot hold a timestamp, a name and a message on
+     a phone; stack them and keep the timestamp/name on one line. */
+  .log-event {
+    grid-template-columns: auto minmax(0, 1fr);
+    row-gap: 0;
+  }
+
+  .log-event-message { grid-column: 1 / -1; }
+
+  .harness-tail-body { max-height: 14rem; }
+
+  .settings-drawer .settings-inline,
+  .settings-drawer #linear-connect-form,
+  .settings-drawer .settings-form {
+    flex-wrap: wrap;
+  }
+
+  .settings-row > .inline-label { flex: 0 0 100%; }
+
+  .jump-menu-panel {
+    left: 0;
+    right: 0;
+    min-width: 0;
+  }
 }
 
 /* ==========================================================================
@@ -2639,9 +2797,27 @@ html[data-density="compact"] .metric-pill { padding: 6px var(--space-3); }
 
 html[data-density="compact"] .metric-pill-value { font-size: 20px; }
 
+/* The breakdown cells render mono prose, not a numeral; keep them small or the
+   later density rule promotes "In Progress 2" to headline size. */
+html[data-density="compact"] .metric-pill--ops .metric-pill-value,
+html[data-density="compact"] .metric-pill--states .metric-pill-value,
+html[data-density="compact"] .metric-pill--kinds .metric-pill-value {
+  font-size: var(--text-body-sm);
+}
+
 html[data-density="compact"] .queue-card { padding: 6px 8px; }
 
 html[data-density="compact"] .rail-link { padding: 5px var(--space-2); }
+
+html[data-density="compact"] .rail-vitals { padding: var(--space-2); }
+
+html[data-density="compact"] .rail-vitals-num { font-size: 17px; }
+
+html[data-density="compact"] .settings-group { padding: var(--space-2); }
+
+html[data-density="compact"] .session-row-detail { padding: var(--space-2); }
+
+html[data-density="compact"] .queue-card-edit { padding: var(--space-2); }
 
 /* ----- Section visibility + collapse -------------------------------------- */
 html[data-hidden-sections~="metrics"] .section--metrics,
@@ -2726,12 +2902,64 @@ html[data-ui-mode="simple"] .session-row-activity {
 
 .side-rail-brand:hover { color: var(--ink); }
 
+/* ----- Vitals: the rail opens with live fleet numerals ---------------------- */
+.rail-vitals {
+  padding: var(--space-3) var(--space-2);
+  border-top: 1px solid var(--line);
+  border-bottom: 1px solid var(--line);
+}
+
+.rail-vitals-line {
+  margin: 0;
+  display: flex;
+  align-items: baseline;
+  column-gap: 6px;
+  flex-wrap: wrap;
+}
+
+.rail-vitals-num {
+  font-size: var(--text-vital);
+  font-weight: 300;
+  color: var(--ink);
+  letter-spacing: var(--tracking-metric);
+  line-height: 1.1;
+  font-variant-numeric: tabular-nums;
+}
+
+.rail-vitals-word {
+  font-size: var(--text-micro);
+  font-weight: 600;
+  color: var(--ink-mute);
+  letter-spacing: var(--tracking-label);
+  text-transform: uppercase;
+  margin-right: var(--space-2);
+}
+
+.rail-vitals-copy {
+  margin: var(--space-1) 0 0;
+  font-size: var(--text-body-sm);
+  font-style: italic;
+  color: var(--ink-soft);
+  text-wrap: pretty;
+}
+
+/* ----- Fleet navigation ---------------------------------------------------- */
 .rail-group {
   display: flex;
   flex-direction: column;
   gap: 2px;
   flex: 1 1 auto;
   min-height: 0;
+}
+
+.rail-group-label {
+  margin: 0 0 4px;
+  padding: 0 var(--space-2);
+  font-size: var(--text-micro);
+  font-weight: 600;
+  color: var(--ink-mute);
+  letter-spacing: var(--tracking-label);
+  text-transform: uppercase;
 }
 
 .rail-link {
@@ -2744,6 +2972,9 @@ html[data-ui-mode="simple"] .session-row-activity {
   font-size: var(--text-body-sm);
   font-weight: 500;
   min-width: 0;
+  transition:
+    background-color var(--dur-fast) var(--ease),
+    color var(--dur-fast) var(--ease);
 }
 
 .rail-link:hover {
@@ -2757,6 +2988,43 @@ html[data-ui-mode="simple"] .session-row-activity {
   box-shadow: inset 2px 0 0 0 var(--accent);
 }
 
+.rail-link-name {
+  flex: 1 1 auto;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.rail-link-meta {
+  flex: 0 0 auto;
+  font-family: var(--font-mono);
+  font-size: var(--text-caption);
+  color: var(--ink-mute);
+}
+
+/* State is never colour alone: the LED sits beside the project name it labels. */
+.rail-led {
+  flex: 0 0 7px;
+  width: 7px;
+  height: 7px;
+  border-radius: var(--radius-pill);
+  background: var(--ink-faint);
+}
+
+.rail-led--run { background: var(--ok); }
+
+.rail-led--retry { background: var(--warn); }
+
+.rail-led--paused {
+  background: transparent;
+  box-shadow: inset 0 0 0 1.5px var(--warn);
+}
+
+.rail-led--idle,
+.rail-led--done { background: var(--ink-faint); }
+
+/* ----- Foot: mode, theme, console, refresh --------------------------------- */
 .rail-foot {
   margin-top: auto;
   display: flex;
@@ -2765,6 +3033,21 @@ html[data-ui-mode="simple"] .session-row-activity {
   border-top: 1px solid var(--line);
   padding-top: var(--space-3);
 }
+
+.rail-foot .settings-mode-switch { width: 100%; }
+
+.rail-foot .settings-mode-switch .mode-switch-button { flex: 1 1 0; }
+
+.rail-foot-actions {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+  flex-wrap: wrap;
+}
+
+.rail-action { flex: 0 0 auto; }
+
+.rail-action--refresh { flex: 1 1 auto; }
 
 /* ==========================================================================
    22 — POLISH
@@ -2775,3 +3058,154 @@ html[data-ui-mode="simple"] .session-row-activity {
 }
 
 html { scrollbar-color: var(--line-strong) transparent; }
+
+::-webkit-scrollbar {
+  width: 10px;
+  height: 10px;
+}
+
+::-webkit-scrollbar-track { background: transparent; }
+
+::-webkit-scrollbar-thumb {
+  background: var(--line-strong);
+  border-radius: var(--radius-tag);
+}
+
+::-webkit-scrollbar-thumb:hover { background: var(--ink-faint); }
+
+/* ----- Narrow-width project jump menu (native <details>, no JS) ------------- */
+.jump-menu {
+  position: relative;
+  min-width: 0;
+}
+
+.jump-menu-summary {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  height: var(--ctl-h);
+  padding: 0 10px;
+  border: 1px solid var(--line-strong);
+  border-radius: var(--radius-ctl);
+  color: var(--ink-soft);
+  font-size: var(--text-body-sm);
+  font-weight: 500;
+  cursor: pointer;
+  list-style: none;
+  user-select: none;
+}
+
+.jump-menu-summary::-webkit-details-marker { display: none; }
+
+.jump-menu-summary::after {
+  content: "";
+  width: 6px;
+  height: 6px;
+  border-right: 1.5px solid currentColor;
+  border-bottom: 1.5px solid currentColor;
+  transform: translateY(-2px) rotate(45deg);
+}
+
+.jump-menu[open] .jump-menu-summary {
+  color: var(--ink);
+  border-color: var(--accent);
+}
+
+.jump-menu-summary:focus-visible {
+  outline: none;
+  box-shadow: var(--focus-ring);
+}
+
+.jump-menu-panel {
+  position: absolute;
+  top: calc(100% + 4px);
+  left: 0;
+  min-width: 200px;
+  z-index: var(--z-popover);
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  padding: 6px;
+  background: var(--surface);
+  border: 1px solid var(--line-strong);
+  border-radius: var(--radius-card);
+  box-shadow: var(--shadow-pop);
+}
+
+.jump-menu-link {
+  padding: 6px 8px;
+  border-radius: var(--radius-tag);
+  color: var(--ink-soft);
+  font-size: var(--text-body-sm);
+  white-space: nowrap;
+}
+
+.jump-menu-link:hover {
+  background: var(--surface-soft);
+  color: var(--ink);
+}
+
+.jump-menu-link:focus-visible {
+  outline: none;
+  box-shadow: var(--focus-ring);
+}
+
+/* ----- Fleet empty: no projects configured yet ----------------------------- */
+.fleet-empty {
+  align-items: flex-start;
+  gap: var(--space-2);
+}
+
+.fleet-empty-label {
+  margin: 0;
+  font-size: var(--text-micro);
+  font-weight: 600;
+  color: var(--ink-mute);
+  letter-spacing: var(--tracking-label);
+  text-transform: uppercase;
+}
+
+.fleet-empty-copy {
+  margin: 0;
+  max-width: 52ch;
+  color: var(--ink-soft);
+  font-size: var(--text-body-sm);
+}
+
+.fleet-empty-action { margin-top: var(--space-1); }
+
+/* ----- Collapse disclosure ------------------------------------------------- */
+/* The layout script keeps rewriting this button's textContent to `▸`/`▾` (and
+   owns `aria-expanded`), so the glyph is hidden rather than removed and the
+   chevron is drawn in CSS — same geometry as the session-row disclosure. */
+[data-collapse-toggle] {
+  position: relative;
+  width: var(--ctl-h);
+  min-width: var(--ctl-h);
+  padding: 0;
+  font-size: 0;
+  line-height: 0;
+  color: var(--ink-mute);
+}
+
+[data-collapse-toggle]::before {
+  content: "";
+  position: absolute;
+  inset: 0;
+  margin: auto;
+  width: 7px;
+  height: 7px;
+  border-right: 1.5px solid currentColor;
+  border-bottom: 1.5px solid currentColor;
+  transform: translateY(-2px) rotate(45deg);
+  transition: transform var(--dur-fast) var(--ease);
+}
+
+[data-collapse-toggle][aria-expanded="false"]::before {
+  transform: translateX(-2px) rotate(-45deg);
+}
+
+[data-collapse-toggle]:hover {
+  color: var(--ink);
+  background: var(--surface-deep);
+}

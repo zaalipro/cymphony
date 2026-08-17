@@ -1110,6 +1110,40 @@ defmodule CymphonyElixirWeb.Layouts do
                     document.documentElement.removeAttribute('data-drawer');
                     this.pushEvent('dismiss_overlays', {});
                   }
+                },
+                // Purely decorative scroll-spy: paints `aria-current` on the rail
+                // link whose section is nearest the top strip. No server traffic,
+                // no assign — without this hook the rail simply has no persistent
+                // highlight and every anchor still works.
+                RailNav: {
+                  mounted() {
+                    this._onScroll = this.sync.bind(this);
+                    window.addEventListener('scroll', this._onScroll, {passive: true});
+                    window.addEventListener('resize', this._onScroll, {passive: true});
+                    this.sync();
+                  },
+                  updated() { this.sync(); },
+                  destroyed() {
+                    window.removeEventListener('scroll', this._onScroll);
+                    window.removeEventListener('resize', this._onScroll);
+                  },
+                  sync() {
+                    var links = Array.prototype.slice.call(this.el.querySelectorAll('.rail-link'));
+                    if (!links.length) return;
+                    var probe = 120;
+                    var current = links[0];
+                    for (var i = 0; i < links.length; i++) {
+                      var href = links[i].getAttribute('href') || '';
+                      if (href.charAt(0) !== '#') continue;
+                      var section = document.getElementById(href.slice(1));
+                      if (!section) continue;
+                      if (section.getBoundingClientRect().top <= probe) current = links[i];
+                    }
+                    links.forEach(function(link) {
+                      if (link === current) link.setAttribute('aria-current', 'true');
+                      else link.removeAttribute('aria-current');
+                    });
+                  }
                 }
               }
             });
@@ -1252,6 +1286,16 @@ defmodule CymphonyElixirWeb.Layouts do
                 setToken('data-collapsed-sections', key, collapsed.indexOf(key) !== -1);
                 setToken('data-expanded-sections', key, expanded.indexOf(key) !== -1);
                 syncPrefControls();
+              }
+            });
+
+            // Esc closes the settings console. A delegated listener, not a hook:
+            // the drawer's open state is an attribute on <html>, outside the
+            // LiveView container, so nothing here can be patched away.
+            document.addEventListener('keydown', function(e) {
+              if (e.key === 'Escape' &&
+                  document.documentElement.getAttribute('data-drawer') === 'open') {
+                document.documentElement.removeAttribute('data-drawer');
               }
             });
 

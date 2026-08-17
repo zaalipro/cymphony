@@ -789,6 +789,99 @@ defmodule CymphonyElixir.DashboardLiveTest do
     assert has_element?(view, ".toast-stack .alert-banner.alert-info", "Dashboard refresh set to 7s")
   end
 
+  test "the rail renders vitals, fleet links with state LEDs, and the foot controls" do
+    start_dashboard()
+    {:ok, view, _html} = live(build_conn(), "/")
+
+    # Vitals read the same section assigns the band does — never a clock.
+    assert has_element?(view, ".side-rail .rail-vitals .rail-vitals-num", "1")
+    assert has_element?(view, ".side-rail .rail-vitals-copy", "Automatic work is on.")
+
+    # Fleet nav: an Overview anchor plus one anchor per project, pointing at the
+    # section ids Part A added.
+    assert has_element?(view, ~s|#rail-nav[phx-hook="RailNav"]|)
+    assert has_element?(view, ~s|.rail-group .rail-link[href="#dashboard-top"] .rail-link-name|, "Overview")
+    assert has_element?(view, ~s|.rail-link[href="#project-default"][title="default"] .rail-link-name|, "default")
+
+    # The fixture has one running and one retrying issue: retrying outranks
+    # running so the rail says "this project is not simply working".
+    assert has_element?(view, ~s|.rail-link[href="#project-default"] .rail-led.rail-led--retry|)
+
+    # Completions are empty in the fixture, so that anchor is absent.
+    refute has_element?(view, ~s|.rail-link[href="#completions-section"]|)
+
+    # Foot: mode + theme moved here; console and refresh sit beside them.
+    assert has_element?(view, ~s|.rail-foot #mode-switch-rail[phx-update="ignore"]|)
+    assert has_element?(view, ~s|.rail-foot .theme-toggle [data-theme-set="system"]|)
+    assert has_element?(view, ~s|.rail-foot button.rail-action[data-drawer-toggle][aria-label="Settings"]|)
+    assert has_element?(view, ~s|.rail-foot button.rail-action--refresh[phx-click="refresh_now"]|)
+  end
+
+  test "a paused project shows the amber rail LED" do
+    snapshot = static_snapshot()
+    paused = %{snapshot | running: [], retrying: [], polling: %{snapshot.polling | paused: true}}
+    start_dashboard(snapshot: paused)
+    {:ok, view, _html} = live(build_conn(), "/")
+
+    assert has_element?(view, ~s|.rail-link[href="#project-default"] .rail-led.rail-led--paused|)
+    assert has_element?(view, ".rail-vitals-copy", "Automatic work is paused.")
+  end
+
+  test "an idle project shows the neutral rail LED" do
+    start_dashboard(snapshot: %{static_snapshot() | running: [], retrying: []})
+    {:ok, view, _html} = live(build_conn(), "/")
+
+    assert has_element?(view, ~s|.rail-link[href="#project-default"] .rail-led.rail-led--idle|)
+  end
+
+  test "the narrow top strip keeps duplicate mode/theme controls and a jump menu" do
+    start_dashboard()
+    {:ok, view, _html} = live(build_conn(), "/")
+
+    assert has_element?(view, ".command-bar #mode-switch-top.mode-switch.topbar-only-narrow")
+    assert has_element?(view, ".command-bar .theme-toggle.topbar-only-narrow")
+    assert has_element?(view, ~s|.command-bar details.jump-menu.topbar-only-narrow .jump-menu-summary|, "Jump to")
+    assert has_element?(view, ~s|.jump-menu-panel .jump-menu-link[href="#project-default"]|, "default")
+  end
+
+  test "fleet-empty replaces the board only once a connected payload has no projects" do
+    start_dashboard()
+
+    # The dead render also has `projects: []`; it has not earned the claim.
+    dead = html_response(get(build_conn(), "/"), 200)
+    refute dead =~ "fleet-empty"
+
+    {:ok, view, html} = live(build_conn(), "/")
+    refute html =~ "fleet-empty"
+
+    send(view.pid, {:payload_loaded, view_assigns(view).payload_seq, %{projects: []}})
+
+    assert has_element?(view, "section.section-card.fleet-empty .fleet-empty-label", "No projects")
+    assert has_element?(view, ".fleet-empty-copy", "Connect Linear and add your first project.")
+    assert has_element?(view, ".fleet-empty-action[data-drawer-toggle]", "Open settings")
+  end
+
+  test "the settings console explains refresh interval against Linear polling" do
+    start_dashboard()
+    {:ok, view, _html} = live(build_conn(), "/")
+
+    # Operator complaint: "refresh" was read as the Linear poll cadence.
+    assert has_element?(
+             view,
+             ".settings-drawer .settings-control-row .settings-help",
+             "Refresh (s): how often this dashboard re-reads orchestrator state — not Linear polling."
+           )
+
+    assert has_element?(view, ".settings-drawer .settings-control-row form[phx-submit=\"set_refresh_interval\"]")
+    assert has_element?(view, ".settings-drawer .settings-help", "How many agent sessions may run at once, across every project.")
+    assert has_element?(view, ".settings-drawer .settings-help", "Running sessions finish.")
+
+    # Primary actions carry the accent; the destructive/quiet ones do not.
+    assert has_element?(view, ~s|#linear-connect-form button.subtle-button--accent|, "Connect")
+    assert has_element?(view, ~s|.settings-drawer button.settings-submit[phx-click="pause_dispatch"]|, "Pause all")
+    refute has_element?(view, ~s|.settings-drawer button.subtle-button--accent[phx-click="pause_dispatch"]|)
+  end
+
   test "queue board is hidden when waiting is empty" do
     start_dashboard()
     {:ok, view, html} = live(build_conn(), "/")
@@ -1656,7 +1749,9 @@ defmodule CymphonyElixir.DashboardLiveTest do
   @immediate_reload_events [
     {"kill_issue", ~s|button[phx-click="kill_issue"][phx-value-issue="MT-HTTP"]|},
     {"retry_issue", ~s|button[phx-click="retry_issue"][phx-value-issue="MT-RETRY"]|},
-    {"refresh_now", ~s|button[phx-click="refresh_now"]|}
+    # Two Refresh buttons exist now: the rail foot owns it at wide widths and the
+    # top strip keeps its own copy. Scope to the top strip one.
+    {"refresh_now", ~s|.command-bar-meta button[phx-click="refresh_now"]|}
   ]
 
   for {event, selector} <- @immediate_reload_events do
