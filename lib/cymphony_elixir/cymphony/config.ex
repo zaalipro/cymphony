@@ -1,6 +1,8 @@
 defmodule CymphonyElixir.Cymphony.Config do
   @moduledoc false
 
+  require Logger
+
   alias CymphonyElixir.Agent
   alias CymphonyElixir.Cymphony.Defaults
 
@@ -892,11 +894,13 @@ defmodule CymphonyElixir.Cymphony.Config do
   defp agent_section_map(config, "claude") do
     %{"command" => Defaults.claude_command(), "output_format" => Defaults.output_format()}
     |> maybe_put_provider_keys(config, "claude")
+    |> maybe_put_extra_args(config, "claude")
   end
 
   defp agent_section_map(config, "codex") do
     %{"command" => Defaults.codex_command(), "sandbox" => Defaults.codex_sandbox()}
     |> maybe_put_provider_keys(config, "codex")
+    |> maybe_put_extra_args(config, "codex")
   end
 
   defp agent_section_map(config, "antigravity") do
@@ -905,7 +909,20 @@ defmodule CymphonyElixir.Cymphony.Config do
       "output_format" => "stream-json",
       "skip_permissions" => true
     }
+    |> maybe_put_new_project(config)
     |> maybe_put_provider_keys(config, "antigravity")
+    |> maybe_put_extra_args(config, "antigravity")
+  end
+
+  # `--new-project` is on by default in the adapter, so only an explicit `false`
+  # needs to reach the front matter. Anything else (missing, `"false"`, `0`)
+  # keeps the default rather than silently sandboxing agy back into
+  # ~/.gemini/antigravity-cli/scratch.
+  defp maybe_put_new_project(section, config) do
+    case Map.get(config, "new_project") do
+      false -> Map.put(section, "new_project", false)
+      _ -> section
+    end
   end
 
   # Providers are auth aliases for a specific backend: they belong to the
@@ -930,6 +947,57 @@ defmodule CymphonyElixir.Cymphony.Config do
     else
       section
     end
+  end
+
+  # Extra CLI args are per-kind pass-through flags, so — like providers — they
+  # belong to the active kind's section only: a project pinned to `codex` must
+  # not inherit the `antigravity` list.
+  #
+  # Two accepted shapes on a `projects[]` entry:
+  #
+  #   "extra_args": {"antigravity": ["--new-project"], "codex": ["--full-auto"]}
+  #   "extra_args": ["--new-project"]      # convenience form, active kind
+  #
+  # Only a list of strings is honored. Mirroring `stall_timeout_ms`, anything
+  # else is ignored rather than written into front matter that would fail
+  # `Schema.parse/1` and take the whole project down — but unlike a numeric
+  # typo, a mistyped escape hatch is invisible, so it is logged.
+  defp maybe_put_extra_args(section, config, kind) do
+    if agent_kind(config) == kind do
+      case extra_args(config, kind) do
+        [] -> section
+        args -> Map.put(section, "extra_args", args)
+      end
+    else
+      section
+    end
+  end
+
+  defp extra_args(config, kind) do
+    case Map.get(config, "extra_args") do
+      nil -> []
+      by_kind when is_map(by_kind) -> by_kind |> Map.get(kind) |> kind_extra_args()
+      value -> string_list_or_warn(value)
+    end
+  end
+
+  # A map with no entry for the active kind is the normal case, not a mistake.
+  defp kind_extra_args(nil), do: []
+  defp kind_extra_args(value), do: string_list_or_warn(value)
+
+  defp string_list_or_warn(value) when is_list(value) do
+    if Enum.all?(value, &is_binary/1), do: value, else: warn_invalid_extra_args(value)
+  end
+
+  defp string_list_or_warn(value), do: warn_invalid_extra_args(value)
+
+  defp warn_invalid_extra_args(value) do
+    Logger.warning(
+      "Ignoring invalid extra_args in config.json: expected a list of strings, " <>
+        "or a map of agent kind to list of strings, got #{inspect(value)}"
+    )
+
+    []
   end
 
   defp maybe_put_hooks(base, config) do

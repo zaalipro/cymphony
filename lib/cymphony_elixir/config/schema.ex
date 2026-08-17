@@ -9,6 +9,34 @@ defmodule CymphonyElixir.Config.Schema do
 
   @type t :: %__MODULE__{}
 
+  defmodule ExtraArgs do
+    @moduledoc false
+    # Per-kind pass-through CLI flags. Historically a single opaque string that
+    # adapters append unescaped; the config store generates a list of strings so
+    # each argument is escaped individually. Both shapes stay valid so a
+    # hand-authored `WORKFLOW.md` written against the string form keeps parsing.
+    use Ecto.Type
+
+    @impl true
+    def type, do: :any
+
+    @impl true
+    def cast(nil), do: {:ok, nil}
+    def cast(value) when is_binary(value), do: {:ok, value}
+
+    def cast(value) when is_list(value) do
+      if Enum.all?(value, &is_binary/1), do: {:ok, value}, else: :error
+    end
+
+    def cast(_value), do: :error
+
+    @impl true
+    def load(value), do: {:ok, value}
+
+    @impl true
+    def dump(value), do: {:ok, value}
+  end
+
   defmodule Tracker do
     @moduledoc false
     use Ecto.Schema
@@ -162,6 +190,7 @@ defmodule CymphonyElixir.Config.Schema do
       field(:max_turns, :integer)
       field(:max_budget_usd, :decimal)
       field(:bare_mode, :boolean, default: true)
+      field(:extra_args, CymphonyElixir.Config.Schema.ExtraArgs)
       field(:provider, :string)
       field(:providers, {:array, :string}, default: [])
     end
@@ -180,6 +209,7 @@ defmodule CymphonyElixir.Config.Schema do
           :max_turns,
           :max_budget_usd,
           :bare_mode,
+          :extra_args,
           :provider,
           :providers
         ],
@@ -209,6 +239,7 @@ defmodule CymphonyElixir.Config.Schema do
       field(:command, :string, default: "codex")
       field(:sandbox, :string, default: "workspace-write")
       field(:network_access, :boolean, default: true)
+      field(:extra_args, CymphonyElixir.Config.Schema.ExtraArgs)
       field(:provider, :string)
       field(:providers, {:array, :string}, default: [])
     end
@@ -216,7 +247,7 @@ defmodule CymphonyElixir.Config.Schema do
     @spec changeset(%__MODULE__{}, map()) :: Ecto.Changeset.t()
     def changeset(schema, attrs) do
       schema
-      |> cast(attrs, [:command, :sandbox, :network_access, :provider, :providers], empty_values: [])
+      |> cast(attrs, [:command, :sandbox, :network_access, :extra_args, :provider, :providers], empty_values: [])
       |> validate_required([:command])
       |> validate_inclusion(:sandbox, ["read-only", "workspace-write", "danger-full-access"])
     end
@@ -231,9 +262,10 @@ defmodule CymphonyElixir.Config.Schema do
     embedded_schema do
       field(:command, :string, default: "agy")
       field(:output_format, :string, default: "stream-json")
-      field(:extra_args, :string)
+      field(:extra_args, CymphonyElixir.Config.Schema.ExtraArgs)
       field(:skip_permissions, :boolean, default: true)
       field(:sandbox, :boolean, default: false)
+      field(:new_project, :boolean, default: true)
       field(:print_timeout, :string)
       field(:provider, :string)
       field(:providers, {:array, :string}, default: [])
@@ -250,6 +282,7 @@ defmodule CymphonyElixir.Config.Schema do
           :extra_args,
           :skip_permissions,
           :sandbox,
+          :new_project,
           :print_timeout,
           :provider,
           :providers

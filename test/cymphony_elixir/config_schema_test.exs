@@ -74,6 +74,63 @@ defmodule CymphonyElixir.ConfigSchemaTest do
     assert settings.antigravity.provider == nil
   end
 
+  test "antigravity new_project defaults on and only an explicit false turns it off" do
+    assert {:ok, defaults} = Schema.parse(%{})
+    assert defaults.antigravity.new_project == true
+
+    assert {:ok, off} = Schema.parse(%{"antigravity" => %{"new_project" => false}})
+    assert off.antigravity.new_project == false
+
+    assert {:ok, on} = Schema.parse(%{"antigravity" => %{"new_project" => true}})
+    assert on.antigravity.new_project == true
+  end
+
+  test "every agent section accepts extra_args as a string or a list of strings" do
+    assert {:ok, settings} =
+             Schema.parse(%{
+               "claude" => %{"extra_args" => ["--add-dir", "/srv/x"]},
+               "codex" => %{"extra_args" => "-c foo=1"},
+               "antigravity" => %{"extra_args" => ["--new-project"]}
+             })
+
+    assert settings.claude.extra_args == ["--add-dir", "/srv/x"]
+    assert settings.codex.extra_args == "-c foo=1"
+    assert settings.antigravity.extra_args == ["--new-project"]
+
+    assert {:ok, empty} = Schema.parse(%{"claude" => %{"extra_args" => []}})
+    assert empty.claude.extra_args == []
+
+    assert {:ok, cleared} = Schema.parse(%{"claude" => %{"extra_args" => nil}})
+    assert cleared.claude.extra_args == nil
+  end
+
+  test "extra_args rejects shapes that are neither a string nor a list of strings" do
+    for {section, bad} <- [{"claude", 12}, {"codex", ["--ok", 2]}, {"antigravity", %{"a" => 1}}] do
+      assert {:error, {:invalid_workflow_config, message}} =
+               Schema.parse(%{section => %{"extra_args" => bad}})
+
+      assert message =~ "extra_args"
+    end
+  end
+
+  test "ExtraArgs casts nil/string/string-list and rejects everything else" do
+    assert Schema.ExtraArgs.cast(nil) == {:ok, nil}
+    assert Schema.ExtraArgs.cast("--foo bar") == {:ok, "--foo bar"}
+    assert Schema.ExtraArgs.cast("") == {:ok, ""}
+    assert Schema.ExtraArgs.cast([]) == {:ok, []}
+    assert Schema.ExtraArgs.cast(["--a", "--b"]) == {:ok, ["--a", "--b"]}
+    assert Schema.ExtraArgs.cast(["--a", 2]) == :error
+    assert Schema.ExtraArgs.cast(12) == :error
+    assert Schema.ExtraArgs.cast(%{"a" => 1}) == :error
+  end
+
+  test "ExtraArgs load/dump round-trip the value unchanged" do
+    # Never persisted through a repo, but Ecto.Type requires both callbacks.
+    assert Schema.ExtraArgs.type() == :any
+    assert Schema.ExtraArgs.load(["--x"]) == {:ok, ["--x"]}
+    assert Schema.ExtraArgs.dump(["--x"]) == {:ok, ["--x"]}
+  end
+
   test "antigravity accepts extra_args/print_timeout/provider/providers" do
     assert {:ok, settings} =
              Schema.parse(%{

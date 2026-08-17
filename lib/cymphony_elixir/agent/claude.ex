@@ -35,6 +35,7 @@ defmodule CymphonyElixir.Agent.Claude do
       |> maybe_add_flag(settings.max_budget_usd, "--max-budget-usd", settings.max_budget_usd)
       |> maybe_add_mcp_config(run_spec)
       |> maybe_add_resume_flag(run_spec.session_id)
+      |> maybe_add_extra_args(Map.get(settings, :extra_args))
 
     command =
       case run_spec.command || settings.command do
@@ -81,6 +82,8 @@ defmodule CymphonyElixir.Agent.Claude do
   end
 
   defp maybe_add_mcp_config(args, _run_spec), do: args
+
+  defp maybe_add_extra_args(args, extra), do: CymphonyElixir.Agent.append_extra_args(args, extra)
 
   defp parse_json_output(lines) do
     case find_last_json_line(lines) do

@@ -109,6 +109,23 @@ defmodule CymphonyElixir.Agent.ClaudeAdapterTest do
     end
   end
 
+  describe "build_command/1 extra_args" do
+    test "a settings list is escaped and appended after the modelled flags" do
+      settings = Map.put(spec().settings, :extra_args, ["--add-dir", "/srv/shared repo"])
+      assert {:ok, cmd} = Claude.build_command(spec(%{settings: settings}))
+      assert String.ends_with?(cmd, "'--add-dir' '/srv/shared repo'")
+    end
+
+    test "a settings string is appended raw; a missing key adds nothing" do
+      settings = Map.put(spec().settings, :extra_args, "--debug --foo=1")
+      assert {:ok, with_string} = Claude.build_command(spec(%{settings: settings}))
+      assert String.ends_with?(with_string, "--debug --foo=1")
+
+      assert {:ok, without} = Claude.build_command(spec())
+      refute without =~ "--debug"
+    end
+  end
+
   describe "build_command/1 edge branches" do
     test "empty/nil settings.command falls back to the default binary" do
       settings = %{spec().settings | command: nil}
