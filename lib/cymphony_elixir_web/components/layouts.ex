@@ -1263,12 +1263,18 @@ defmodule CymphonyElixirWeb.Layouts do
               document.querySelectorAll('[data-pref="completions-limit"]').forEach(function(el) {
                 el.value = prefs.completionsLimit || '100';
               });
+              // The visible chevron is CSS keyed off `<html>` (patch-proof); these
+              // writes are the accessible name only. Every write is guarded so the
+              // MutationObserver below — which watches `aria-expanded` so a morphdom
+              // reset is repaired — cannot re-trigger this function from its own edit.
               document.querySelectorAll('[data-collapse-toggle]').forEach(function(el) {
                 var collapsed = sectionIsCollapsed(el.getAttribute('data-collapse-toggle'), prefs);
                 var marker = collapsed ? '▸' : '▾';
+                var expanded = collapsed ? 'false' : 'true';
+                var label = collapsed ? 'Expand section' : 'Collapse section';
                 if (el.textContent !== marker) el.textContent = marker;
-                el.setAttribute('aria-expanded', collapsed ? 'false' : 'true');
-                el.setAttribute('aria-label', collapsed ? 'Expand section' : 'Collapse section');
+                if (el.getAttribute('aria-expanded') !== expanded) el.setAttribute('aria-expanded', expanded);
+                if (el.getAttribute('aria-label') !== label) el.setAttribute('aria-label', label);
               });
             }
 
@@ -1365,11 +1371,15 @@ defmodule CymphonyElixirWeb.Layouts do
             syncPrefControls();
             window.addEventListener('phx:page-loading-stop', syncPrefControls);
 
+            // A LiveView patch rewrites server-rendered attributes back to the
+            // template's value. `aria-expanded` is watched alongside `aria-pressed`
+            // so a patched collapse toggle regains its accessible name immediately;
+            // the guarded writes above keep that from looping.
             var liveRoot = document.querySelector('[data-phx-main]');
             if (liveRoot && window.MutationObserver) {
               new MutationObserver(syncPrefControls).observe(liveRoot, {
                 attributes: true,
-                attributeFilter: ['aria-pressed'],
+                attributeFilter: ['aria-pressed', 'aria-expanded'],
                 childList: true,
                 subtree: true
               });

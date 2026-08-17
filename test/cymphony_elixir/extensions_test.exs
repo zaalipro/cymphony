@@ -1244,6 +1244,26 @@ defmodule CymphonyElixir.ExtensionsTest do
       assert dashboard_css =~
                ~s|html[data-ui-mode="simple"]:not([data-expanded-sections~="completions"]) .section--completions .session-row-list|
 
+      # The collapse chevron rotates off the same `<html>` pref attributes that
+      # hide the section body, never off the button's server-rendered
+      # `aria-expanded`: that attribute lives inside the LiveView container, so
+      # morphdom resets it to the template value ("false") on every patch and the
+      # chevron would point right at an expanded Completions section until the
+      # next `syncPrefControls()` run. `<html>` is outside the patched container.
+      assert dashboard_css =~
+               ~s|html[data-ui-mode="simple"]:not([data-expanded-sections~="completions"]) [data-collapse-toggle="completions"]::before|
+
+      assert dashboard_css =~
+               ~s|html[data-collapsed-sections~="completions"] [data-collapse-toggle="completions"]::before|
+
+      refute dashboard_css =~ ~s|[data-collapse-toggle][aria-expanded="false"]::before|
+
+      # `aria-expanded` is still written for screen readers, and the observer now
+      # watches it so a patch-reset name is repaired; the guarded writes keep that
+      # from re-triggering the sync from its own mutation.
+      assert html =~ ~s|attributeFilter: ['aria-pressed', 'aria-expanded']|
+      assert html =~ ~s|if (el.getAttribute('aria-expanded') !== expanded) el.setAttribute('aria-expanded', expanded);|
+
       assert dashboard_css =~ ".project-section > .project-section-header"
       assert dashboard_css =~ ".project-section.is-combobox-open"
       assert dashboard_css =~ ".combobox.combobox--open"
@@ -1304,9 +1324,9 @@ defmodule CymphonyElixir.ExtensionsTest do
       assert dashboard_css =~ ".topbar-only-narrow { display: none; }"
 
       # The layout script still rewrites this button's textContent to a glyph, so
-      # the glyph is hidden and the chevron is CSS geometry.
+      # the glyph is hidden and the chevron is CSS geometry. Its rotation is
+      # asserted above, off `<html>` rather than off `aria-expanded`.
       assert dashboard_css =~ "[data-collapse-toggle] {"
-      assert dashboard_css =~ ~s|[data-collapse-toggle][aria-expanded="false"]::before|
 
       # Custom-property NAMES the QueueBoard hook resolves at runtime through
       # getComputedStyle. Values are free to change; a rename breaks drag.

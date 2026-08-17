@@ -257,7 +257,12 @@ past — `due_at_ms`, so its `due_in_ms` clamps to `0` for the whole pause: with
 parked indefinitely is indistinguishable from one due this instant, and any presenter deriving an
 absolute `due_at` from `now + due_in_ms` produces a value that advances one second per second,
 which re-renders every project section on every payload load of an otherwise idle paused board.
-Status surfaces therefore render "held" for such an entry and no due time at all.
+Status surfaces therefore render "held" for such an entry and no due time at all. On the dashboard
+that is a tag in the same grammar as its neighbours, not a loose muted sentence — the retry row
+gets a "held" modifier class and the state renders as a neutral tag beside the amber "Attempt N".
+Held means *suppressed*, not failing, so the tag carries no amber and the modifier mutes the row's
+amber retry edge: while dispatch is paused every retry row is held, and a wall of warning-coloured
+rows misreports a deliberately parked queue.
 
 `error` is truncated by status surfaces (the dashboard retry row shows 120 characters), so it must
 be front-loaded with the failure itself. A crashed agent task exits with `{exception, stacktrace}`:
@@ -2206,11 +2211,11 @@ Enablement (extension):
     `:now`. `:now` is a clock *anchor*, not a clock: it is assigned at mount and re-anchored
     by a payload load — the async `{:payload_loaded, seq, payload}` reply and the synchronous
     reload used by event handlers both go through the same split — but **only when a section
-    a clock reads actually moved** (`:token_totals`, `:running`, `:projects`). `:now` is read
-    inside the per-project comprehension (session runtime, retry due-in), and a HEEx
-    comprehension is a single change-tracked slot: re-anchoring on a load that moved nothing
-    would re-evaluate and re-serialize every project header, queue card, session row and
-    restart form, which is the re-render the section split exists to skip. Server-rendered
+    a clock reads actually moved** (`:token_totals`, `:running`, `:projects`). `:now` reaches
+    the board only through the `now` attr of the stalled-alert and session-row components and
+    the retry row's due-in anchor, so re-anchoring on a load that moved nothing would
+    re-serialize those clock spans for no reason — the re-render the section split exists to
+    skip. Server-rendered
     values are therefore correct as of the last load that moved a clock-bearing section, and
     the hook takes over between loads. A clock hung off a section outside that set renders a
     stale amount, so the set must stay in step with the `:now` reads in the template. The
@@ -2278,6 +2283,13 @@ Enablement (extension):
     value, re-filter, re-highlight by value (the option list itself may have changed), and
     refocus only if the search was focused before. It must never fall back to closing, which
     clears the typed filter.
+  - The template carries **no** local `<% x = … %>` bindings. Such a binding makes the HEEx
+    compiler abandon change tracking for every dynamic that follows it in the same template,
+    which put a whole project section — its Comboboxes included — on the wire for a single
+    harness stdout line, at up to ~12 patches per second on an expanded row. Rows are function
+    components (stalled alert, project agent controls, queue card, session row) whose attrs are
+    change-tracked individually, and the project / queue / session / retry comprehensions are
+    keyed so the diff is per row. A harness line must ship the harness pane and nothing else.
   - Acceptance: an idle dashboard ships no per-second diff; with sessions running and no real
     state change a payload load ships an **empty** diff (an empty diff is skipped entirely by
     the client, which is what leaves every input and every open dropdown alone) and reassigns
@@ -2556,6 +2568,17 @@ optional `?project=<name>` scope):
 Dashboard display preferences (density, hidden sections including `{Board, board}`,
 visible columns, list lengths) are client-side only (browser localStorage); they are not
 server state and have no API surface.
+
+Every affordance that reflects a client-side preference must be styled from the `<html>`
+attributes that preference already sets, never from an attribute the server renders inside the
+LiveView container. A DOM patch rewrites server-rendered attributes back to the template's value
+while `<html>` — outside the patched container — keeps what localStorage set, so a control keyed
+off the server attribute silently disagrees with the state it describes after any refresh. The
+section-collapse chevron is the concrete case: it rotates off the same
+`data-collapsed-sections` / `data-expanded-sections` / `data-ui-mode` selectors that hide the
+section body, and not off the button's own `aria-expanded`. That attribute is still written for
+assistive technology, guarded so the mutation observer that repairs it after a patch cannot
+re-trigger itself.
 
 API design notes:
 

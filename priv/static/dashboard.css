@@ -1494,6 +1494,10 @@ form.queue-edit-form {
 
 .retry-row:hover { background: var(--surface-soft); }
 
+/* Parked by a pause, not counting down: the amber retry edge steps back to a
+   decorative hairline so a fully paused board is not a wall of warnings. */
+.retry-row--held { box-shadow: inset 2px 0 0 0 var(--ink-faint); }
+
 .retry-row-id {
   flex: 0 0 120px;
   font-family: var(--font-mono);
@@ -1594,7 +1598,6 @@ button,
 
 /* One focus system, no exceptions. */
 .mode-switch-button:focus-visible,
-.mode-option:focus-visible,
 .subtle-button:focus-visible,
 .session-row-disclosure:focus-visible,
 .session-row-link:focus-visible,
@@ -1721,10 +1724,7 @@ select.inline-input--narrow {
 
 /* Header / restart agent toolbars: a wrapping cluster, never one tall pill. */
 .project-agent-form,
-.restart-form,
-.project-agent-form.inline-form,
-.restart-form.inline-form,
-form.project-agent-form.inline-form--agent {
+.restart-form {
   display: flex;
   flex-wrap: wrap;
   align-items: center;
@@ -1997,6 +1997,16 @@ input[type="radio"] { accent-color: var(--accent); }
 
 .chip--muted { color: var(--ink-mute); }
 
+/* Held = suppressed while dispatch is paused, not failing. It sits beside an
+   amber "Attempt N" and must not add a second warning voice: neutral fill,
+   muted ink, no amber. `.retry-row--held` drops the row's amber edge to match,
+   so a paused board reads as parked rather than as a wall of warnings. */
+.chip--held {
+  color: var(--ink-mute);
+  border-color: var(--line-strong);
+  background: var(--surface-deep);
+}
+
 /* Long model names (gemini-3.7-flash-high) have to truncate before they push
    the tag cluster into a second line and eat the title. */
 .chip--truncate {
@@ -2256,8 +2266,6 @@ html[data-theme="light"][data-drawer="open"] body::after {
   flex: 0 0 auto;
   min-width: 5.5rem;
 }
-
-.mode-option-list { display: none; }
 
 .settings-row {
   display: flex;
@@ -3197,8 +3205,20 @@ html { scrollbar-color: var(--line-strong) transparent; }
 
 /* ----- Collapse disclosure ------------------------------------------------- */
 /* The layout script keeps rewriting this button's textContent to `▸`/`▾` (and
-   owns `aria-expanded`), so the glyph is hidden rather than removed and the
-   chevron is drawn in CSS — same geometry as the session-row disclosure. */
+   owns `aria-expanded` for screen readers), so the glyph is hidden rather than
+   removed and the chevron is drawn in CSS — same geometry as the session-row
+   disclosure.
+
+   The rotation is keyed off the SAME `<html>` pref attributes that hide the
+   section body, never off the button's own `aria-expanded`. `aria-expanded` is
+   server-rendered inside the LiveView container, so morphdom resets it to the
+   template's value on every patch while the content stays collapsed/expanded
+   per localStorage — the chevron would then point the wrong way until the next
+   `syncPrefControls()` run. `<html>` is outside the patched container, so these
+   selectors are patch-proof. They mirror the section-body rule in §17 exactly,
+   so chevron and body can never disagree. Vanilla CSS cannot correlate the
+   button's `data-collapse-toggle` value with a token in the `<html>` list, so a
+   second collapsible section needs its own pair of selectors below. */
 [data-collapse-toggle] {
   position: relative;
   width: var(--ctl-h);
@@ -3222,7 +3242,8 @@ html { scrollbar-color: var(--line-strong) transparent; }
   transition: transform var(--dur-fast) var(--ease);
 }
 
-[data-collapse-toggle][aria-expanded="false"]::before {
+html[data-ui-mode="simple"]:not([data-expanded-sections~="completions"]) [data-collapse-toggle="completions"]::before,
+html[data-collapsed-sections~="completions"] [data-collapse-toggle="completions"]::before {
   transform: translateX(-2px) rotate(-45deg);
 }
 

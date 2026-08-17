@@ -1135,6 +1135,35 @@ defmodule CymphonyElixir.DashboardLiveTest do
     refute has_element?(view, ".metric-pill--kinds .metric-pill-placeholder")
   end
 
+  test "a held retry gets a tag, not a bare muted sentence, and mutes the row's retry edge" do
+    snapshot = static_snapshot()
+    retrying = Enum.map(snapshot.retrying, &Map.put(&1, :held, true))
+
+    start_dashboard(snapshot: %{snapshot | retrying: retrying})
+
+    {:ok, view, _html} = live(build_conn(), "/")
+
+    # Held is a state, and every other state on this board is a tag. Its
+    # neighbour is `.chip.chip--warn` "Attempt N"; held is suppression rather
+    # than failure, so `.chip--held` is neutral and `.retry-row--held` drops the
+    # row's amber inset edge — a fully paused board is parked, not alarming.
+    assert has_element?(view, "article.retry-row.retry-row--held span.chip.chip--held", "Held")
+    refute render(view) =~ "held while paused"
+
+    # No due countdown while held: the presenter withholds `due_at` entirely.
+    refute has_element?(view, ~s|.retry-row--held span[data-clock="due"]|)
+  end
+
+  test "an armed retry row carries neither the held tag nor the held modifier" do
+    start_dashboard()
+
+    {:ok, view, _html} = live(build_conn(), "/")
+
+    assert has_element?(view, "article.retry-row")
+    refute has_element?(view, "article.retry-row.retry-row--held")
+    refute has_element?(view, "span.chip--held")
+  end
+
   test "time-derived values carry LiveClock anchors instead of absolute wall times" do
     start_dashboard()
 
@@ -1962,8 +1991,8 @@ defmodule CymphonyElixir.DashboardLiveTest do
 
     render(view)
 
-    harness_bytes =
-      measure_diff_bytes(view, fn ->
+    harness_diff =
+      capture_diff_text(view, fn ->
         send(view.pid, %{
           event: :harness_stream,
           issue_id: "issue-http",
@@ -1973,17 +2002,23 @@ defmodule CymphonyElixir.DashboardLiveTest do
         })
       end)
 
-    # A streaming harness line patches up to ~12×/s, so it must stay a small
-    # fraction of a full render rather than putting the board back on the wire.
-    # It is not zero: the pane is rendered from a `<% tail = … %>` binding inside
-    # the per-project comprehension, and a template-local variable disables
-    # change tracking for every dynamic that follows it, so the section's
-    # Comboboxes are re-serialized with it. Removing those bindings (and keying
-    # the comprehension) is the structural fix; the Combobox hook's
-    # `beforeUpdate`/`updated` restore is what makes the resulting morph
-    # harmless in the meantime.
-    assert harness_bytes > 0
-    assert harness_bytes < div(byte_size(full_html), 10)
+    # A streaming harness line patches up to ~12×/s, so what goes on the wire has
+    # to be the pane and only the pane. It used to be the whole project section:
+    # the pane hung off a `<% tail = … %>` binding inside the per-project
+    # comprehension, and one template-local variable disables change tracking for
+    # every dynamic after it, so the section's Comboboxes rode along. The row is
+    # now a `<.session_row>` function component whose attrs are tracked one by
+    # one — only `tail` moved — and the comprehensions are `:key`ed.
+    assert harness_diff =~ "hello world line"
+    refute harness_diff =~ "combobox"
+    refute harness_diff =~ "queue-card"
+    refute harness_diff =~ "session-row-summary"
+
+    # Re-serializing one project section's Comboboxes alone was ~2.5 KB; the pane
+    # (a `data-follow` attribute, the Follow/Paused label, one line, and the
+    # one-time static for `.harness-tail-line`) is an order of magnitude under it.
+    assert byte_size(harness_diff) < 1_024
+    assert byte_size(harness_diff) < div(byte_size(full_html), 50)
 
     :erlang.trace(view.pid, false, [:send])
   end
@@ -2201,20 +2236,25 @@ defmodule CymphonyElixir.DashboardLiveTest do
   # test here asserts on *assigns*, which is why a 12.5 Hz harness re-render of
   # every Combobox on the board went unnoticed for so long: the assigns were
   # right, the wire was not. Requires `:erlang.trace(view.pid, true, [:send])`.
-  defp measure_diff_bytes(view, fun) do
-    drain_diff_bytes(0)
+  defp measure_diff_bytes(view, fun), do: byte_size(capture_diff_text(view, fun))
+
+  # The diff itself, so a test can assert on *what* was resent and not only on
+  # how much. `byte_size(a) + byte_size(b) == byte_size(a <> b)`, so this is the
+  # same number `measure_diff_bytes/2` always reported.
+  defp capture_diff_text(view, fun) do
+    drain_diff_text("")
     fun.()
     render(view)
-    drain_diff_bytes(0)
+    drain_diff_text("")
   end
 
-  defp drain_diff_bytes(acc) do
+  defp drain_diff_text(acc) do
     receive do
       {:trace, _pid, :send, %Phoenix.Socket.Message{event: "diff", payload: payload}, _to} ->
-        drain_diff_bytes(acc + byte_size(inspect(payload)))
+        drain_diff_text(acc <> inspect(payload))
 
       {:trace, _pid, :send, _msg, _to} ->
-        drain_diff_bytes(acc)
+        drain_diff_text(acc)
     after
       120 -> acc
     end
