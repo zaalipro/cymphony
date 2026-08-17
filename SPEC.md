@@ -1970,13 +1970,19 @@ Enablement (extension):
   `command-bar-row--metrics section--metrics` class tokens because the section-visibility prefs
   key off them, and it stays inside the `unless payload_error` guard. Cells are hairline-divided
   (`.metric-pill`, no pill chrome) with 26px / weight-300 tabular numerals. A nonzero Retry count
-  is not colored in the band; the retry rows carry the amber.
+  is not colored in the band; the retry rows carry the amber. A breakdown cell whose map has no
+  positive count (States / Kinds on an idle board) renders `—` and carries
+  `.metric-pill-placeholder` (`--ink-faint`) on its value span; an empty value string leaves a
+  dead label-only compartment in the hero band and reads as broken chrome.
 - Running rows open with `div.session-grid-head.advanced-only[aria-hidden=true]`, a column-header
   row whose cells reuse the body column classes (`.session-row-title`, `.session-row-chips`,
   `.session-row-runtime`, `.session-row-tokens`), so `html[data-hidden-cols~=…]` hides a header
   and its column with no extra selectors. The row layout is flex with fixed `flex-basis` cells,
   never `grid-template-columns`: a `display:none` column must not leave a hole or shift the
-  remaining cells. The disclosure caret is CSS geometry on `.session-row-disclosure`; the server
+  remaining cells. `.session-row-title` keeps a `min-width` floor (the title is the primary
+  scent; it must not collapse to an ellipsis while the tag cluster keeps hundreds of pixels),
+  and `.chip--truncate` caps long model names so the tags wrap as a balanced block instead of
+  orphaning one tag onto a second line. The disclosure caret is CSS geometry on `.session-row-disclosure`; the server
   renders no `▸`/`▾` glyph in the running rows.
 - Queue cards carry `data-rank-label` (1-based, zero-padded) alongside `data-rank` (0-based,
   rewritten by the drag hook). CSS renders the label as a decorative numeral; the hook does not
@@ -1991,7 +1997,10 @@ Enablement (extension):
   declaration block between an attribute selector and a media query; the duplicate is
   intentional and both blocks must be edited together. Terminal wells (`.harness-tail`,
   `.log-list`) stay dark in both themes by token construction (`--surface-well` / `--well-ink`
-  are identical across palettes).
+  are identical across palettes). The rail paints `--rail-surface`, a token of its own: in dark
+  it equals `--surface`, in light it is `#EFEFEC` — *below* `--page`, because a rail painted the
+  same white as the content panels reads as unanchored floating text with one hairline doing all
+  the separation work. Both light blocks carry it.
 - `nav.side-rail[aria-label]` is chrome, not a section, and is not hideable by the display
   prefs. It renders, in order: `a.side-rail-brand[href="#dashboard-top"]`; a `.rail-vitals`
   block (running/queued numerals plus the autonomy sentence, inside the `unless payload_error`
@@ -2052,6 +2061,11 @@ Enablement (extension):
     The `.inline-form` **container** carries no chrome — it is a borderless label+field cluster
     — but its control always does. A header or session control rendered as a naked label with
     no field chrome is a bug.
+  - The global concurrency field `#drawer-global-concurrency` prefills the fleet value while
+    every project reports the same `max_concurrent_agents`; when they disagree it renders
+    empty with `placeholder="mixed"` (prefilling one of two values would flatten the other on
+    Set), and when no project reports a limit it renders empty with `placeholder="10"`, the
+    schema default. A completely blank box beside Set reads as unfinished.
   - Automation / Orchestrator (after global concurrency) includes
     `#drawer-refresh-interval` (`type=number`, `name=value`, `min=1`, default `3`,
     `phx-submit="set_refresh_interval"`). Persist the value as top-level
@@ -2156,6 +2170,11 @@ Enablement (extension):
     The global runtime tile is `elapsed` and adds `data-rate` = number of running sessions,
     because that total advances one second per running session per wall second. There is no
     turns suffix on any clock; `data-rate` is the only multiplier the format takes.
+  - Elapsed renders `Mm Ss` under the hour and rolls into `Hh Mm Ss` from 60 minutes up
+    (`4h 20m 44s`); a minutes-only counter past the hour (`260m 44s`) is a raw-counter tell in
+    the band's largest numeral. `due` shares the elapsed formatter on both sides; countdown
+    stays `Ns`. The server formatter and the hook's `formatElapsed` are one contract — they
+    move in the same commit or the hook rewrites the server text the first time it paints.
   - One `LiveClock` hook (registered in `layouts.ex` beside `HarnessTail` / `Combobox` /
     `QueueBoard`) mounts on a single wrapper `div#live-clock` around the dashboard and runs
     one 1s interval that rewrites only those spans' `textContent`; it clears the interval on

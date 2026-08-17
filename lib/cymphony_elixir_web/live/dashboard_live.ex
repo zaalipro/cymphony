@@ -16,6 +16,12 @@ defmodule CymphonyElixirWeb.DashboardLive do
   # not freeze the board forever.
   @idle_resync_ms 30_000
   @harness_tail_cap 400
+  # Stand-in for an instrument-band breakdown with nothing to report; a blank
+  # value cell reads as a broken tile (see `format_count_breakdown/1`).
+  @count_breakdown_placeholder "—"
+  # `Config.Schema` default for `agent.max_concurrent_agents`; shown as the
+  # drawer placeholder when no project has reported its own limit.
+  @default_concurrency_label "10"
   # Section defaults for the disconnected render and for payloads that omit a
   # section. `waiting: []` has no assign of its own (waiting rows live inside each
   # project entry) but stays here because SPEC §13.3 pins it on the default payload.
@@ -892,11 +898,11 @@ defmodule CymphonyElixirWeb.DashboardLive do
             </div>
             <div class="metric-pill metric-pill--states section--states advanced-only">
               <span class="metric-pill-label">States</span>
-              <span class="metric-pill-value"><%= format_count_breakdown(Map.get(@counts, :by_state, %{})) %></span>
+              <span class={count_breakdown_class(Map.get(@counts, :by_state, %{}))}><%= format_count_breakdown(Map.get(@counts, :by_state, %{})) %></span>
             </div>
             <div class="metric-pill metric-pill--kinds section--kinds advanced-only">
               <span class="metric-pill-label">Kinds</span>
-              <span class="metric-pill-value"><%= format_count_breakdown(Map.get(@counts, :by_kind, %{})) %></span>
+              <span class={count_breakdown_class(Map.get(@counts, :by_kind, %{}))}><%= format_count_breakdown(Map.get(@counts, :by_kind, %{})) %></span>
             </div>
 
             <%= if @polling do %>
@@ -1770,12 +1776,18 @@ defmodule CymphonyElixirWeb.DashboardLive do
                 <span class="simple-only">tasks</span>
                 <span class="advanced-only">concurrency</span>
               </label>
+              <%!-- A blank box next to Set looked unfinished beside the prefilled
+              refresh field. The fleet value is only a single number when every
+              project agrees; when they disagree the field stays empty (submitting
+              it would flatten the per-project values) and says so in its
+              placeholder. --%>
               <input
                 id="drawer-global-concurrency"
                 type="number"
                 name="value"
                 min="1"
-                value={field_value(@field_drafts, "global-concurrency", "")}
+                value={field_value(@field_drafts, "global-concurrency", fleet_concurrency(@projects) || "")}
+                placeholder={fleet_concurrency_placeholder(@projects)}
                 phx-debounce="400"
                 class="settings-field"
               />
@@ -1916,6 +1928,34 @@ defmodule CymphonyElixirWeb.DashboardLive do
   defp field_value(drafts, key, fallback) when is_map(drafts) do
     Map.get(drafts, key, fallback)
   end
+
+  # The fleet-wide concurrency the drawer field can honestly prefill: one number
+  # only while every project agrees on it.
+  defp fleet_concurrency(projects) do
+    case fleet_concurrency_values(projects) do
+      [value] -> value
+      _values -> nil
+    end
+  end
+
+  defp fleet_concurrency_placeholder(projects) do
+    case fleet_concurrency_values(projects) do
+      [value] -> Integer.to_string(value)
+      # No project reported a limit (disconnected render, older snapshot): name
+      # the schema default rather than leave the box mute.
+      [] -> @default_concurrency_label
+      _values -> "mixed"
+    end
+  end
+
+  defp fleet_concurrency_values(projects) when is_list(projects) do
+    projects
+    |> Enum.map(&Map.get(&1, :max_concurrent_agents))
+    |> Enum.filter(&is_integer/1)
+    |> Enum.uniq()
+  end
+
+  defp fleet_concurrency_values(_projects), do: []
 
   defp reset_add_project_draft(socket) do
     socket
@@ -2660,11 +2700,22 @@ defmodule CymphonyElixirWeb.DashboardLive do
       end)
   end
 
+  # Past the hour a minutes-only counter ("260m 44s") reads as a raw tick count,
+  # and it is the band's largest numeral. Roll it into hours. The LiveClock
+  # `formatElapsed` in layouts.ex mirrors this branch byte for byte (pinned by
+  # extensions_test.exs) — the two sides must move in the same commit or a clock
+  # rewrites itself the first time the hook paints over the server text.
   defp format_runtime_seconds(seconds) when is_number(seconds) do
     whole_seconds = max(trunc(seconds), 0)
-    mins = div(whole_seconds, 60)
+    hours = div(whole_seconds, 3_600)
+    mins = div(rem(whole_seconds, 3_600), 60)
     secs = rem(whole_seconds, 60)
-    "#{mins}m #{secs}s"
+
+    if hours > 0 do
+      "#{hours}h #{mins}m #{secs}s"
+    else
+      "#{mins}m #{secs}s"
+    end
   end
 
   defp runtime_seconds_from_started_at(%DateTime{} = started_at, %DateTime{} = now) do
@@ -3028,15 +3079,32 @@ defmodule CymphonyElixirWeb.DashboardLive do
     Enum.find(running, &(&1.issue_identifier == identifier)) || %{}
   end
 
-  defp format_count_breakdown(counts) when is_map(counts) do
+  # An idle board has nothing to break down. Rendering the empty string left the
+  # States/Kinds cells as label-only hairline compartments in the hero band — the
+  # first-run impression read as broken chrome — so show a quiet placeholder mark
+  # instead, and let `count_breakdown_class/1` mute the cell that carries it.
+  defp format_count_breakdown(counts) do
+    case count_breakdown_entries(counts) do
+      [] -> @count_breakdown_placeholder
+      entries -> Enum.map_join(entries, " · ", fn {key, count} -> "#{key} #{count}" end)
+    end
+  end
+
+  defp count_breakdown_class(counts) do
+    case count_breakdown_entries(counts) do
+      [] -> "metric-pill-value metric-pill-placeholder"
+      _entries -> "metric-pill-value"
+    end
+  end
+
+  defp count_breakdown_entries(counts) when is_map(counts) do
     counts
     |> Enum.filter(fn {_key, count} -> is_number(count) and count > 0 end)
     |> Enum.sort_by(fn {key, count} -> {-count, to_string(key)} end)
     |> Enum.take(3)
-    |> Enum.map_join(" · ", fn {key, count} -> "#{key} #{count}" end)
   end
 
-  defp format_count_breakdown(_counts), do: ""
+  defp count_breakdown_entries(_counts), do: []
 
   defp format_session_tps(entry) when is_map(entry) do
     case Map.get(entry, :tokens_per_second) do

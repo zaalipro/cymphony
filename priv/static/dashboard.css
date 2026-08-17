@@ -27,6 +27,7 @@
   --surface-soft: #17191d;   /* raised: hovered rows, queue cards, toolbars */
   --surface-deep: #1c1f24;   /* inset: inputs                               */
   --surface-well: #08090a;   /* terminal wells (harness, logs) — same in light */
+  --rail-surface: #121316;   /* nav rail furniture; in light it sits BELOW --page */
 
   /* --- Ink --- */
   --ink:       #e8eaed;
@@ -137,6 +138,12 @@
   --surface-soft: #f8f8f6;
   --surface-deep: #eeefec;
   --surface-well: #08090a;
+  /* Below --page, so the rail reads as anchored furniture instead of floating
+     text on the same white as the panels. Measured: --ink 15.3:1, --ink-soft
+     7.3:1, --ink-mute 4.1:1 — the muted labels land in the same band they
+     already sit in on --page (4.3:1), so this costs no legibility the light
+     theme was not already spending. Keep rail body copy at --ink-soft or above. */
+  --rail-surface: #efefec;
   --ink: #17191c;
   --ink-soft: #4a4e55;
   --ink-mute: #6e737b;
@@ -174,6 +181,7 @@
     --surface-soft: #f8f8f6;
     --surface-deep: #eeefec;
     --surface-well: #08090a;
+    --rail-surface: #efefec;
     --ink: #17191c;
     --ink-soft: #4a4e55;
     --ink-mute: #6e737b;
@@ -278,7 +286,7 @@ html[data-ui-mode="advanced"] .simple-only {
   flex-direction: column;
   gap: var(--space-4);
   padding: var(--space-4) var(--space-3);
-  background: var(--surface);
+  background: var(--rail-surface);
   border-right: 1px solid var(--line);
   z-index: var(--z-rail);
   overflow-y: auto;
@@ -689,6 +697,10 @@ html[data-ui-mode="advanced"] .mode-switch-button[data-mode-set="advanced"] {
   color: var(--ink);
   font-variant-numeric: tabular-nums;
 }
+
+/* An idle board has no breakdown to show; the cell renders an em dash so the
+   compartment reads as quiet rather than unfinished. Decorative ink only. */
+.metric-pill-placeholder { color: var(--ink-faint); }
 
 .metric-pill-detail {
   font-size: var(--text-caption);
@@ -1340,9 +1352,13 @@ form.queue-edit-form {
   white-space: nowrap;
 }
 
+/* The title is the operator's primary scent: with eight tags on a busy row the
+   `min-width: 0` version collapsed to "…neve…" while the chip cluster kept
+   ~500px and still orphaned one chip onto a second line. A floor of 200px keeps
+   readable words and makes the chips wrap as a balanced right-aligned block. */
 .session-row-title {
   flex: 1 1 auto;
-  min-width: 0;
+  min-width: 200px;
   color: var(--ink-soft);
   white-space: nowrap;
   overflow: hidden;
@@ -1357,7 +1373,8 @@ form.queue-edit-form {
   justify-content: flex-end;
 }
 
-.session-row-runtime { flex: 0 0 64px; text-align: right; }
+/* Wide enough for the hour form ("4h 20m 44s") without breaking the column. */
+.session-row-runtime { flex: 0 0 78px; text-align: right; }
 .session-row-tokens { flex: 0 0 96px; text-align: right; }
 
 .session-row-runtime,
@@ -1980,8 +1997,10 @@ input[type="radio"] { accent-color: var(--accent); }
 
 .chip--muted { color: var(--ink-mute); }
 
+/* Long model names (gemini-3.7-flash-high) have to truncate before they push
+   the tag cluster into a second line and eat the title. */
 .chip--truncate {
-  max-width: 140px;
+  max-width: 110px;
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;

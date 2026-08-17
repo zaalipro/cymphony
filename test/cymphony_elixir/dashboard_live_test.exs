@@ -746,6 +746,35 @@ defmodule CymphonyElixir.DashboardLiveTest do
     assert render(view) =~ "Refresh interval must be a positive integer"
   end
 
+  test "the global concurrency field prefills the fleet value and never renders blank" do
+    snapshot = put_in(static_snapshot(), [:polling, :max_concurrent_agents], 4)
+    start_dashboard(snapshot: snapshot)
+
+    {:ok, view, _html} = live(build_conn(), "/")
+
+    # Every project agrees: show the number, like the refresh field does.
+    assert has_element?(view, ~s|#drawer-global-concurrency[value="4"][placeholder="4"]|)
+
+    payload = view_payload(view)
+    [project | _rest] = payload.projects
+    other = %{project | name: "Other", max_concurrent_agents: 9}
+
+    send(view.pid, {:payload_loaded, view_assigns(view).payload_seq, %{payload | projects: [project, other]}})
+    render(view)
+
+    # Projects disagree: prefilling either number would flatten the other on Set.
+    assert has_element?(view, ~s|#drawer-global-concurrency[value=""][placeholder="mixed"]|)
+  end
+
+  test "the global concurrency field falls back to the documented default when no project reports one" do
+    start_dashboard()
+
+    {:ok, view, _html} = live(build_conn(), "/")
+
+    # An empty box beside Set looked unfinished; name the schema default instead.
+    assert has_element?(view, ~s|#drawer-global-concurrency[value=""][placeholder="10"]|)
+  end
+
   test "the shell renders a nav rail, a main column, project anchors, and the session grid head" do
     start_dashboard()
     {:ok, view, html} = live(build_conn(), "/")
@@ -1081,6 +1110,26 @@ defmodule CymphonyElixir.DashboardLiveTest do
     assert has_element?(view, "p.empty-state")
   end
 
+  test "idle States/Kinds cells show a muted placeholder instead of a blank value" do
+    start_dashboard(snapshot: static_snapshot() |> Map.put(:running, []) |> Map.put(:retrying, []) |> Map.put(:waiting, []))
+
+    {:ok, view, _html} = live(build_conn(), "/")
+
+    # Label-only compartments read as broken chrome on a first-run board.
+    assert has_element?(view, ".metric-pill--states .metric-pill-value.metric-pill-placeholder", "—")
+    assert has_element?(view, ".metric-pill--kinds .metric-pill-value.metric-pill-placeholder", "—")
+  end
+
+  test "populated States/Kinds cells keep the breakdown text and no placeholder class" do
+    start_dashboard()
+
+    {:ok, view, html} = live(build_conn(), "/")
+
+    assert html =~ "In Progress 1"
+    refute has_element?(view, ".metric-pill--states .metric-pill-placeholder")
+    refute has_element?(view, ".metric-pill--kinds .metric-pill-placeholder")
+  end
+
   test "time-derived values carry LiveClock anchors instead of absolute wall times" do
     start_dashboard()
 
@@ -1171,6 +1220,38 @@ defmodule CymphonyElixir.DashboardLiveTest do
 
     assert html =~ ~s(data-base-seconds="42.5")
     assert html =~ ~s(data-rate="0")
+  end
+
+  # A minutes-only counter ("260m 44s") is a raw-counter tell in the band's
+  # largest numeral. The LiveClock `formatElapsed` in layouts.ex mirrors this
+  # exact string (pinned in extensions_test.exs).
+  test "elapsed times roll into hours past 60 minutes" do
+    started_at = DateTime.add(DateTime.utc_now(), -15_644, :second)
+
+    snapshot =
+      Map.update!(static_snapshot(), :running, fn [entry | rest] ->
+        [%{entry | started_at: started_at} | rest]
+      end)
+
+    start_dashboard(snapshot: snapshot)
+
+    {:ok, view, _html} = live(build_conn(), "/")
+
+    seconds = DateTime.diff(view_assigns(view).now, started_at, :second)
+    hours = div(seconds, 3_600)
+    minutes = div(rem(seconds, 3_600), 60)
+
+    assert hours == 4
+
+    assert has_element?(
+             view,
+             ~s|.session-row-runtime span[data-clock="elapsed"]|,
+             "#{hours}h #{minutes}m #{rem(seconds, 60)}s"
+           )
+
+    # Under the hour the format is unchanged (the stalled-banner test pins the
+    # `Mm Ss` shape directly).
+    refute render(view) =~ "0h "
   end
 
   test "runtime_tick no longer re-renders time strings" do

@@ -1146,7 +1146,9 @@ defmodule CymphonyElixir.ExtensionsTest do
 
       # Client-side clock formatting must stay byte-identical to the Elixir
       # formatters in dashboard_live.ex; changing either side must break here.
-      assert html =~ ~s|return mins + 'm ' + (whole - mins * 60) + 's';|
+      # Elapsed rolls into hours past 60 minutes on both sides.
+      assert html =~ ~s|if (hours > 0) return hours + 'h ' + mins + 'm ' + secs + 's';|
+      assert html =~ ~s|return mins + 'm ' + secs + 's';|
       assert html =~ ~s|return seconds + 's';|
       assert html =~ ~s|if (!(seconds > 0)) seconds = 0;|
       assert html =~ ~s|if (!(ms > 0)) return 'now';|
@@ -1200,6 +1202,12 @@ defmodule CymphonyElixir.ExtensionsTest do
       assert dashboard_css =~ ~s|:root[data-theme="light"] {|
       assert dashboard_css =~ "@media (prefers-color-scheme: light) {"
       assert dashboard_css =~ ":root:not([data-theme]) {"
+
+      # The rail is furniture, not a floating panel: it has its own surface token
+      # so light can sit it *below* the page while dark keeps --surface. Both
+      # light blocks (attribute + media duplicate) must carry the value.
+      assert dashboard_css =~ "background: var(--rail-surface);"
+      assert length(String.split(dashboard_css, "--rail-surface: #efefec;")) == 3
 
       # The console scrim is a real element box (`body::after`), so it actually
       # intercepts clicks; a box-shadow scrim would let them through.

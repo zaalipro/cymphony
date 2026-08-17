@@ -157,12 +157,15 @@ defmodule CymphonyElixirWeb.Layouts do
                     }
                     if (el.textContent !== text) el.textContent = text;
                   },
-                  // format_runtime_seconds/1
+                  // format_runtime_seconds/1 — byte-identical, hour rollover included.
                   formatElapsed(seconds) {
                     var whole = Math.trunc(seconds);
                     if (!(whole > 0)) whole = 0;
-                    var mins = Math.trunc(whole / 60);
-                    return mins + 'm ' + (whole - mins * 60) + 's';
+                    var hours = Math.trunc(whole / 3600);
+                    var mins = Math.trunc((whole - hours * 3600) / 60);
+                    var secs = whole - hours * 3600 - mins * 60;
+                    if (hours > 0) return hours + 'h ' + mins + 'm ' + secs + 's';
+                    return mins + 'm ' + secs + 's';
                   },
                   // format_poll_countdown/1
                   formatCountdown(ms) {
