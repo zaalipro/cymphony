@@ -2280,7 +2280,7 @@ Enablement (extension):
   uses assign `:add_project_kind` (default `""` hides provider). Switching agent must
   hide/show on the next render via `preview_project_agent` / `preview_issue_run_spec` /
   `preview_add_project`. Do not delete persisted providers when the field is hidden.
-  Session provider chips and the read-only Provider stat stay visible for every kind.
+  Session provider chips and the read-only Provider stat are hidden.
 - Per-project header counts: `N/M running · Q queued · R retrying`. Advanced metrics add
   `.metric-pill--queue.section--queue` = `counts.waiting`. Simple mode labels the first two band
   cells **Running** (`counts.running`) and **To retry** (`counts.retrying`) — the mappings are
