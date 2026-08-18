@@ -822,34 +822,46 @@ defmodule CymphonyElixir.ExtensionsTest do
 
   describe "recent completions" do
     test "GET /api/v1/completed returns the ring buffer; ?limit=N truncates" do
+      unless Process.whereis(CymphonyElixir.CompletionStore) do
+        start_supervised!(CymphonyElixir.CompletionStore)
+      end
+
+      # Default GET reads the orchestrator snapshot. `?limit=` reads the
+      # durable CompletionStore. Seed both so the two paths cannot flake
+      # on an empty store or leftover rows from a sibling test.
+      stamp = System.unique_integer([:positive])
+      now = DateTime.utc_now()
+
+      records =
+        for n <- 1..3 do
+          %{
+            issue_id: "issue-#{stamp}-#{n}",
+            identifier: "MT-#{stamp}-#{n}",
+            project_name: "default",
+            ended_at: DateTime.add(now, 31_536_000 - n, :second),
+            started_at: DateTime.add(now, -60 * n, :second),
+            runtime_seconds: 60,
+            input_tokens: 10,
+            output_tokens: 20,
+            total_tokens: 30,
+            last_event: nil,
+            last_message: nil,
+            worker_host: nil,
+            workspace_path: nil
+          }
+        end
+
       orchestrator_name = Module.concat(__MODULE__, :CompletedOrchestrator)
-      {:ok, pid} = CymphonyElixir.Orchestrator.start_link(name: orchestrator_name)
 
-      on_exit(fn -> if Process.alive?(pid), do: GenServer.stop(pid) end)
+      {:ok, _pid} =
+        StaticOrchestrator.start_link(
+          name: orchestrator_name,
+          project_name: "default",
+          snapshot: Map.put(static_snapshot(), :recent_completed, records)
+        )
 
-      # Inject 3 completed records directly into orchestrator state.
-      :sys.replace_state(pid, fn state ->
-        records =
-          for n <- 1..3 do
-            %{
-              issue_id: "issue-#{n}",
-              identifier: "MT-#{n}",
-              project_name: nil,
-              ended_at: DateTime.add(DateTime.utc_now(), -n, :second),
-              started_at: DateTime.add(DateTime.utc_now(), -60 * n, :second),
-              runtime_seconds: 60,
-              input_tokens: 10,
-              output_tokens: 20,
-              total_tokens: 30,
-              last_event: nil,
-              last_message: nil,
-              worker_host: nil,
-              workspace_path: nil
-            }
-          end
-
-        %{state | recent_completed: records}
-      end)
+      Enum.each(records, &CymphonyElixir.CompletionStore.put_async/1)
+      _ = CymphonyElixir.CompletionStore.count(:all)
 
       start_test_endpoint(orchestrator: orchestrator_name, snapshot_timeout_ms: 200)
 
@@ -857,11 +869,16 @@ defmodule CymphonyElixir.ExtensionsTest do
       payload = json_response(conn, 200)
 
       assert length(payload["recent_completed"]) == 3
-      assert hd(payload["recent_completed"])["issue_identifier"] == "MT-1"
+      assert hd(payload["recent_completed"])["issue_identifier"] == "MT-#{stamp}-1"
 
       conn = get(build_conn(), "/api/v1/completed?limit=2")
       payload = json_response(conn, 200)
       assert length(payload["recent_completed"]) == 2
+
+      assert Enum.map(payload["recent_completed"], & &1["issue_identifier"]) == [
+               "MT-#{stamp}-1",
+               "MT-#{stamp}-2"
+             ]
     end
   end
 
