@@ -1229,7 +1229,9 @@ defmodule CymphonyElixirWeb.DashboardLive do
                       <div class="session-row-chips">
                         <span class="chip chip--ok">Done</span>
                         <%= if Map.get(entry, :agent_kind) do %>
-                          <span class="chip chip--agent advanced-only"><%= entry.agent_kind %></span>
+                          <span class="chip chip--agent chip--icon advanced-only" title={entry.agent_kind}>
+                            <.agent_icon kind={entry.agent_kind} />
+                          </span>
                         <% end %>
                         <%= if Map.get(entry, :model) do %>
                           <span class="chip chip--muted chip--truncate advanced-only" title={entry.model}><%= entry.model %></span>
@@ -1335,43 +1337,20 @@ defmodule CymphonyElixirWeb.DashboardLive do
               </div>
               <div class="advanced-only add-project-advanced">
                 <div class="settings-field-row">
-                  <label class="inline-label" for="add-project-agent-trigger">agent</label>
-                  <.model_combobox
+                  <.spec_switcher
                     id="add-project-agent"
-                    name="agent"
-                    value={@add_project_kind}
-                    list_id="agent-options-add-project"
-                    options={kind_menu_options(:default)}
-                    class="settings-field"
-                    placeholder="default"
-                  />
-                </div>
-                <div class="model-switcher settings-field-row">
-                  <label class="inline-label" for="add-project-model-trigger">model</label>
-                  <.model_combobox
-                    id="add-project-model"
-                    name="model"
-                    value={@add_project_model}
+                    kind_name="agent"
+                    model_id="add-project-model"
+                    effort_id="add-project-effort"
                     list_id="model-suggestions-add-project"
-                    options={model_suggestions(@add_project_kind)}
+                    kind={@add_project_kind}
+                    model={@add_project_model}
+                    effort={@add_project_effort}
+                    placeholder="default"
+                    blank={:default}
                     class="settings-field"
-                    allow_custom={true}
                   />
                 </div>
-                <%= if effort_visible?(@add_project_kind) do %>
-                  <div class="settings-field-row">
-                    <label class="inline-label" for="add-project-effort-trigger">effort</label>
-                    <.model_combobox
-                      id="add-project-effort"
-                      name="effort"
-                      value={@add_project_effort}
-                      list_id="effort-options-add-project"
-                      options={effort_menu_options(@add_project_kind, :default)}
-                      class="settings-field"
-                      placeholder="default"
-                    />
-                  </div>
-                <% end %>
                 <%= if @add_project_kind == "claude" do %>
                   <label class="settings-field-row" for="add-project-provider">
                     <span class="inline-label">provider</span>
@@ -1782,12 +1761,84 @@ defmodule CymphonyElixirWeb.DashboardLive do
   defp effort_visible?("antigravity"), do: false
   defp effort_visible?(_kind), do: true
 
-  defp kind_menu_options(false), do: Enum.map(Agent.known_kinds(), &%{value: &1, label: &1})
+  defp kind_strip_options(false), do: Agent.known_kinds()
 
-  defp kind_menu_options(blank) when blank in [true, :keep, :default] do
-    label = if blank == :default, do: "default", else: "keep"
-    [%{value: "", label: label} | kind_menu_options(false)]
+  defp kind_strip_options(blank) when blank in [true, :keep, :default],
+    do: ["" | Agent.known_kinds()]
+
+  defp kind_strip_key(""), do: "blank"
+  defp kind_strip_key(kind), do: kind
+
+  defp spec_catalog_kind(kind, suggestion) do
+    cond do
+      Agent.known_kind?(kind) -> kind
+      Agent.known_kind?(suggestion) -> suggestion
+      true -> "claude"
+    end
   end
+
+  defp spec_icon_kind(kind, catalog_kind) do
+    cond do
+      Agent.known_kind?(kind) -> kind
+      Agent.known_kind?(catalog_kind) -> catalog_kind
+      true -> ""
+    end
+  end
+
+  defp spec_model_label(_kind, model, placeholder) when model in [nil, ""], do: placeholder
+
+  defp spec_model_label(kind, model, _placeholder) do
+    case Enum.find(model_suggestions(kind), &(combobox_option_value(&1) == model)) do
+      %{label: label} when is_binary(label) and label != "" -> label
+      _ -> model
+    end
+  end
+
+  defp spec_effort_row_value(effort, blank) when effort in [nil, ""] do
+    cond do
+      blank == :keep -> "keep"
+      blank in [true, :default] -> "default"
+      true -> "—"
+    end
+  end
+
+  defp spec_effort_row_value(effort, _blank), do: effort_display(effort)
+
+  defp effort_display("xhigh"), do: "Extra High"
+
+  defp effort_display(value) when is_binary(value) and value != "" do
+    value
+    |> String.replace("_", " ")
+    |> String.split()
+    |> Enum.map_join(" ", &String.capitalize/1)
+  end
+
+  defp effort_display(_), do: ""
+
+  defp effort_option_label(option) do
+    value = combobox_option_value(option)
+
+    if value == "" do
+      combobox_option_label(option)
+    else
+      effort_display(value)
+    end
+  end
+
+  defp agent_icon_src("claude"), do: "/icons/claude.png"
+  defp agent_icon_src("codex"), do: "/icons/codex.png"
+  defp agent_icon_src("antigravity"), do: "/icons/agy.png"
+  defp agent_icon_src(_kind), do: nil
+
+  defp agent_kind_label("claude"), do: "Claude"
+  defp agent_kind_label("codex"), do: "Codex"
+  defp agent_kind_label("antigravity"), do: "Antigravity"
+  defp agent_kind_label(kind) when is_binary(kind) and kind != "", do: kind
+  defp agent_kind_label(_), do: "Agent"
+
+  defp agent_strip_label("", :keep), do: "Keep current harness"
+  defp agent_strip_label("", _), do: "Default agent"
+  defp agent_strip_label(kind, _), do: agent_kind_label(kind)
 
   defp effort_menu_options(kind, false), do: Enum.map(effort_levels(kind), &%{value: &1, label: &1})
 
@@ -1838,45 +1889,17 @@ defmodule CymphonyElixirWeb.DashboardLive do
       class="project-agent-form advanced-only"
     >
       <input type="hidden" name="project" value={@project_name} />
-      <div class="agent-switcher">
-        <label class="inline-label" for={"agent-#{@project_name}-trigger"}>agent</label>
-        <.model_combobox
-          id={"agent-#{@project_name}"}
-          name="agent_kind"
-          value={@settings.kind}
-          list_id={"agent-options-#{@project_name}"}
-          options={kind_menu_options(false)}
-          placeholder="agent"
-        />
-      </div>
-
-      <div class="model-switcher">
-        <label class="inline-label" for={"model-#{@project_name}-trigger"}>model</label>
-        <.model_combobox
-          id={"model-#{@project_name}"}
-          name="model"
-          value={@settings.model}
-          list_id={"model-suggestions-#{@project_name}"}
-          options={model_suggestions(@settings.kind)}
-          placeholder="default"
-          title="Model override passed to the agent CLI (cli alias: model)"
-          allow_custom={true}
-        />
-      </div>
-
-      <%= if effort_visible?(@settings.kind) do %>
-        <div class="effort-switcher">
-          <label class="inline-label" for={"effort-#{@project_name}-trigger"}>effort</label>
-          <.model_combobox
-            id={"effort-#{@project_name}"}
-            name="effort"
-            value={@settings.effort}
-            list_id={"effort-options-#{@project_name}"}
-            options={effort_menu_options(@settings.kind, :default)}
-            placeholder="default"
-          />
-        </div>
-      <% end %>
+      <.spec_switcher
+        id={"agent-#{@project_name}"}
+        model_id={"model-#{@project_name}"}
+        effort_id={"effort-#{@project_name}"}
+        list_id={"model-suggestions-#{@project_name}"}
+        kind={@settings.kind}
+        model={@settings.model}
+        effort={@settings.effort}
+        placeholder="default"
+        title="Agent, model, and reasoning effort"
+      />
 
       <button type="submit" class="subtle-button">Set</button>
     </form>
@@ -1958,42 +1981,17 @@ defmodule CymphonyElixirWeb.DashboardLive do
             popover so the edit stays legible if QueueEditPanel flips the panel
             above the card or the operator scrolls mid-edit. --%>
             <span class="menu-field-label">Pin next run · <span class="mono"><%= @entry.issue_identifier %></span></span>
-            <div class="menu-field">
-              <label class="menu-field-label" for={"queue-agent-#{@entry.issue_identifier}-trigger"}>Harness</label>
-              <.model_combobox
-                id={"queue-agent-#{@entry.issue_identifier}"}
-                name="agent_kind"
-                value={@spec.kind}
-                list_id={"queue-agent-options-#{@entry.issue_identifier}"}
-                options={kind_menu_options(false)}
-                placeholder="agent"
-              />
-            </div>
-            <div class="menu-field">
-              <label class="menu-field-label" for={"queue-model-#{@entry.issue_identifier}-trigger"}>Model</label>
-              <.model_combobox
-                id={"queue-model-#{@entry.issue_identifier}"}
-                name="model"
-                value={@spec.model}
-                list_id={"model-suggestions-queue-#{@entry.issue_identifier}"}
-                options={model_suggestions(@spec.suggestion_kind)}
-                placeholder="model"
-                allow_custom={true}
-              />
-            </div>
-            <%= if effort_visible?(@spec.suggestion_kind) do %>
-              <div class="menu-field">
-                <label class="menu-field-label" for={"queue-effort-#{@entry.issue_identifier}-trigger"}>Effort</label>
-                <.model_combobox
-                  id={"queue-effort-#{@entry.issue_identifier}"}
-                  name="effort"
-                  value={@spec.effort}
-                  list_id={"queue-effort-options-#{@entry.issue_identifier}"}
-                  options={effort_menu_options(@spec.suggestion_kind, false)}
-                  placeholder="effort"
-                />
-              </div>
-            <% end %>
+            <.spec_switcher
+              id={"queue-agent-#{@entry.issue_identifier}"}
+              model_id={"queue-model-#{@entry.issue_identifier}"}
+              effort_id={"queue-effort-#{@entry.issue_identifier}"}
+              list_id={"model-suggestions-queue-#{@entry.issue_identifier}"}
+              kind={@spec.kind}
+              model={@spec.model}
+              effort={@spec.effort}
+              suggestion_kind={@spec.suggestion_kind}
+              placeholder="model"
+            />
             <button type="submit" class="subtle-button subtle-button--accent queue-edit-pin">Pin</button>
           </form>
         </div>
@@ -2040,7 +2038,9 @@ defmodule CymphonyElixirWeb.DashboardLive do
             <span class="chip chip--accent advanced-only"><%= @entry.provider %></span>
           <% end %>
           <%= if Map.get(@entry, :agent_kind) do %>
-            <span class="chip chip--agent advanced-only"><%= @entry.agent_kind %></span>
+            <span class="chip chip--agent chip--icon advanced-only" title={@entry.agent_kind}>
+              <.agent_icon kind={@entry.agent_kind} />
+            </span>
           <% end %>
           <%= if Map.get(@entry, :model) do %>
             <span class="chip chip--muted chip--truncate advanced-only" title={@entry.model}><%= @entry.model %></span>
@@ -2078,7 +2078,9 @@ defmodule CymphonyElixirWeb.DashboardLive do
           <div class="session-row-detail-grid">
             <div class="session-stat advanced-only">
               <span class="session-stat-label">Agent</span>
-              <span class="session-stat-value"><%= Map.get(@entry, :agent_kind) || "claude" %></span>
+              <span class="session-stat-value" title={Map.get(@entry, :agent_kind) || "claude"}>
+                <.agent_icon kind={Map.get(@entry, :agent_kind) || "claude"} />
+              </span>
             </div>
             <div class="session-stat advanced-only">
               <span class="session-stat-label">Model</span>
@@ -2144,20 +2146,19 @@ defmodule CymphonyElixirWeb.DashboardLive do
                 class="restart-form"
               >
                 <input type="hidden" name="issue" value={@entry.issue_identifier} />
-                <div class="agent-switcher">
-                  <label class="inline-label" for={"restart-agent-#{@entry.issue_identifier}-trigger"}>
-                    Harness
-                  </label>
-                  <.model_combobox
-                    id={"restart-agent-#{@entry.issue_identifier}"}
-                    name="agent_kind"
-                    value={@spec.kind}
-                    list_id={"restart-agent-options-#{@entry.issue_identifier}"}
-                    options={kind_menu_options(true)}
-                    placeholder="keep"
-                    title="Harness"
-                  />
-                </div>
+                <.spec_switcher
+                  id={"restart-agent-#{@entry.issue_identifier}"}
+                  model_id={"restart-model-#{@entry.issue_identifier}"}
+                  effort_id={"restart-effort-#{@entry.issue_identifier}"}
+                  list_id={"model-suggestions-session-#{@entry.issue_identifier}"}
+                  kind={@spec.kind}
+                  model={@spec.model}
+                  effort={@spec.effort}
+                  suggestion_kind={@spec.suggestion_kind}
+                  placeholder="keep"
+                  blank={:keep}
+                  title="Harness, model, and reasoning effort"
+                />
                 <%= if @spec.suggestion_kind == "claude" do %>
                   <div class="provider-switcher">
                     <label class="inline-label" for={"restart-provider-#{@entry.issue_identifier}"}>
@@ -2172,37 +2173,6 @@ defmodule CymphonyElixirWeb.DashboardLive do
                       phx-debounce="400"
                       class="inline-input inline-input--model"
                       title="Provider auth alias (empty = keep resolved)"
-                    />
-                  </div>
-                <% end %>
-                <div class="model-switcher">
-                  <label class="inline-label" for={"restart-model-#{@entry.issue_identifier}-trigger"}>
-                    Model
-                  </label>
-                  <.model_combobox
-                    id={"restart-model-#{@entry.issue_identifier}"}
-                    name="model"
-                    value={@spec.model}
-                    list_id={"model-suggestions-session-#{@entry.issue_identifier}"}
-                    options={model_suggestions(@spec.suggestion_kind)}
-                    placeholder="model"
-                    title="Model passed to the agent CLI (empty = keep resolved)"
-                    allow_custom={true}
-                  />
-                </div>
-                <%= if effort_visible?(@spec.suggestion_kind) do %>
-                  <div class="effort-switcher">
-                    <label class="inline-label" for={"restart-effort-#{@entry.issue_identifier}-trigger"}>
-                      Effort
-                    </label>
-                    <.model_combobox
-                      id={"restart-effort-#{@entry.issue_identifier}"}
-                      name="effort"
-                      value={@spec.effort}
-                      list_id={"restart-effort-options-#{@entry.issue_identifier}"}
-                      options={effort_menu_options(@spec.suggestion_kind, :keep)}
-                      placeholder="keep"
-                      title="Reasoning effort (keep = unchanged)"
                     />
                   </div>
                 <% end %>
@@ -2254,6 +2224,162 @@ defmodule CymphonyElixirWeb.DashboardLive do
         </div>
       <% end %>
     </article>
+    """
+  end
+
+  defp spec_switcher(assigns) do
+    assigns =
+      assigns
+      |> assign_new(:kind, fn -> "" end)
+      |> assign_new(:model, fn -> "" end)
+      |> assign_new(:effort, fn -> "" end)
+      |> assign_new(:kind_name, fn -> "agent_kind" end)
+      |> assign_new(:model_name, fn -> "model" end)
+      |> assign_new(:effort_name, fn -> "effort" end)
+      |> assign_new(:blank, fn -> false end)
+      |> assign_new(:allow_custom, fn -> true end)
+      |> assign_new(:class, fn -> nil end)
+      |> assign_new(:title, fn -> nil end)
+      |> assign_new(:placeholder, fn -> "model" end)
+      |> assign_new(:suggestion_kind, fn -> nil end)
+      |> assign_new(:list_id, fn -> "model-suggestions-#{assigns.id}" end)
+      |> assign_new(:effort_list_id, fn -> "effort-options-#{assigns.id}" end)
+
+    catalog_kind = spec_catalog_kind(assigns.kind, assigns.suggestion_kind)
+
+    assigns =
+      assigns
+      |> assign(:catalog_kind, catalog_kind)
+      |> assign(:models, model_suggestions(catalog_kind))
+      |> assign(:efforts, effort_menu_options(catalog_kind, assigns.blank))
+      |> assign(:show_effort?, effort_visible?(catalog_kind))
+      |> assign(:kinds, kind_strip_options(assigns.blank))
+      |> assign(:model_label, spec_model_label(catalog_kind, assigns.model, assigns.placeholder))
+      |> assign(:effort_label, spec_effort_row_value(assigns.effort, assigns.blank))
+      |> assign(:icon_kind, spec_icon_kind(assigns.kind, catalog_kind))
+      |> assign(:empty_model?, assigns.model in [nil, ""])
+
+    ~H"""
+    <div
+      id={"spec-switcher-#{@id}"}
+      class={["spec-switcher", @class]}
+      phx-hook="SpecSwitcher"
+      data-allow-custom={to_string(@allow_custom)}
+    >
+      <button
+        type="button"
+        id={"#{@id}-trigger"}
+        class={["spec-switcher-trigger", @empty_model? && "spec-switcher-trigger--empty"]}
+        aria-haspopup="menu"
+        aria-expanded="false"
+        aria-controls={"#{@id}-panel"}
+        title={@title}
+      >
+        <.agent_icon kind={@icon_kind} />
+        <span class="spec-switcher-trigger-text">
+          <span class="spec-switcher-model"><%= @model_label %></span>
+          <%= if @show_effort? and @effort_label not in [nil, ""] and not @empty_model? do %>
+            <span class="spec-switcher-effort"><%= @effort_label %></span>
+          <% end %>
+        </span>
+      </button>
+      <input type="hidden" name={@kind_name} id={@id} value={@kind} data-spec="kind" />
+      <input type="hidden" name={@model_name} id={@model_id} value={@model} data-spec="model" />
+      <%= if @show_effort? do %>
+        <input type="hidden" name={@effort_name} id={@effort_id} value={@effort} data-spec="effort" />
+      <% end %>
+      <div id={"#{@id}-panel"} class="spec-switcher-panel" role="menu" hidden>
+        <div class="spec-switcher-agents" role="group" aria-label="Agent">
+          <button
+            :for={kind <- @kinds}
+            :key={kind_strip_key(kind)}
+            type="button"
+            class={["spec-switcher-agent", @kind == kind && "is-selected"]}
+            data-kind={kind}
+            aria-pressed={to_string(@kind == kind)}
+            aria-label={agent_strip_label(kind, @blank)}
+            title={agent_strip_label(kind, @blank)}
+          >
+            <.agent_icon kind={kind} />
+          </button>
+        </div>
+        <div class="spec-switcher-divider" role="separator"></div>
+        <button type="button" class="spec-switcher-row" data-menu="model" role="menuitem">
+          <span class="spec-switcher-row-label">Model</span>
+          <span class="spec-switcher-row-value"><%= @model_label %></span>
+          <span class="spec-switcher-row-chevron" aria-hidden="true"></span>
+        </button>
+        <%= if @show_effort? do %>
+          <button type="button" class="spec-switcher-row" data-menu="effort" role="menuitem">
+            <span class="spec-switcher-row-label">Effort</span>
+            <span class="spec-switcher-row-value"><%= @effort_label %></span>
+            <span class="spec-switcher-row-chevron" aria-hidden="true"></span>
+          </button>
+        <% end %>
+        <div class="spec-switcher-flyout" data-menu="model" hidden>
+          <input
+            id={"#{@model_id}-input"}
+            type="text"
+            class="spec-switcher-search"
+            autocomplete="off"
+            placeholder="Filter"
+          />
+          <ul id={@list_id} class="spec-switcher-list" role="listbox">
+            <li
+              :for={option <- @models}
+              :key={combobox_option_value(option)}
+              id={combobox_option_dom_id(@list_id, combobox_option_value(option))}
+              role="option"
+              data-value={combobox_option_value(option)}
+              data-label={combobox_option_label(option)}
+              aria-selected="false"
+              aria-checked={to_string(combobox_option_value(option) == @model)}
+            >
+              <span class="spec-switcher-option-label"><%= combobox_option_label(option) %></span>
+              <span class="spec-switcher-check" aria-hidden="true"></span>
+            </li>
+          </ul>
+        </div>
+        <%= if @show_effort? do %>
+          <div class="spec-switcher-flyout" data-menu="effort" hidden>
+            <ul id={@effort_list_id} class="spec-switcher-list" role="listbox">
+              <li
+                :for={option <- @efforts}
+                :key={combobox_option_value(option)}
+                id={combobox_option_dom_id(@effort_list_id, combobox_option_value(option))}
+                role="option"
+                data-value={combobox_option_value(option)}
+                data-label={combobox_option_label(option)}
+                aria-selected="false"
+                aria-checked={to_string(combobox_option_value(option) == @effort)}
+              >
+                <span class="spec-switcher-option-label"><%= effort_option_label(option) %></span>
+                <span class="spec-switcher-check" aria-hidden="true"></span>
+              </li>
+            </ul>
+          </div>
+        <% end %>
+      </div>
+    </div>
+    """
+  end
+
+  defp agent_icon(assigns) do
+    assigns = assign_new(assigns, :kind, fn -> "" end)
+
+    ~H"""
+    <%= if agent_icon_src(@kind) do %>
+      <img
+        class={["agent-icon", "agent-icon--" <> @kind]}
+        src={agent_icon_src(@kind)}
+        alt={@kind}
+        width="16"
+        height="16"
+        draggable="false"
+      />
+    <% else %>
+      <span class="agent-icon agent-icon--empty" aria-hidden="true"></span>
+    <% end %>
     """
   end
 

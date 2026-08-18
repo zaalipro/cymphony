@@ -67,7 +67,8 @@ defmodule CymphonyElixir.DashboardLiveTest do
     {:ok, view, html} = live(build_conn(), "/")
 
     for kind <- Agent.known_kinds() do
-      assert html =~ ~s(value="#{kind}")
+      assert html =~ ~s(data-kind="#{kind}")
+      assert html =~ "/icons/"
       assert html =~ kind
     end
 
@@ -95,7 +96,7 @@ defmodule CymphonyElixir.DashboardLiveTest do
     assert expanded =~ "Following"
 
     for kind <- Agent.known_kinds() do
-      assert expanded =~ ~s(value="#{kind}")
+      assert expanded =~ ~s(data-kind="#{kind}")
     end
   end
 
@@ -516,24 +517,26 @@ defmodule CymphonyElixir.DashboardLiveTest do
     refute Map.has_key?(view_assigns(view).agent_setting_drafts, project.name)
   end
 
-  test "header model lives under model-switcher combobox without datalist" do
+  test "header model lives under spec-switcher without datalist" do
     start_dashboard()
     {:ok, view, html} = live(build_conn(), "/")
 
     assert has_element?(view, ~s|form.project-agent-form.advanced-only[phx-change="preview_project_agent"][phx-submit="set_project_agent"]|)
-    assert has_element?(view, ".model-switcher #model-default")
+    assert has_element?(view, "#spec-switcher-agent-default")
     assert has_element?(view, ~s|#model-default[name="model"]|)
-    assert has_element?(view, "#model-default-trigger")
+    assert has_element?(view, "#agent-default-trigger")
     assert has_element?(view, "#model-default-input")
     assert has_element?(view, ~s|#model-suggestions-default[role="listbox"]|)
-    assert has_element?(view, "#combobox-model-default .combobox-panel")
-    assert has_element?(view, "#combobox-model-default .combobox-search")
-    assert has_element?(view, ~s|.model-switcher li[role="option"][data-value="sonnet"]|)
+    assert has_element?(view, "#spec-switcher-agent-default .spec-switcher-panel")
+    assert has_element?(view, "#spec-switcher-agent-default .spec-switcher-search")
+    assert has_element?(view, ~s|#spec-switcher-agent-default li[role="option"][data-value="sonnet"]|)
+    assert has_element?(view, ~s|#spec-switcher-agent-default .spec-switcher-agent[data-kind="claude"]|)
     assert has_element?(view, "#agent-default")
     assert has_element?(view, "#effort-default")
     refute html =~ "<datalist"
     refute html =~ ~s(list="model-suggestions)
     refute html =~ ~s(id="agent-default-claude")
+    refute html =~ "Reset to default"
   end
 
   test "preview_project_agent hides providers for non-claude kinds and restores them for claude" do
@@ -612,9 +615,9 @@ defmodule CymphonyElixir.DashboardLiveTest do
     |> render_click()
 
     assert has_element?(view, ~s|form.restart-form[phx-change="preview_issue_run_spec"][phx-submit="set_issue_run_spec"]|)
-    assert has_element?(view, ~s|label[for="restart-agent-MT-HTTP-trigger"]|, "Harness")
+    assert has_element?(view, "#spec-switcher-restart-agent-MT-HTTP")
     assert has_element?(view, "#restart-agent-MT-HTTP")
-    assert has_element?(view, ".model-switcher #restart-model-MT-HTTP")
+    assert has_element?(view, "#restart-agent-MT-HTTP-trigger")
     assert has_element?(view, ~s|#restart-model-MT-HTTP[name="model"]|)
     assert has_element?(view, "#restart-model-MT-HTTP-input")
     assert has_element?(view, "#model-suggestions-session-MT-HTTP")
@@ -664,7 +667,7 @@ defmodule CymphonyElixir.DashboardLiveTest do
     html = render(view)
     assert html =~ ~s(class="chip chip--accent advanced-only")
     assert html =~ "cz2"
-    assert html =~ ~s(class="chip chip--agent advanced-only")
+    assert html =~ ~s(class="chip chip--agent chip--icon advanced-only")
     assert html =~ "codex"
     assert has_element?(view, ~s|form[phx-submit="set_project_providers"] #providers-default|)
   end
@@ -682,7 +685,7 @@ defmodule CymphonyElixir.DashboardLiveTest do
     assert has_element?(view, "#linear-project-slugs")
     assert has_element?(view, "#add-project-model")
     assert has_element?(view, "#add-project-model-input")
-    assert has_element?(view, ".model-switcher #add-project-model")
+    assert has_element?(view, "#spec-switcher-add-project-agent #add-project-model")
     assert has_element?(view, ~s|#add-project-effort[name="effort"]|)
     refute has_element?(view, ~s|#add-project-effort[type="text"]|)
     refute has_element?(view, "#add-project-provider")
@@ -2051,6 +2054,7 @@ defmodule CymphonyElixir.DashboardLiveTest do
     # one — only `tail` moved — and the comprehensions are `:key`ed.
     assert harness_diff =~ "hello world line"
     refute harness_diff =~ "combobox"
+    refute harness_diff =~ "spec-switcher"
     refute harness_diff =~ "queue-card"
     refute harness_diff =~ "session-row-summary"
 

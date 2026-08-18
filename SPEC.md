@@ -2222,8 +2222,8 @@ Enablement (extension):
     (`name=linear_project_slug`; **not** a native `<select>`). Options come from the
     operator's accessible Linear projects (label `name (slug_id)`, value `slug_id`) and
     type-to-filter. Also: name input `#add-project-name`, optional GitHub URL
-    `#add-project-github`, and advanced-only agent / `.model-switcher` Combobox / effort
-    Combobox / provider fields. `preview_add_project` drafts the slug, name, github and those
+    `#add-project-github`, and an advanced-only `.spec-switcher` (icon + model + effort) plus
+    provider field. `preview_add_project` drafts the slug, name, github and those
     advanced fields, and a successful add resets all of them. Submit appends the project to `config.json`, writes a temp `WORKFLOW.md`,
     and starts the project supervisor immediately — no daemon restart. Duplicate
     name/slug is an operator-visible error.
@@ -2248,27 +2248,28 @@ Enablement (extension):
     refresh, and must not change orchestrator poll timing. No pubsub event may shorten this
     interval. Open dashboards keep their current interval until remount or a successful
     `set_refresh_interval`.
-- The per-project header agent control is a Combobox whose hidden input carries the stable id
-  `agent-<project>` (its label points at `agent-<project>-trigger`); the id never embeds the
-  current kind or effort. Changing to a known kind persists immediately (kind only;
-  model/effort wait for header **Set**). The effort pill is hidden when the selected
-  kind is `antigravity` (CLI Proxy slugs encode reasoning; `agy` rejects `--effort`).
-  Header **Set** and `POST /api/v1/agent` persist
+- The per-project header agent+model+effort control is one `.spec-switcher`
+  (`phx-hook="SpecSwitcher"`). Hidden inputs keep the stable ids `agent-<project>`,
+  `model-<project>`, and `effort-<project>` (the trigger is `agent-<project>-trigger`);
+  the ids never embed the current kind or effort. The closed trigger is
+  `icon model effort` using `/icons/claude.png`, `/icons/codex.png`, `/icons/agy.png`.
+  The open panel is an icon strip (no claude/codex/antigravity text as the primary
+  control) plus Model and Effort flyouts — no Reset-to-default. Changing to a known
+  kind persists immediately (kind only; model/effort wait for header **Set**). The
+  Effort row is hidden when the selected kind is `antigravity` (CLI Proxy slugs encode
+  reasoning; `agy` rejects `--effort`). Header **Set** and `POST /api/v1/agent` persist
   kind+model+effort, rewrite the project's generated `WORKFLOW.md`, and overlay
   `config.json` so `snapshot.agent_kind` survives the next refresh. Dashboard payload
   reloads are generation-tokened so an in-flight stale snapshot cannot revert the selection
   after persist.
-- Header and expanded-session **model** controls are a labeled `.model-switcher` Combobox
-  (type-to-filter suggestions; not `<datalist>`). Header wrapping form remains
-  `form.project-agent-form` (`phx-change="preview_project_agent"`,
-  `phx-submit="set_project_agent"`) so **Set** still sends kind+model+effort. Inner pills:
-  `.agent-switcher` (Combobox whose hidden input carries `#agent-<project>`),
-  `.model-switcher` (Combobox), `.effort-switcher` (Combobox whose hidden input carries
-  `#effort-<project>`; hidden when the selected kind is `antigravity`), and **Set**.
-  Session restart is `form.restart-form` (`phx-change="preview_issue_run_spec"`,
-  `phx-submit="set_issue_run_spec"`) with labeled Harness / Provider / Model Combobox /
-  Effort pills — not one cramped pill. Effort is omitted for `antigravity`. Harness stdout `section#harness-tail-<id>` is
-  unchanged.
+- Header wrapping form remains `form.project-agent-form`
+  (`phx-change="preview_project_agent"`, `phx-submit="set_project_agent"`) so **Set**
+  still sends kind+model+effort. Queue-card edit and add-project advanced fields use the
+  same switcher (`#add-project-slug` stays a Combobox). Session restart is
+  `form.restart-form` (`phx-change="preview_issue_run_spec"`,
+  `phx-submit="set_issue_run_spec"`) with the switcher plus a Claude-only Provider field.
+  Effort is omitted for `antigravity`. Session/completion agent chips are icons, not
+  kind words. Harness stdout `section#harness-tail-<id>` is unchanged.
 - Provider pills/fields (`form[phx-submit=set_project_providers]`, `#add-project-provider`,
   restart `name=provider`) are visible only when the selected agent kind is `claude`.
   Hide them for `codex`, `antigravity`, empty/default, and unknown kinds. Header uses
@@ -2325,8 +2326,8 @@ Enablement (extension):
   - `set_queue_run_spec` — hidden `project` + `issue`; empty / keep skip;
     `Control.set_queue_pin`; do not kill
 - `QueueBoard` hook mounts on `div#queue-board-<project.name>.queue-board-list` in
-  `layouts.ex` beside `HarnessTail` / `Combobox` (`mounted` / `updated` / `destroyed`;
-  `pushEvent reorder_queue`). `Combobox.setChrome` also toggles the closest
+  `layouts.ex` beside `HarnessTail` / `Combobox` / `SpecSwitcher` (`mounted` / `updated` / `destroyed`;
+  `pushEvent reorder_queue`). `Combobox.setChrome` / `SpecSwitcher.setChrome` also toggle the closest
   `.queue-card`.
 - `QueueEditPanel` hook mounts on `div#queue-edit-<project>-<identifier>.queue-card-edit`
   (`layouts.ex`, beside `QueueBoard`). The edit sheet is a popover rather than an inline
@@ -2374,7 +2375,7 @@ Enablement (extension):
     the band's largest numeral. `due` shares the elapsed formatter on both sides; countdown
     stays `Ns`. The server formatter and the hook's `formatElapsed` are one contract — they
     move in the same commit or the hook rewrites the server text the first time it paints.
-  - One `LiveClock` hook (registered in `layouts.ex` beside `HarnessTail` / `Combobox` /
+  - One `LiveClock` hook (registered in `layouts.ex` beside `HarnessTail` / `Combobox` / `SpecSwitcher` /
     `QueueBoard`) mounts on a single wrapper `div#live-clock` around the dashboard and runs
     one 1s interval that rewrites only those spans' `textContent`; it clears the interval on
     `destroyed`. It re-anchors per element per tick by comparing the live data attributes
@@ -2731,7 +2732,7 @@ optional `?project=<name>` scope):
   runtime agent settings and persists to `~/.cymphony/config.json`; **rewrites the
   project's generated `WORKFLOW.md` and overlays `config.json` agent/model/effort so
   `snapshot.agent_kind` survives the next dashboard/API refresh**. Dashboard header
-  **Set** and change-to-save (kind-only persist on the project agent Combobox, whose hidden
+  **Set** and change-to-save (kind-only persist on the project agent SpecSwitcher, whose hidden
   input carries `#agent-<project>`) follow the same rewrite + overlay path. Applies to
   subsequent dispatches. Error when
   none of those keys are present or `kind` is not a known kind:
