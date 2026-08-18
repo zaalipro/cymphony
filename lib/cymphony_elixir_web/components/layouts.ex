@@ -552,12 +552,13 @@ defmodule CymphonyElixirWeb.Layouts do
                     if (!this.open) return;
                     var focused = !!(this.search && document.activeElement === this.search);
                     this._restore = {
-                      submenu: this.submenu,
+                      submenu: this._openAfterPatch || this.submenu,
                       query: this.search ? this.search.value : (this.query || ''),
                       focused: focused,
                       selStart: focused ? this.search.selectionStart : null,
                       selEnd: focused ? this.search.selectionEnd : null
                     };
+                    this._openAfterPatch = null;
                   },
                   updated() {
                     this.bind();
@@ -701,10 +702,15 @@ defmodule CymphonyElixirWeb.Layouts do
                     this.kind.value = value;
                     this.notify(this.kind);
                   },
+                  hasEffortMenu() {
+                    return !!this.el.querySelector('.spec-switcher-flyout[data-menu="effort"]');
+                  },
                   commitModel(value) {
                     if (!this.model) return;
                     this.model.value = value;
+                    if (this.hasEffortMenu()) this._openAfterPatch = 'effort';
                     this.notify(this.model);
+                    if (this.hasEffortMenu()) this.setSubmenu('effort');
                   },
                   commitEffort(value) {
                     if (!this.effort) return;
