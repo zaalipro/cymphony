@@ -5,7 +5,9 @@ defmodule CymphonyElixir.Agent.Antigravity do
 
   Resume uses `--conversation <id>` (never `-c` / `--continue`, which resume the
   last session in cwd and would cross-pollute issues). MCP flags are not
-  invented; operators can pass extras via `settings.extra_args`.
+  invented; operators can pass extras via `settings.extra_args`. `--effort` is
+  never emitted: CLI Proxy model slugs already encode reasoning
+  (`gemini-3.7-flash-high`) and agy rejects the flag on those models.
 
   Two flags are always built in because the CLI is unusable without them:
 
@@ -55,7 +57,6 @@ defmodule CymphonyElixir.Agent.Antigravity do
     args =
       ["-p", shell_escape(run_spec.prompt), "--output-format", shell_escape(output_format)]
       |> maybe_add_model(run_spec.model)
-      |> maybe_add_effort(run_spec.effort)
       |> maybe_add_conversation(run_spec.session_id)
       |> maybe_add_bool_flag(Map.get(settings, :skip_permissions) == true, "--dangerously-skip-permissions")
       |> maybe_add_bool_flag(Map.get(settings, :sandbox) == true, "--sandbox")
@@ -235,11 +236,6 @@ defmodule CymphonyElixir.Agent.Antigravity do
     do: args ++ ["--model", shell_escape(model)]
 
   defp maybe_add_model(args, _model), do: args
-
-  defp maybe_add_effort(args, effort) when is_binary(effort) and effort != "",
-    do: args ++ ["--effort", shell_escape(effort)]
-
-  defp maybe_add_effort(args, _effort), do: args
 
   defp maybe_add_conversation(args, session_id) when is_binary(session_id) and session_id != "",
     do: args ++ ["--conversation", shell_escape(session_id)]

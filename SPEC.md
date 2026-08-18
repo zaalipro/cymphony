@@ -496,8 +496,10 @@ Fields:
   - Not validated against a model list; invalid values surface as run failures.
 - `effort` (string or null)
   - Default: null (the agent CLI's own default effort).
-  - Passed through verbatim (`--effort` for Claude Code and Antigravity,
-    `-c model_reasoning_effort=…` for Codex).
+  - Passed through verbatim (`--effort` for Claude Code,
+    `-c model_reasoning_effort=…` for Codex). Antigravity never receives
+    `--effort`: CLI Proxy slugs already encode reasoning (`-high`, `-medium`)
+    and `agy` rejects the flag on those models.
 - `max_concurrent_agents` (integer or string integer)
   - Default: `10`
   - Changes should be re-applied at runtime and affect subsequent dispatch decisions.
@@ -636,12 +638,11 @@ Fields:
     `GEMINI_*`, and `API_TIMEOUT` variables. Fallback keys: `GOOGLE_API_KEY`,
     `GEMINI_API_KEY`.
 
-Argv (space-joined; prompt, session id, model, and effort are shell-escaped):
+Argv (space-joined; prompt, session id, and model are shell-escaped):
 
 ```text
 <cmd> -p <escaped prompt> --output-format <output_format>
   [--model <escaped model>]          when model is a non-empty binary
-  [--effort <escaped effort>]        when effort is a non-empty binary
   [--conversation <escaped id>]      when session_id is a non-empty binary
   [--dangerously-skip-permissions]   when skip_permissions is true
   [--sandbox]                        when sandbox is true
@@ -699,7 +700,8 @@ Normalized usage keeps only `input_tokens`, `output_tokens`, and `total_tokens`
 (integer-or-zero). Missing `total_tokens` is `input + output`. `thinking_tokens` and
 cache fields are dropped from the normalized map. Non-JSON lines are ignored and do
 not fail the turn. An unknown `--model` slug exits nonzero with `status ERROR`.
-Invalid `--effort` (not `low|medium|high`) fails the run.
+`--effort` is never emitted, even when `agent.effort` is set: agy rejects it on
+CLI Proxy / custom slugs, and thinking is already in the model name.
 
 #### 5.3.9 `extra_args` (all three agent sections)
 
@@ -2249,7 +2251,9 @@ Enablement (extension):
 - The per-project header agent control is a Combobox whose hidden input carries the stable id
   `agent-<project>` (its label points at `agent-<project>-trigger`); the id never embeds the
   current kind or effort. Changing to a known kind persists immediately (kind only;
-  model/effort wait for header **Set**). Header **Set** and `POST /api/v1/agent` persist
+  model/effort wait for header **Set**). The effort pill is hidden when the selected
+  kind is `antigravity` (CLI Proxy slugs encode reasoning; `agy` rejects `--effort`).
+  Header **Set** and `POST /api/v1/agent` persist
   kind+model+effort, rewrite the project's generated `WORKFLOW.md`, and overlay
   `config.json` so `snapshot.agent_kind` survives the next refresh. Dashboard payload
   reloads are generation-tokened so an in-flight stale snapshot cannot revert the selection
@@ -2260,9 +2264,10 @@ Enablement (extension):
   `phx-submit="set_project_agent"`) so **Set** still sends kind+model+effort. Inner pills:
   `.agent-switcher` (Combobox whose hidden input carries `#agent-<project>`),
   `.model-switcher` (Combobox), `.effort-switcher` (Combobox whose hidden input carries
-  `#effort-<project>`), and **Set**. Session restart is `form.restart-form` (`phx-change="preview_issue_run_spec"`,
+  `#effort-<project>`; hidden when the selected kind is `antigravity`), and **Set**.
+  Session restart is `form.restart-form` (`phx-change="preview_issue_run_spec"`,
   `phx-submit="set_issue_run_spec"`) with labeled Harness / Provider / Model Combobox /
-  Effort pills — not one cramped pill. Harness stdout `section#harness-tail-<id>` is
+  Effort pills — not one cramped pill. Effort is omitted for `antigravity`. Harness stdout `section#harness-tail-<id>` is
   unchanged.
 - Provider pills/fields (`form[phx-submit=set_project_providers]`, `#add-project-provider`,
   restart `name=provider`) are visible only when the selected agent kind is `claude`.

@@ -129,10 +129,15 @@ defmodule CymphonyElixir.Agent.AntigravityAdapterTest do
       refute from_empty =~ "--log-file"
     end
 
-    test "model and effort flags are escaped and appended" do
-      assert {:ok, cmd} = Antigravity.build_command(spec(%{model: "gemini-3.5-flash-medium", effort: "high"}))
-      assert cmd =~ "--model 'gemini-3.5-flash-medium'"
-      assert cmd =~ "--effort 'high'"
+    test "model is escaped; effort is never passed (reasoning lives in the slug)" do
+      # agy rejects --effort on CLI Proxy / custom models. High/medium/low is
+      # already in the model name (gemini-3.7-flash-high), and sending both
+      # fails the run before a token is spent.
+      assert {:ok, cmd} =
+               Antigravity.build_command(spec(%{model: "gemini-3.7-flash-high", effort: "high"}))
+
+      assert cmd =~ "--model 'gemini-3.7-flash-high'"
+      refute cmd =~ "--effort"
     end
 
     test "session_id becomes --conversation and never --resume or -c" do

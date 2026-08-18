@@ -219,6 +219,7 @@ defmodule CymphonyElixir.DashboardLiveTest do
     })
 
     assert has_element?(view, ~s|form[phx-submit="set_project_agent"] input[name="agent_kind"][value="antigravity"]|)
+    refute has_element?(view, "#effort-default")
     drafts = view_assigns(view).agent_setting_drafts
     assert drafts["default"].kind == "antigravity"
 
@@ -701,6 +702,7 @@ defmodule CymphonyElixir.DashboardLiveTest do
 
     assert view_assigns(view).add_project_kind == "antigravity"
     refute has_element?(view, "#add-project-provider")
+    refute has_element?(view, "#add-project-effort")
 
     render_change(view, "preview_add_project", %{"agent" => ""})
 
@@ -1041,7 +1043,7 @@ defmodule CymphonyElixir.DashboardLiveTest do
 
     assert has_element?(view, ~s|form.queue-edit-form input[name="agent_kind"][value="antigravity"]|)
     assert has_element?(view, ~s|form.queue-edit-form input[name="model"][value="gpt-5.6-luna"]|)
-    assert has_element?(view, ~s|form.queue-edit-form input[name="effort"][value="max"]|)
+    refute has_element?(view, ~s|form.queue-edit-form input[name="effort"]|)
 
     form = view |> element("form.queue-edit-form") |> render()
     refute form =~ ~s(data-value="")

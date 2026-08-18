@@ -106,7 +106,7 @@ defmodule CymphonyElixir.AgentCatalogTest do
     assert AgentCatalog.efforts("claude", "opus") == ["low", "medium", "high", "xhigh", "max"]
   end
 
-  test "antigravity uses the static Gemini/Claude slug list and low/medium/high efforts" do
+  test "antigravity uses the static Gemini/CLI-Proxy slug list and no efforts" do
     models = AgentCatalog.models("antigravity")
     slugs = Enum.map(models, & &1.value)
 
@@ -131,9 +131,9 @@ defmodule CymphonyElixir.AgentCatalogTest do
       assert model.default_effort == nil
     end
 
-    assert AgentCatalog.efforts("antigravity", nil) == ["low", "medium", "high"]
-    assert AgentCatalog.efforts("antigravity", "gemini-3.7-flash-high") == ["low", "medium", "high"]
-    assert AgentCatalog.efforts("antigravity", "unknown-slug") == ["low", "medium", "high"]
+    assert AgentCatalog.efforts("antigravity", nil) == []
+    assert AgentCatalog.efforts("antigravity", "gemini-3.7-flash-high") == []
+    assert AgentCatalog.efforts("antigravity", "unknown-slug") == []
   end
 
   test "unknown kinds still fall through to Claude aliases; antigravity does not" do
