@@ -37,6 +37,53 @@ defmodule CymphonyElixir.Config.Schema do
     def dump(value), do: {:ok, value}
   end
 
+  defmodule LenientBoolean do
+    @moduledoc false
+    # A boolean that refuses to take a project down over a typo. `true`/`false`
+    # and the spellings Ecto's own `:boolean` accepts (`"true"`, `"false"`,
+    # `"1"`, `"0"`) cast normally; anything else (`0`, `"no"`, `"off"`, `"yes"`)
+    # is logged and cast to `nil`, which leaves the reader on its default rather
+    # than failing `Schema.parse/1` and taking the whole project with it. Same
+    # philosophy as `stall_timeout_ms` and `extra_args` in the config store.
+    use Ecto.Type
+
+    require Logger
+
+    @true_values ["true", "1"]
+    @false_values ["false", "0"]
+
+    @impl true
+    def type, do: :boolean
+
+    @impl true
+    def cast(value) when is_boolean(value), do: {:ok, value}
+    def cast(nil), do: {:ok, nil}
+
+    def cast(value) when is_binary(value) do
+      downcased = String.downcase(value)
+
+      cond do
+        downcased in @true_values -> {:ok, true}
+        downcased in @false_values -> {:ok, false}
+        true -> ignore(value)
+      end
+    end
+
+    def cast(value), do: ignore(value)
+
+    @impl true
+    def load(value), do: {:ok, value}
+
+    @impl true
+    def dump(value), do: {:ok, value}
+
+    defp ignore(value) do
+      Logger.warning("Ignoring invalid boolean in workflow config (expected true or false), got #{inspect(value)}")
+
+      {:ok, nil}
+    end
+  end
+
   defmodule Tracker do
     @moduledoc false
     use Ecto.Schema
@@ -265,7 +312,7 @@ defmodule CymphonyElixir.Config.Schema do
       field(:extra_args, CymphonyElixir.Config.Schema.ExtraArgs)
       field(:skip_permissions, :boolean, default: true)
       field(:sandbox, :boolean, default: false)
-      field(:new_project, :boolean, default: true)
+      field(:new_project, CymphonyElixir.Config.Schema.LenientBoolean, default: true)
       field(:print_timeout, :string)
       field(:provider, :string)
       field(:providers, {:array, :string}, default: [])

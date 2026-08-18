@@ -995,7 +995,11 @@ defmodule CymphonyElixir.Agent.RunnerTest do
                session.agent_module.build_command(%{session.run_spec | prompt: "go"})
 
       assert command =~ "--new-project"
-      assert command =~ "--log-file '#{session.workspace}/agy.log'"
+
+      # Beside the workspace, not inside it: the workspace is the cloned repo.
+      log_path = Path.join(Path.dirname(session.workspace), ".agy-#{Path.basename(session.workspace)}.log")
+      assert command =~ "--log-file '#{log_path}'"
+      refute command =~ "'#{session.workspace}/"
     after
       File.rm_rf(test_root)
     end

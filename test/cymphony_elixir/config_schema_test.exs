@@ -131,6 +131,54 @@ defmodule CymphonyElixir.ConfigSchemaTest do
     assert Schema.ExtraArgs.dump(["--x"]) == {:ok, ["--x"]}
   end
 
+  test "LenientBoolean casts real booleans and Ecto's string spellings" do
+    assert Schema.LenientBoolean.type() == :boolean
+    assert Schema.LenientBoolean.cast(true) == {:ok, true}
+    assert Schema.LenientBoolean.cast(false) == {:ok, false}
+    assert Schema.LenientBoolean.cast(nil) == {:ok, nil}
+
+    assert Schema.LenientBoolean.cast("true") == {:ok, true}
+    assert Schema.LenientBoolean.cast("TRUE") == {:ok, true}
+    assert Schema.LenientBoolean.cast("1") == {:ok, true}
+    assert Schema.LenientBoolean.cast("false") == {:ok, false}
+    assert Schema.LenientBoolean.cast("FALSE") == {:ok, false}
+    assert Schema.LenientBoolean.cast("0") == {:ok, false}
+  end
+
+  test "LenientBoolean treats typos as unset instead of failing Schema.parse/1" do
+    # A typo'd boolean must not take the project down. The adapter only drops
+    # --new-project on an exact `false`, so nil (unset) keeps the flag on.
+    for bad <- [0, 1, "no", "off", "yes", "2", :atom] do
+      log =
+        ExUnit.CaptureLog.capture_log(fn ->
+          assert Schema.LenientBoolean.cast(bad) == {:ok, nil}
+        end)
+
+      assert log =~ "Ignoring invalid boolean"
+    end
+  end
+
+  test "LenientBoolean load/dump round-trip the value unchanged" do
+    assert Schema.LenientBoolean.load(true) == {:ok, true}
+    assert Schema.LenientBoolean.dump(false) == {:ok, false}
+  end
+
+  test "antigravity new_project string spellings parse; invalid values stay unset" do
+    assert {:ok, off} = Schema.parse(%{"antigravity" => %{"new_project" => "false"}})
+    assert off.antigravity.new_project == false
+
+    assert {:ok, on} = Schema.parse(%{"antigravity" => %{"new_project" => "true"}})
+    assert on.antigravity.new_project == true
+
+    log =
+      ExUnit.CaptureLog.capture_log(fn ->
+        assert {:ok, unset} = Schema.parse(%{"antigravity" => %{"new_project" => "no"}})
+        refute unset.antigravity.new_project == false
+      end)
+
+    assert log =~ "Ignoring invalid boolean"
+  end
+
   test "antigravity accepts extra_args/print_timeout/provider/providers" do
     assert {:ok, settings} =
              Schema.parse(%{

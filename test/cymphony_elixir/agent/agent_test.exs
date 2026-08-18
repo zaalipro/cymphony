@@ -91,6 +91,50 @@ defmodule CymphonyElixir.AgentTest do
     end
   end
 
+  describe "failure_excerpt/1" do
+    test "keeps newest lines first, strips empties, and redacts secrets" do
+      lines = [
+        "LINEAR_API_KEY=lin_api_abcdefghij0123456789",
+        "",
+        "status ERROR"
+      ]
+
+      excerpt = Agent.failure_excerpt(lines)
+      assert excerpt =~ "LINEAR_API_KEY=[REDACTED]"
+      refute excerpt =~ "lin_api_"
+      assert excerpt =~ "status ERROR"
+      refute excerpt =~ "\n\n"
+    end
+  end
+
+  describe "transcript_excerpt/1" do
+    test "reverses a chronological transcript so the last line is first" do
+      excerpt = Agent.transcript_excerpt(["oldest noise", "status ERROR"])
+      assert excerpt == "status ERROR\noldest noise"
+    end
+  end
+
+  describe "redact_payload/1" do
+    test "redacts binaries, walks maps and lists, and leaves other values alone" do
+      assert Agent.redact_payload("LINEAR_API_KEY=lin_api_abcdefghij") == "LINEAR_API_KEY=[REDACTED]"
+
+      payload = %{
+        "message" => "ANTHROPIC_API_KEY=sk-ant-secret",
+        "headers" => ["Authorization: Bearer abc.def", 429],
+        "code" => 400
+      }
+
+      assert Agent.redact_payload(payload) == %{
+               "message" => "ANTHROPIC_API_KEY=[REDACTED]",
+               "headers" => ["Authorization: Bearer [REDACTED]", 429],
+               "code" => 400
+             }
+
+      assert Agent.redact_payload(:atom) == :atom
+      assert Agent.redact_payload(12) == 12
+    end
+  end
+
   test "put_section writes claude when antigravity is absent or the kind is unknown" do
     new_sec = %{command: "fallback"}
 

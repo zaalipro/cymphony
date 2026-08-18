@@ -62,7 +62,7 @@ defmodule CymphonyElixir.Agent.AntigravityAdapterTest do
 
       assert cmd ==
                "agy -p 'do the thing' --output-format 'stream-json' --dangerously-skip-permissions " <>
-                 "--new-project --log-file '/tmp/ws/agy.log'"
+                 "--new-project --log-file '/tmp/.agy-ws.log'"
 
       refute cmd =~ "--resume"
       refute cmd =~ "--continue"
@@ -97,20 +97,31 @@ defmodule CymphonyElixir.Agent.AntigravityAdapterTest do
       end
     end
 
-    test "--log-file points at agy.log inside the session workspace" do
+    test "--log-file names a sibling of the workspace, never a file inside it" do
       # agy prints only "Agent execution terminated due to error." on stdout;
       # the HTTP status lives in its own log file, which otherwise lands in
       # ~/.gemini/antigravity-cli/log/ under a timestamp nobody can correlate.
+      # The workspace root is the cloned repo root and the agent is told to
+      # commit and push, so a log inside the tree lands in the pull request.
       assert {:ok, cmd} = Antigravity.build_command(spec(%{workspace: "/ws/LLM-51"}))
-      assert cmd =~ "--log-file '/ws/LLM-51/agy.log'"
+      assert cmd =~ "--log-file '/ws/.agy-LLM-51.log'"
+      refute cmd =~ "/ws/LLM-51/"
+      refute cmd =~ ".."
     end
 
-    test "--log-file uses a remote workspace path verbatim and is escaped" do
+    test "--log-file resolves a remote workspace path lexically and escapes it" do
       assert {:ok, cmd} = Antigravity.build_command(spec(%{workspace: "/srv/work spaces/LLM-9"}))
-      assert cmd =~ "--log-file '/srv/work spaces/LLM-9/agy.log'"
+      assert cmd =~ "--log-file '/srv/work spaces/.agy-LLM-9.log'"
     end
 
-    test "a missing or empty workspace omits --log-file rather than logging to /agy.log" do
+    test "--log-file stays a direct child of the workspace root so retention sweeps it" do
+      assert {:ok, cmd} = Antigravity.build_command(spec(%{workspace: "/srv/root/LLM-3"}))
+      assert [_, path] = Regex.run(Regex.compile!("--log-file '([^']+)'"), cmd)
+      assert Path.dirname(path) == "/srv/root"
+      assert Path.basename(path) == ".agy-LLM-3.log"
+    end
+
+    test "a missing or empty workspace omits --log-file rather than logging to the root" do
       assert {:ok, from_nil} = Antigravity.build_command(spec(%{workspace: nil}))
       refute from_nil =~ "--log-file"
 

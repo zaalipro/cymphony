@@ -30,7 +30,10 @@ defmodule CymphonyElixir.TextTest do
     end
 
     test "redacts NAME: value and quoted JSON assignments" do
-      assert Text.redact_secrets("password: hunter2") == "password: [REDACTED]"
+      # The bare colon form takes compound names only; see the false-positive
+      # test below for why `password: hunter2` deliberately survives.
+      assert Text.redact_secrets("db_password: hunter2") == "db_password: [REDACTED]"
+      assert Text.redact_secrets("anthropic.api-key: sk-live") == "anthropic.api-key: [REDACTED]"
 
       assert Text.redact_secrets(~s({"api_key": "lin_api_zzzz", "model": "sonnet"})) ==
                ~s({"api_key": "[REDACTED]", "model": "sonnet"})
@@ -43,30 +46,71 @@ defmodule CymphonyElixir.TextTest do
       assert Text.redact_secrets(~s({"api_key":"packed"})) == ~s({"api_key":"[REDACTED]"})
     end
 
-    test "redacts Authorization headers with and without a Bearer scheme" do
+    test "redacts Authorization headers with any scheme or none" do
+      # The scheme word is not the secret: an optional `(bearer\\s+)?` group let
+      # `\\S+` eat `Basic` and publish the credential right after it.
       assert Text.redact_secrets("Authorization: Bearer abc.def.ghi") == "Authorization: Bearer [REDACTED]"
+      assert Text.redact_secrets("Authorization: Basic dXNlcjpwYXNz") == "Authorization: [REDACTED]"
+      assert Text.redact_secrets("Authorization: Token abc123 extra") == "Authorization: [REDACTED]"
       assert Text.redact_secrets("authorization: lin_api_plain") == "authorization: [REDACTED]"
       assert Text.redact_secrets("AUTHORIZATION=Bearer tok123") == "AUTHORIZATION=Bearer [REDACTED]"
+      assert Text.redact_secrets("X-Authorization: Bearer x") == "X-Authorization: Bearer [REDACTED]"
+      assert Text.redact_secrets("Set-Cookie: session=abc; Path=/") == "Set-Cookie: [REDACTED]"
+      assert Text.redact_secrets("Cookie: a=b; c=d") == "Cookie: [REDACTED]"
+    end
+
+    test "redacts quoted and map-inspect spellings of a secret name" do
+      # A JSON body or an inspected map reaches the same surfaces as an env
+      # dump, and neither uses the bare `NAME=value` spelling.
+      assert Text.redact_secrets(~s({"headers":{"authorization":"Bearer eyJhbGciOiJ9.eyJzdWIiOiJ9.sig"},"x":"y"})) ==
+               ~s({"headers":{"authorization":"[REDACTED]"},"x":"y"})
+
+      assert Text.redact_secrets(~s("Authorization" : "Bearer x")) == ~s("Authorization" : "[REDACTED]")
+
+      assert Text.redact_secrets(~s(%{"ANTHROPIC_AUTH_TOKEN" => "v"})) ==
+               ~s(%{"ANTHROPIC_AUTH_TOKEN" => "[REDACTED]"})
+
+      assert Text.redact_secrets(~s(%{"GH_TOKEN" => 12})) == ~s(%{"GH_TOKEN" => [REDACTED]})
+      assert Text.redact_secrets(~s({"apiKey":"v"})) == ~s({"apiKey":"[REDACTED]"})
+      assert Text.redact_secrets("ANTHROPIC_API_KEY => sk-live-abcdefgh") == "ANTHROPIC_API_KEY => [REDACTED]"
+    end
+
+    test "redacts camelCase, run-together, and abbreviated secret names" do
+      assert Text.redact_secrets("APIKEY=abc123") == "APIKEY=[REDACTED]"
+      assert Text.redact_secrets("GITHUBTOKEN=abc") == "GITHUBTOKEN=[REDACTED]"
+      assert Text.redact_secrets("accessToken=abc") == "accessToken=[REDACTED]"
+      assert Text.redact_secrets("refreshToken=abc") == "refreshToken=[REDACTED]"
+      assert Text.redact_secrets("privateKey=abc") == "privateKey=[REDACTED]"
+      assert Text.redact_secrets("GH_PAT=xyz") == "GH_PAT=[REDACTED]"
+      assert Text.redact_secrets("PASSWD=secret") == "PASSWD=[REDACTED]"
+      assert Text.redact_secrets("DB_PWD=x") == "DB_PWD=[REDACTED]"
     end
 
     test "redacts bare vendor-prefixed credentials anywhere in the line" do
       cases = [
-        "failed with sk-ant-api03-AAAABBBBCCCCDDDD",
-        "key lin_api_abcdefghij0123456789 rejected",
-        "remote uses ghp_abcdefghijklmnopqrstuvwxyz0123",
-        "token github_pat_11ABCDEFG0123456789_abcdefghijklmnop expired",
-        "slack xoxb-123456-abcdefghij failed",
-        "gemini AIzaSyA12345678901234567890123456789012 denied"
+        {"failed with sk-ant-api03-AAAABBBBCCCCDDDD", "sk-ant"},
+        {"failed with SK-ANT-API03-AAAABBBBCCCCDDDD", "SK-ANT"},
+        {"key lin_api_abcdefghij0123456789 rejected", "lin_api_"},
+        {"remote uses ghp_abcdefghijklmnopqrstuvwxyz0123", "ghp_"},
+        {"remote uses gho_abcdefghijklmnopqrstuvwxyz0123", "gho_"},
+        {"remote uses ghu_abcdefghijklmnopqrstuvwxyz0123", "ghu_"},
+        {"remote uses ghs_abcdefghijklmnopqrstuvwxyz0123", "ghs_"},
+        {"remote uses ghr_abcdefghijklmnopqrstuvwxyz0123", "ghr_"},
+        {"token github_pat_11ABCDEFG0123456789_abcdefghijklmnop expired", "github_pat_"},
+        {"slack xoxb-123456-abcdefghij failed", "xoxb-"},
+        {"gemini AIzaSyA12345678901234567890123456789012 denied", "AIzaSy"},
+        {"google ya29.a0AfH6SMBabcdefghijklmnop denied", "ya29."},
+        {"refresh 1//0gABCDEFGHIJKLMNOPQRST rotated", "1//0g"},
+        {"jwt eyJhbGciOiJIUzI1NiJ9.eyJzdWIiOiIxMjM0NTY3In0.abcdef bad", "eyJhbGci"},
+        {"aws AKIAIOSFODNN7EXAMPLE denied", "AKIAIOSFODNN7EXAMPLE"},
+        {"npm npm_abcdefghijklmnopqrstuvwxyz denied", "npm_abc"},
+        {"hugging hf_abcdefghijklmnopqrstuvwxyz denied", "hf_abc"}
       ]
 
-      Enum.each(cases, fn line ->
-        assert Text.redact_secrets(line) =~ "[REDACTED]"
-        refute Text.redact_secrets(line) =~ "sk-ant"
-        refute Text.redact_secrets(line) =~ "lin_api_"
-        refute Text.redact_secrets(line) =~ "ghp_"
-        refute Text.redact_secrets(line) =~ "github_pat_"
-        refute Text.redact_secrets(line) =~ "xoxb-"
-        refute Text.redact_secrets(line) =~ "AIzaSy"
+      Enum.each(cases, fn {line, secret_marker} ->
+        redacted = Text.redact_secrets(line)
+        assert redacted =~ "[REDACTED]", "expected #{inspect(line)} to be redacted"
+        refute redacted =~ secret_marker
       end)
     end
 
@@ -87,6 +131,57 @@ defmodule CymphonyElixir.TextTest do
       Enum.each(untouched, fn line ->
         assert Text.redact_secrets(line) == line
       end)
+    end
+
+    test "leaves the error messages the tail exists to surface intact" do
+      # These are exactly the lines a failure tail and an agy.log are read for.
+      # A bare `token:` / `key:` / `secret:` with no name segments is English
+      # prose or an exception message, never an assignment, so the colon form
+      # takes compound names only.
+      untouched = [
+        "429 Too Many Requests: token: rate limit exceeded",
+        "SyntaxError: Unexpected token: '<'",
+        "KeyError: key: :model",
+        "password: required",
+        "secret: not found",
+        "Agent execution terminated due to error.",
+        "error: 429 RESOURCE_EXHAUSTED quota exceeded for model gemini-3.7"
+      ]
+
+      Enum.each(untouched, fn line ->
+        assert Text.redact_secrets(line) == line
+      end)
+    end
+
+    test "keeps the value of a name that points at a location, not a secret" do
+      untouched = [
+        "SSH_KEY_PATH=/home/zaali/.ssh/id_rsa",
+        "TOKEN_FILE=/run/secrets/tok",
+        "API_KEY_DIR=/etc/keys",
+        "ACCESS_KEY_ID=display-me",
+        "SECRET_NAME=my-secret",
+        # PWD is the shell's cwd far more often than a credential; only the
+        # compound spelling (DB_PWD) counts.
+        "PWD=/Users/zaali/dev/cymphony",
+        "PATH=/usr/bin:/bin"
+      ]
+
+      Enum.each(untouched, fn line ->
+        assert Text.redact_secrets(line) == line
+      end)
+    end
+
+    test "never stacks a second [REDACTED] onto an already-redacted value" do
+      for line <- [
+            "AUTHORIZATION=Bearer tok123",
+            "X-Authorization: Bearer x",
+            ~s({"api_key": "lin_api_zzzz"}),
+            "COOKIE=abc"
+          ] do
+        redacted = Text.redact_secrets(line)
+        assert length(String.split(redacted, "[REDACTED]")) == 2, "double redaction in #{inspect(redacted)}"
+        assert Text.redact_secrets(redacted) == redacted
+      end
     end
   end
 

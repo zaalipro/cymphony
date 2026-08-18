@@ -38,7 +38,76 @@ defmodule CymphonyElixir.Agent do
   @callback auth_env_prefixes() :: [String.t()]
   @callback auth_env_fallback() :: [String.t()]
 
+  alias CymphonyElixir.Text
+
   @known_kinds ["claude", "codex", "antigravity"]
+
+  @failure_excerpt_lines 20
+  @failure_excerpt_bytes 2048
+  # Redaction cost is superlinear in line length on segmented input and a port
+  # line can be a megabyte, so each retained line is capped before the regexes
+  # see it. 8 KB is four times the whole excerpt budget — nothing that survives
+  # the byte cap below can be lost to this one.
+  @failure_excerpt_line_bytes 8192
+
+  @doc """
+  Builds the bounded, sanitized, redacted excerpt every failure surface shows.
+
+  Input is **newest line first**, because every surface that renders the result
+  truncates from the front (the dashboard retry row at 120 characters) after a
+  fixed `agent exited: Agent run failed: {:agent_exit, 1, "` prefix: in
+  chronological order the CLI's own error line — the last thing it printed, and
+  the entire point of keeping an excerpt — lands past every cut.
+
+  Lazy on purpose (`Stream`, then `Enum.take/2`): the caller's list holds every
+  line of a stream-json transcript, routinely tens of megabytes, and only the
+  ~20 retained lines are worth sanitizing.
+  """
+  @spec failure_excerpt(Enumerable.t()) :: String.t()
+  def failure_excerpt(lines) do
+    lines
+    |> Stream.map(&excerpt_line/1)
+    |> Stream.reject(&(&1 == ""))
+    |> Enum.take(@failure_excerpt_lines)
+    |> Enum.join("\n")
+    |> Text.truncate_trailing_bytes(@failure_excerpt_bytes)
+  end
+
+  @doc """
+  `failure_excerpt/1` for a chronological transcript.
+
+  Adapters build their error payloads from the whole collected output — an exit
+  status of 0 with an unparseable stream still reaches the tracker abandonment
+  comment and `/api/v1/state` — so `Enum.join(lines, "\\n")` there shipped an
+  unbounded, unredacted transcript through a path the runner's own tail guard
+  never touches.
+  """
+  @spec transcript_excerpt([term()]) :: String.t()
+  def transcript_excerpt(lines) when is_list(lines) do
+    lines |> Enum.reverse() |> failure_excerpt()
+  end
+
+  @doc """
+  Redacts every binary inside a decoded error payload, preserving its shape.
+
+  A `{:turn_failed, error}` payload is whatever the CLI put in its error event:
+  usually a message, sometimes the whole envelope including echoed request
+  headers. Map keys are field names and are left alone.
+  """
+  @spec redact_payload(term()) :: term()
+  def redact_payload(value) when is_binary(value), do: Text.redact_secrets(value)
+  def redact_payload(%{} = value), do: Map.new(value, fn {key, nested} -> {key, redact_payload(nested)} end)
+  def redact_payload(value) when is_list(value), do: Enum.map(value, &redact_payload/1)
+  def redact_payload(value), do: value
+
+  defp excerpt_line(line) do
+    line
+    |> to_string()
+    |> Text.truncate_trailing_bytes(@failure_excerpt_line_bytes)
+    |> Text.strip_ansi_and_control()
+    |> Text.redact_secrets()
+    |> String.trim()
+  end
 
   @spec known_kinds() :: [String.t()]
   def known_kinds, do: @known_kinds

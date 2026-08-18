@@ -656,14 +656,19 @@ Resume uses `--conversation <conversation_id>` only. Never emit `-c` / `--contin
 `--resume`. Do not invent MCP flags (`--mcp-config` is not in the official headless
 table); operators may pass extras via `extra_args`.
 
-`--log-file` points at `<workspace>/agy.log`. On stdout the CLI reports only a generic
-"Agent execution terminated due to error."; the actual cause (HTTP 400/429, auth failure)
-goes exclusively to its own log file, which otherwise lands in
-`~/.gemini/antigravity-cli/log/cli-<timestamp>.log` where nothing correlates it to an issue.
-Writing it inside the per-issue workspace puts the diagnosis next to the run that produced it.
-The path comes from the run's workspace and is used verbatim, so under SSH remoting it names
-the remote workspace; an absent or empty workspace omits the flag rather than logging to
-`/agy.log`.
+`--log-file` points at the workspace's **sibling** `.agy-<issue>.log`
+(`Path.expand(Path.join([workspace, "..", ".agy-" <> Path.basename(workspace) <> ".log"]))`).
+On stdout the CLI reports only a generic "Agent execution terminated due to error."; the actual
+cause (HTTP 400/429, auth failure) goes exclusively to its own log file, which otherwise lands
+in `~/.gemini/antigravity-cli/log/cli-<timestamp>.log` where nothing correlates it to an issue.
+The log must sit *beside* the workspace, never inside it: the workspace root is the cloned repo
+root and the prompt instructs the agent to commit and push, so a log in the tree — which grows
+and appends across retry attempts — lands in the pull request. The `..` is resolved lexically
+(no filesystem access), so under SSH remoting the path names the remote workspace's sibling; an
+absent or empty workspace omits the flag rather than logging to a root-level path. The
+retention sweep removes stale `.agy-*.log` files under the workspace root along with stale
+workspaces, running no `before_remove` hook for them (the hook runs shell in a workspace
+directory).
 
 Output parse contract:
 
@@ -716,6 +721,14 @@ A non-binary member of the list is dropped rather than failing the run; any othe
 schema validation. Placement is per adapter: Claude and Antigravity append after the modelled
 flags, Codex appends before the prompt because `codex exec` takes the prompt as its final
 positional argument.
+
+Trust boundary: `extra_args` is operator-authored, hand-edited configuration and is treated as
+trusted. The string form is interpolated into the launch script raw — it can carry its own
+quoting, which also means it can carry arbitrary shell — and nothing validates that a flag
+makes sense for its CLI: a codex flag that expects a value will swallow the prompt positional.
+Escaping the list form is a formatting service, not a security boundary. Per-issue overrides
+(an `agent:` label, a queue pin, a dashboard restart) run **without** `extra_args`, exactly as
+they run without provider keys — only the project's configured kind receives them.
 
 Config-store write-through: a per-project `extra_args` key in `~/.cymphony/config.json` is
 generated into the **active kind's** section only — like `provider`/`providers`, these are
@@ -888,7 +901,11 @@ This section is intentionally redundant so a coding agent can implement the conf
 - `antigravity.skip_permissions`: boolean, default `true`
 - `antigravity.sandbox`: boolean, default `false`
 - `antigravity.new_project`: boolean, default `true`; generated from the project's optional
-  `new_project` config-store key, and only when that key is exactly `false`
+  `new_project` config-store key, and only when that key is exactly `false`. In a hand-authored
+  front matter the field casts leniently: `true`/`false` and Ecto's string spellings parse
+  normally, while any other value (`0`, `"no"`, `"off"`) is logged and treated as unset —
+  falling back to the default `true` — rather than failing `Schema.parse/1` and taking the
+  project down over a typo'd boolean
 - `antigravity.print_timeout`: string or null
 - `antigravity.provider` / `antigravity.providers`: string / list of strings
 - `server.port` (extension): integer, optional; enables the optional HTTP server, `0` may be used
@@ -1658,27 +1675,57 @@ Pipeline:
    retained lines only, not to the whole accumulated transcript. The harness
    contract is unchanged: a leftover buffer on a nonzero exit is still not
    emitted as `:harness_stdout`.
-   The tail is also **redacted**, in the same pass and at the same single choke
-   point, so the retry entry, `/api/v1/state`, the dashboard, and the tracker
-   abandonment comment are all covered once rather than four times. An agent CLI
-   that dies mid-request routinely prints its own environment, which published
-   live credentials — including the Linear API key the runner injects — to every
-   one of those surfaces at once. Three shapes are replaced with `[REDACTED]`:
-   - assignments (`NAME=value`, `NAME: value`, `"NAME": "value"`) whose name has
-     a `KEY`, `TOKEN`, `SECRET`, `PASSWORD`, or `CREDENTIAL` segment,
-     case-insensitively. A whole `_`/`-`/`.` separated segment must match, so
-     `MONKEY=banana` and `TOKENIZER_PATH=/x` are untouched. The name is kept:
-     the diagnostic still says which variable was involved. The quoted JSON form
-     is consumed first because its value may contain spaces.
-   - `Authorization: Bearer <token>` and `Authorization: <token>`, with or
-     without the scheme, `:` or `=`.
-   - bare vendor-prefixed credentials anywhere in the line: `sk-…`,
-     `lin_api_…`, `ghp_…`, `github_pat_…`, `xox<a>-…`, `AIza…`.
+   The tail is also **redacted**. Bounding, sanitizing, and redacting live in
+   one shared helper — `Agent.failure_excerpt/1` (newest 20 lines, 2048 bytes,
+   each line capped at 8 KB *before* the regexes run: redaction cost is
+   superlinear in line length and a port line can be a megabyte) — which the
+   runner's failure tail delegates to, so the retry entry, `/api/v1/state`, the
+   dashboard, and the tracker abandonment comment are covered by construction.
+   An agent CLI that dies mid-request routinely prints its own environment,
+   which published live credentials — including the Linear API key the runner
+   injects — to every one of those surfaces at once. The exit-0 failure paths
+   get the same treatment: adapters must never join a raw transcript into an
+   error payload. `no_result_in_stream`, `no_json_output`, and
+   `json_decode_failed` carry `Agent.transcript_excerpt/1` (the same excerpt
+   built from a chronological transcript), and a decoded `turn_failed` payload
+   passes through `Agent.redact_payload/1`, which redacts every binary in the
+   structure while leaving map keys alone. The live harness ring is redacted
+   too — `:harness_stdout` lines after their 2048-byte slice, because
+   `GET /api/v1/:issue/harness` and the dashboard pane carry the same bytes off
+   the box. The on-disk debug transcript (`~/.cymphony/log/cymphony.log.N`) is
+   deliberately **not** redacted: it never leaves the host, and an operator
+   debugging an auth failure needs the real bytes. Shapes replaced with
+   `[REDACTED]`:
+   - assignments — `NAME=value`, `NAME => value`, `NAME: value`,
+     `"NAME": "value"`, `"NAME" => "value"` — whose name has a whole
+     `_`/`-`/`.` separated segment matching `KEY`, `TOKEN`, `SECRET`,
+     `PASSWORD`, `PASSWD`, `PAT`, `CREDENTIAL`, `AUTHORIZATION`, or `COOKIE`
+     (case-insensitively, plurals included), a camelCase spelling of one
+     (`apiKey`, `authToken`, `accessToken`, `refreshToken`, `clientSecret`,
+     `privateKey`, …), or a compound `PWD` (`DB_PWD`; a bare `PWD` is the
+     shell's working directory). The name is kept: the diagnostic still says
+     which variable was involved. Quoted forms are consumed first because their
+     values may contain spaces, and each pass refuses to re-consume an earlier
+     pass's `[REDACTED]`. Two carve-outs keep diagnostics readable: the bare
+     `NAME: value` form requires a **compound** name, so
+     `token: rate limit exceeded`, `Unexpected token: '<'`, and
+     `KeyError: key: :model` survive intact (`NAME=value` and the quoted forms
+     still accept a single segment, so `MONKEY=banana` relies on the
+     whole-segment rule as before); and a name suffixed `_PATH`, `_FILE`,
+     `_DIR`, `_ID`, or `_NAME` keeps its value — `SSH_KEY_PATH=/home/…` names a
+     location, not a secret.
+   - `Authorization` and `Cookie` headers, consumed to end of line, with or
+     without a scheme — `Bearer`, `Basic`, or none — because the scheme word is
+     not the secret.
+   - bare vendor-prefixed credentials anywhere in the line, case-insensitively:
+     `sk-…`, `lin_api_…`, `gh[pousr]_…`, `github_pat_…`, `xox<a>-…`, `AIza…`,
+     `ya29.…`, `1//…` (Google OAuth refresh), JWTs (three dot-joined base64url
+     segments starting `eyJ`), `AKIA…`, `npm_…`, `hf_…`.
 
    This is a redactor, not a secret scanner: an opaque high-entropy string with
    no name and no known prefix still passes through, and ordinary output — URLs,
    code, hex identifiers, words that merely contain "key" — is left alone.
-   Redaction runs inside the lazy pipeline, on the ~20 retained lines only.
+   Redaction runs inside the lazy pipeline, on the retained lines only.
 2. `AgentRunner` does **not** forward `:harness_stdout` to the orchestrator. It
    calls `HarnessStream.append(issue_id, raw)` and may send
    `%{event: :harness_heartbeat, timestamp}` to the orchestrator at most once
@@ -3300,12 +3347,20 @@ Unless otherwise noted, Sections 17.1 through 17.7 are `Core Conformance`. Bulle
   newline-terminated line and exits, so the buffer alone is empty
 - That tail is bounded (by lines and by bytes), stripped of ANSI/control sequences, and ordered
   newest line first, because every surface that renders it truncates from the front
-- That tail is redacted at that single choke point: secret-named assignments, `Authorization`
-  headers, and bare vendor-prefixed credentials are replaced with `[REDACTED]` while ordinary
-  output is untouched, so no downstream surface can publish a credential the CLI printed
+- That tail is redacted before it leaves the runner: secret-named assignments (quoted, `=>`,
+  and camelCase forms included), `Authorization`/`Cookie` headers regardless of scheme, and
+  bare vendor-prefixed credentials are replaced with `[REDACTED]` while ordinary output —
+  including bare-word `token:`/`key:` diagnostics and `*_PATH`/`*_FILE` values — is untouched,
+  so no downstream surface can publish a credential the CLI printed
+- The exit-0 failure paths are equally bounded and redacted: an adapter error payload built
+  from transcript lines (`no_result_in_stream`, `no_json_output`, `json_decode_failed`) is an
+  excerpt, never the raw joined transcript, and a decoded `turn_failed` payload is recursively
+  redacted; `:harness_stdout` lines are redacted after their 2048-byte slice before entering
+  the harness ring
 - Every agy invocation the Antigravity adapter builds carries `--new-project` (fresh runs and
   `--conversation` resumes alike) unless `antigravity.new_project` is exactly `false`, and
-  `--log-file <workspace>/agy.log` whenever the run has a workspace
+  `--log-file <workspace>/../.agy-<issue>.log` — a sibling of the workspace, outside the cloned
+  tree — whenever the run has a workspace
 - Usage and rate-limit payloads are extracted from nested payload shapes
 - Compatible payload variants for approvals, user-input-required signals, and usage/rate-limit
   telemetry are accepted when they preserve the same logical meaning
