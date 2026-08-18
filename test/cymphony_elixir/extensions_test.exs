@@ -464,6 +464,7 @@ defmodule CymphonyElixir.ExtensionsTest do
                %{
                  "issue_id" => "issue-retry",
                  "issue_identifier" => "MT-RETRY",
+                 "project_name" => "default",
                  "issue_title" => nil,
                  "issue_url" => nil,
                  "priority" => nil,
