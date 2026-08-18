@@ -20,11 +20,18 @@ defmodule CymphonyElixirWeb.StaticAssetController do
   @spec phoenix_live_view_js(Conn.t(), map()) :: Conn.t()
   def phoenix_live_view_js(conn, _params), do: serve(conn, "/vendor/phoenix_live_view/phoenix_live_view.js")
 
+  @spec icon(Conn.t(), map()) :: Conn.t()
+  def icon(conn, %{"name" => name}) when name in ["claude.png", "codex.png", "agy.png"] do
+    serve(conn, "/icons/" <> name)
+  end
+
+  def icon(conn, _params), do: send_resp(conn, 404, "Not Found")
+
   defp serve(conn, path) do
     case StaticAssets.fetch(path) do
       {:ok, content_type, body} ->
         conn
-        |> put_resp_content_type(content_type)
+        |> put_resp_content_type(content_type, content_type_charset(content_type))
         |> put_resp_header("cache-control", "public, max-age=3600")
         |> send_resp(200, body)
 
@@ -32,4 +39,7 @@ defmodule CymphonyElixirWeb.StaticAssetController do
         send_resp(conn, 404, "Not Found")
     end
   end
+
+  defp content_type_charset("image/" <> _rest), do: nil
+  defp content_type_charset(_content_type), do: "utf-8"
 end

@@ -530,6 +530,273 @@ defmodule CymphonyElixirWeb.Layouts do
                     if (key === 'Tab') this.close();
                   }
                 },
+                SpecSwitcher: {
+                  mounted() {
+                    this._onTriggerClick = this.onTriggerClick.bind(this);
+                    this._onTriggerKey = this.onTriggerKey.bind(this);
+                    this._onClick = this.onClick.bind(this);
+                    this._onDoc = this.onDoc.bind(this);
+                    this._onKey = this.onKey.bind(this);
+                    this._onSearch = this.onSearch.bind(this);
+                    this._onSearchKey = this.onSearchKey.bind(this);
+                    this.open = false;
+                    this.submenu = null;
+                    this.query = '';
+                    this._restore = null;
+                    this.bind();
+                    this.setOpen(false);
+                    this.setSubmenu(null);
+                  },
+                  beforeUpdate() {
+                    this._restore = null;
+                    if (!this.open) return;
+                    var focused = !!(this.search && document.activeElement === this.search);
+                    this._restore = {
+                      submenu: this.submenu,
+                      query: this.search ? this.search.value : (this.query || ''),
+                      focused: focused,
+                      selStart: focused ? this.search.selectionStart : null,
+                      selEnd: focused ? this.search.selectionEnd : null
+                    };
+                  },
+                  updated() {
+                    this.bind();
+                    var r = this._restore;
+                    this._restore = null;
+                    if (!r) {
+                      this.setOpen(false);
+                      this.setSubmenu(null);
+                      return;
+                    }
+                    this.setOpen(true);
+                    this.setSubmenu(r.submenu);
+                    if (this.search) {
+                      this.search.value = r.query;
+                      this.query = r.query;
+                      this.filter(r.query);
+                      if (r.focused) {
+                        this.search.focus();
+                        if (r.selStart !== null && this.search.setSelectionRange) {
+                          this.search.setSelectionRange(r.selStart, r.selEnd);
+                        }
+                      }
+                    }
+                    this.place();
+                  },
+                  destroyed() {
+                    this.setChrome(false);
+                    this.unbind();
+                  },
+                  queryParts() {
+                    this.trigger = this.el.querySelector('.spec-switcher-trigger');
+                    this.panel = this.el.querySelector('.spec-switcher-panel');
+                    this.kind = this.el.querySelector('input[data-spec="kind"]');
+                    this.model = this.el.querySelector('input[data-spec="model"]');
+                    this.effort = this.el.querySelector('input[data-spec="effort"]');
+                    this.search = this.el.querySelector('.spec-switcher-search');
+                    this.modelList = this.el.querySelector('[data-menu="model"] .spec-switcher-list, .spec-switcher-flyout[data-menu="model"] .spec-switcher-list');
+                  },
+                  bind() {
+                    this.unbind();
+                    this.queryParts();
+                    if (this.trigger) {
+                      this.trigger.addEventListener('click', this._onTriggerClick);
+                      this.trigger.addEventListener('keydown', this._onTriggerKey);
+                    }
+                    this.el.addEventListener('click', this._onClick);
+                    if (this.search) {
+                      this.search.addEventListener('input', this._onSearch);
+                      this.search.addEventListener('keydown', this._onSearchKey);
+                    }
+                    document.addEventListener('mousedown', this._onDoc);
+                    document.addEventListener('keydown', this._onKey);
+                  },
+                  unbind() {
+                    if (this.trigger) {
+                      this.trigger.removeEventListener('click', this._onTriggerClick);
+                      this.trigger.removeEventListener('keydown', this._onTriggerKey);
+                    }
+                    this.el.removeEventListener('click', this._onClick);
+                    if (this.search) {
+                      this.search.removeEventListener('input', this._onSearch);
+                      this.search.removeEventListener('keydown', this._onSearchKey);
+                    }
+                    document.removeEventListener('mousedown', this._onDoc);
+                    document.removeEventListener('keydown', this._onKey);
+                  },
+                  allowCustom() {
+                    return this.el.getAttribute('data-allow-custom') === 'true';
+                  },
+                  setChrome(open) {
+                    var on = !!open;
+                    this.el.classList.toggle('spec-switcher--open', on);
+                    this.el.classList.toggle('combobox--open', on);
+                    this.syncChromeAncestor('.project-section', on);
+                    this.syncChromeAncestor('.session-row', on);
+                    this.syncChromeAncestor('.queue-card', on);
+                  },
+                  syncChromeAncestor(selector, on) {
+                    var node = this.el.closest(selector);
+                    if (!node) return;
+                    if (on) node.classList.add('is-combobox-open');
+                    else if (!node.querySelector('.combobox--open') && !node.querySelector('.spec-switcher--open')) {
+                      node.classList.remove('is-combobox-open');
+                    }
+                  },
+                  setOpen(open) {
+                    this.open = !!open;
+                    if (this.panel) this.panel.hidden = !this.open;
+                    this.setChrome(this.open);
+                    if (this.trigger) this.trigger.setAttribute('aria-expanded', this.open ? 'true' : 'false');
+                    if (!this.open) this.setSubmenu(null);
+                    if (this.open) this.place();
+                  },
+                  setSubmenu(name) {
+                    this.submenu = name || null;
+                    var rows = this.el.querySelectorAll('.spec-switcher-row');
+                    var flyouts = this.el.querySelectorAll('.spec-switcher-flyout');
+                    for (var i = 0; i < rows.length; i++) {
+                      rows[i].classList.toggle('is-open', rows[i].getAttribute('data-menu') === this.submenu);
+                    }
+                    for (var j = 0; j < flyouts.length; j++) {
+                      var match = flyouts[j].getAttribute('data-menu') === this.submenu;
+                      flyouts[j].hidden = !match;
+                    }
+                    if (this.submenu === 'model' && this.search) {
+                      var search = this.search;
+                      window.setTimeout(function() { search.focus(); }, 0);
+                    }
+                    if (this.open) this.place();
+                  },
+                  place() {
+                    if (!this.open || !this.panel || !this.trigger) return;
+                    var trigger = this.trigger.getBoundingClientRect();
+                    var h = this.panel.offsetHeight || 180;
+                    var w = this.panel.offsetWidth || 268;
+                    var spaceBelow = window.innerHeight - trigger.bottom - 12;
+                    var spaceAbove = trigger.top - 12;
+                    if (spaceBelow < h && spaceAbove > spaceBelow) this.panel.classList.add('spec-switcher-panel--above');
+                    else this.panel.classList.remove('spec-switcher-panel--above');
+                    if (trigger.left + w > window.innerWidth - 12) {
+                      this.panel.style.left = 'auto';
+                      this.panel.style.right = '0';
+                    } else {
+                      this.panel.style.left = '';
+                      this.panel.style.right = '';
+                    }
+                    var flyout = this.el.querySelector('.spec-switcher-flyout:not([hidden])');
+                    if (!flyout) return;
+                    var panel = this.panel.getBoundingClientRect();
+                    var width = flyout.offsetWidth || 220;
+                    if (panel.left - width - 6 < 12) flyout.classList.add('spec-switcher-flyout--end');
+                    else flyout.classList.remove('spec-switcher-flyout--end');
+                  },
+                  notify(input) {
+                    if (!input) return;
+                    input.dispatchEvent(new Event('input', {bubbles: true}));
+                    input.dispatchEvent(new Event('change', {bubbles: true}));
+                  },
+                  commitKind(value) {
+                    if (!this.kind) return;
+                    this.kind.value = value;
+                    this.notify(this.kind);
+                  },
+                  commitModel(value) {
+                    if (!this.model) return;
+                    this.model.value = value;
+                    this.notify(this.model);
+                  },
+                  commitEffort(value) {
+                    if (!this.effort) return;
+                    this.effort.value = value;
+                    this.notify(this.effort);
+                  },
+                  filter(query) {
+                    var q = (query || '').toLowerCase();
+                    var list = this.el.querySelector('.spec-switcher-flyout[data-menu="model"] .spec-switcher-list');
+                    if (!list) return;
+                    var opts = list.querySelectorAll('[role="option"]');
+                    for (var i = 0; i < opts.length; i++) {
+                      var opt = opts[i];
+                      var value = (opt.getAttribute('data-value') || '').toLowerCase();
+                      var label = (opt.getAttribute('data-label') || opt.textContent || '').toLowerCase();
+                      opt.hidden = !!(q && value.indexOf(q) === -1 && label.indexOf(q) === -1);
+                    }
+                  },
+                  onTriggerClick(e) {
+                    e.preventDefault();
+                    e.stopPropagation();
+                    if (this.open) this.setOpen(false);
+                    else this.setOpen(true);
+                  },
+                  onTriggerKey(e) {
+                    if (e.key === 'ArrowDown' || e.key === 'Enter' || e.key === ' ') {
+                      e.preventDefault();
+                      this.setOpen(true);
+                    }
+                  },
+                  onClick(e) {
+                    var agent = e.target.closest ? e.target.closest('.spec-switcher-agent') : null;
+                    if (agent && this.el.contains(agent)) {
+                      e.preventDefault();
+                      this.commitKind(agent.getAttribute('data-kind') || '');
+                      return;
+                    }
+                    var row = e.target.closest ? e.target.closest('.spec-switcher-row') : null;
+                    if (row && this.el.contains(row)) {
+                      e.preventDefault();
+                      var menu = row.getAttribute('data-menu');
+                      this.setSubmenu(this.submenu === menu ? null : menu);
+                      return;
+                    }
+                    var opt = e.target.closest ? e.target.closest('[role="option"]') : null;
+                    if (opt && this.el.contains(opt)) {
+                      e.preventDefault();
+                      var flyout = opt.closest('.spec-switcher-flyout');
+                      var which = flyout ? flyout.getAttribute('data-menu') : null;
+                      var value = opt.getAttribute('data-value') || '';
+                      if (which === 'model') this.commitModel(value);
+                      else if (which === 'effort') this.commitEffort(value);
+                    }
+                  },
+                  onDoc(e) {
+                    if (!this.open) return;
+                    if (this.el.contains(e.target)) return;
+                    this.setOpen(false);
+                  },
+                  onKey(e) {
+                    if (!this.open) return;
+                    if (e.key !== 'Escape') return;
+                    e.preventDefault();
+                    if (this.submenu) this.setSubmenu(null);
+                    else this.setOpen(false);
+                    if (this.trigger) this.trigger.focus();
+                  },
+                  onSearch() {
+                    this.query = this.search ? this.search.value : '';
+                    this.filter(this.query);
+                  },
+                  onSearchKey(e) {
+                    if (e.key === 'Escape') {
+                      e.preventDefault();
+                      if (this.search && this.search.value) {
+                        this.search.value = '';
+                        this.query = '';
+                        this.filter('');
+                      } else {
+                        this.setSubmenu(null);
+                        if (this.trigger) this.trigger.focus();
+                      }
+                      return;
+                    }
+                    if (e.key !== 'Enter') return;
+                    if (!this.allowCustom()) return;
+                    var text = this.search ? this.search.value.trim() : '';
+                    if (!text) return;
+                    e.preventDefault();
+                    this.commitModel(text);
+                  }
+                },
                 QueueBoard: {
                   mounted() {
                     this._onPointerDown = this.onPointerDown.bind(this);
@@ -1060,6 +1327,7 @@ defmodule CymphonyElixirWeb.Layouts do
                     if (this.el.contains(t)) return;
                     if (t.closest('.queue-card-edit-toggle')) return;
                     if (t.closest('.combobox-list') || t.closest('.combobox-panel')) return;
+                    if (t.closest('.spec-switcher')) return;
                     document.documentElement.removeAttribute('data-drawer');
                     this.pushEvent('dismiss_overlays', {});
                   },
@@ -1097,6 +1365,7 @@ defmodule CymphonyElixirWeb.Layouts do
                     if (target.closest('.combobox-list')) return true;
                     if (target.closest('.combobox-panel')) return true;
                     if (target.closest('.combobox.combobox--open')) return true;
+                    if (target.closest('.spec-switcher')) return true;
                     return false;
                   },
                   onDoc(e) {

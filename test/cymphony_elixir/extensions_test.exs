@@ -671,6 +671,15 @@ defmodule CymphonyElixir.ExtensionsTest do
     assert dashboard_css =~ "[data-phx-main].phx-connected .status-badge-transport"
     assert dashboard_css =~ "[data-phx-main].phx-connected .status-badge-payload"
 
+    claude_icon = get(build_conn(), "/icons/claude.png")
+    assert claude_icon.status == 200
+    assert Plug.Conn.get_resp_header(claude_icon, "content-type") == ["image/png"]
+    assert byte_size(claude_icon.resp_body) > 100
+
+    assert get(build_conn(), "/icons/codex.png").status == 200
+    assert get(build_conn(), "/icons/agy.png").status == 200
+    assert get(build_conn(), "/icons/missing.png").status == 404
+
     phoenix_html_js = response(get(build_conn(), "/vendor/phoenix_html/phoenix_html.js"), 200)
     assert phoenix_html_js =~ "phoenix.link.click"
 
@@ -1233,7 +1242,7 @@ defmodule CymphonyElixir.ExtensionsTest do
       # blurs the search box by hiding its ancestor. The hook has to snapshot
       # that state before the morph and put it back after, or an open dropdown
       # vanishes mid-selection with the typed filter gone.
-      [combobox, _rest] = String.split(combobox, "QueueBoard: {", parts: 2)
+      [combobox, spec_switcher] = String.split(combobox, "SpecSwitcher: {", parts: 2)
       assert combobox =~ "beforeUpdate() {"
       assert combobox =~ "this.setOpen(true);"
       assert combobox =~ "this.filter(r.query);"
@@ -1242,6 +1251,13 @@ defmodule CymphonyElixir.ExtensionsTest do
       # already false by then — and fell through to close(), which clears the
       # typed filter.
       refute combobox =~ "else this.close();"
+
+      [spec_switcher, _rest] = String.split(spec_switcher, "QueueBoard: {", parts: 2)
+      assert spec_switcher =~ "beforeUpdate() {"
+      assert spec_switcher =~ "this.setOpen(true);"
+      assert spec_switcher =~ "this.setSubmenu(r.submenu);"
+      assert spec_switcher =~ "this.filter(r.query);"
+      refute spec_switcher =~ "Reset to default"
 
       dashboard_css = response(get(build_conn(), "/dashboard.css"), 200)
       assert dashboard_css =~ ~s(html[data-ui-mode="simple"] .advanced-only)
@@ -1273,6 +1289,9 @@ defmodule CymphonyElixir.ExtensionsTest do
       assert dashboard_css =~ ".project-section > .project-section-header"
       assert dashboard_css =~ ".project-section.is-combobox-open"
       assert dashboard_css =~ ".combobox.combobox--open"
+      assert dashboard_css =~ ".spec-switcher-trigger"
+      assert dashboard_css =~ ".spec-switcher-panel"
+      assert dashboard_css =~ ".spec-switcher-flyout"
       assert dashboard_css =~ "--z-combobox: 80"
       assert dashboard_css =~ "z-index: var(--z-combobox)"
 
@@ -1378,6 +1397,7 @@ defmodule CymphonyElixir.ExtensionsTest do
       # Combobox panels, which render outside the sheet's own subtree.
       assert html =~ "if (t.closest('.queue-card-edit-toggle')) return;"
       assert html =~ "if (t.closest('.combobox-list') || t.closest('.combobox-panel')) return;"
+      assert html =~ "if (t.closest('.spec-switcher')) return;"
 
       # Rail content + Part B surfaces.
       assert dashboard_css =~ ".rail-vitals {"

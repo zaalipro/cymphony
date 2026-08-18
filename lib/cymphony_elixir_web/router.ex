@@ -24,6 +24,7 @@ defmodule CymphonyElixirWeb.Router do
     get("/vendor/phoenix_html/phoenix_html.js", StaticAssetController, :phoenix_html_js)
     get("/vendor/phoenix/phoenix.js", StaticAssetController, :phoenix_js)
     get("/vendor/phoenix_live_view/phoenix_live_view.js", StaticAssetController, :phoenix_live_view_js)
+    get("/icons/:name", StaticAssetController, :icon)
   end
 
   scope "/", CymphonyElixirWeb do
