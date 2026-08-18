@@ -44,6 +44,7 @@ defmodule CymphonyElixir.Agent.Codex do
       |> maybe_add_network_access(settings)
       |> maybe_add_effort(run_spec.effort)
       |> maybe_add_mcp_overrides(run_spec.mcp_descriptor)
+      |> maybe_add_extra_args(Map.get(settings, :extra_args))
 
     {:ok, Enum.join([command | subcommand] ++ args ++ [shell_escape(run_spec.prompt)], " ")}
   end
@@ -67,7 +68,7 @@ defmodule CymphonyElixir.Agent.Codex do
 
     cond do
       is_map(state.failed) ->
-        {:error, {:turn_failed, state.failed}}
+        {:error, {:turn_failed, CymphonyElixir.Agent.redact_payload(state.failed)}}
 
       is_map(state.completed) ->
         {:ok,
@@ -79,7 +80,7 @@ defmodule CymphonyElixir.Agent.Codex do
          }}
 
       true ->
-        {:error, {:no_result_in_stream, Enum.join(lines, "\n")}}
+        {:error, {:no_result_in_stream, transcript_excerpt(lines)}}
     end
   end
 
@@ -153,6 +154,11 @@ defmodule CymphonyElixir.Agent.Codex do
   end
 
   defp maybe_add_mcp_overrides(args, _descriptor), do: args
+
+  # Before the prompt: `codex exec` takes the prompt as its final positional.
+  defp maybe_add_extra_args(args, extra), do: CymphonyElixir.Agent.append_extra_args(args, extra)
+
+  defp transcript_excerpt(lines), do: CymphonyElixir.Agent.transcript_excerpt(lines)
 
   defp add_config_override(args, key, toml_value),
     do: args ++ ["-c", shell_escape("#{key}=#{toml_value}")]

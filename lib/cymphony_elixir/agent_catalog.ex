@@ -15,8 +15,9 @@ defmodule CymphonyElixir.AgentCatalog do
   before the static list. Claude Code has no equivalent listing command —
   its stable alias vocabulary (sonnet/opus/haiku) and effort levels are kept
   statically.
-  Antigravity is also static: Gemini/Claude slugs plus low/medium/high
-  efforts. There is no `agy models` fetch in v1.
+  Antigravity is also static: Gemini/CLI-Proxy slugs (`gemini-3.7-flash-high`
+  and friends). There is no `agy models` fetch in v1, and no effort list —
+  agy rejects `--effort` on those slugs; reasoning is already in the name.
 
   Everything here is advisory: model/effort values remain pass-through free
   text end to end.
@@ -59,8 +60,6 @@ defmodule CymphonyElixir.AgentCatalog do
     %{value: "claude-sonnet-4-6", label: "claude-sonnet-4-6", description: nil, efforts: nil, default_effort: nil}
   ]
 
-  @antigravity_efforts ["low", "medium", "high"]
-
   @cache_key {__MODULE__, :codex_catalog}
   @fetch_timeout_ms 15_000
   @error_ttl_ms 30_000
@@ -85,7 +84,8 @@ defmodule CymphonyElixir.AgentCatalog do
 
   For codex the levels come from the model's catalog entry; with no model (or
   an unknown one) the union across visible models is returned so no valid
-  level is hidden. Claude and Antigravity levels are model-independent.
+  level is hidden. Claude levels are model-independent. Antigravity has none:
+  CLI Proxy model slugs already encode reasoning (`-high`, `-medium`).
   """
   @spec efforts(String.t(), String.t() | nil) :: [String.t()]
   def efforts("codex", model) do
@@ -103,7 +103,7 @@ defmodule CymphonyElixir.AgentCatalog do
     :exit, _reason -> @codex_fallback_efforts
   end
 
-  def efforts("antigravity", _model), do: @antigravity_efforts
+  def efforts("antigravity", _model), do: []
 
   def efforts(_claude, _model), do: @claude_efforts
 

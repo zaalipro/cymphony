@@ -35,6 +35,7 @@ defmodule CymphonyElixir.Agent.Claude do
       |> maybe_add_flag(settings.max_budget_usd, "--max-budget-usd", settings.max_budget_usd)
       |> maybe_add_mcp_config(run_spec)
       |> maybe_add_resume_flag(run_spec.session_id)
+      |> maybe_add_extra_args(Map.get(settings, :extra_args))
 
     command =
       case run_spec.command || settings.command do
@@ -82,10 +83,14 @@ defmodule CymphonyElixir.Agent.Claude do
 
   defp maybe_add_mcp_config(args, _run_spec), do: args
 
+  defp maybe_add_extra_args(args, extra), do: CymphonyElixir.Agent.append_extra_args(args, extra)
+
+  defp transcript_excerpt(lines), do: CymphonyElixir.Agent.transcript_excerpt(lines)
+
   defp parse_json_output(lines) do
     case find_last_json_line(lines) do
       nil ->
-        {:error, {:no_json_output, Enum.join(lines, "\n")}}
+        {:error, {:no_json_output, transcript_excerpt(lines)}}
 
       line ->
         case Jason.decode(line) do
@@ -99,7 +104,7 @@ defmodule CymphonyElixir.Agent.Claude do
              }}
 
           {:error, decode_error} ->
-            {:error, {:json_decode_failed, decode_error, line}}
+            {:error, {:json_decode_failed, decode_error, transcript_excerpt([line])}}
         end
     end
   end
@@ -112,7 +117,7 @@ defmodule CymphonyElixir.Agent.Claude do
 
     case result.last_result do
       nil ->
-        {:error, {:no_result_in_stream, Enum.join(lines, "\n")}}
+        {:error, {:no_result_in_stream, transcript_excerpt(lines)}}
 
       last_result ->
         {:ok,

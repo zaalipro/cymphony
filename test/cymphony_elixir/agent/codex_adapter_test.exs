@@ -68,6 +68,22 @@ defmodule CymphonyElixir.Agent.CodexAdapterTest do
       assert {:ok, cmd} = Codex.build_command(spec(%{prompt: "it's; rm -rf /"}))
       assert cmd =~ ~s('it'"'"'s; rm -rf /')
     end
+
+    test "extra_args land before the prompt, which stays the final positional" do
+      settings = Map.put(spec().settings, :extra_args, ["--full-auto", "two words"])
+      assert {:ok, cmd} = Codex.build_command(spec(%{settings: settings}))
+      assert cmd =~ "'--full-auto' 'two words' 'do the thing'"
+      assert String.ends_with?(cmd, "'do the thing'")
+    end
+
+    test "extra_args string is appended raw; a missing key adds nothing" do
+      settings = Map.put(spec().settings, :extra_args, "-c foo=1")
+      assert {:ok, with_string} = Codex.build_command(spec(%{settings: settings}))
+      assert with_string =~ "-c foo=1 'do the thing'"
+
+      assert {:ok, without} = Codex.build_command(spec())
+      refute without =~ "foo=1"
+    end
   end
 
   describe "parse_output/3" do

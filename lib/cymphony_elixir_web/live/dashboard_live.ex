@@ -1358,18 +1358,20 @@ defmodule CymphonyElixirWeb.DashboardLive do
                     allow_custom={true}
                   />
                 </div>
-                <div class="settings-field-row">
-                  <label class="inline-label" for="add-project-effort-trigger">effort</label>
-                  <.model_combobox
-                    id="add-project-effort"
-                    name="effort"
-                    value={@add_project_effort}
-                    list_id="effort-options-add-project"
-                    options={effort_menu_options(@add_project_kind, :default)}
-                    class="settings-field"
-                    placeholder="default"
-                  />
-                </div>
+                <%= if effort_visible?(@add_project_kind) do %>
+                  <div class="settings-field-row">
+                    <label class="inline-label" for="add-project-effort-trigger">effort</label>
+                    <.model_combobox
+                      id="add-project-effort"
+                      name="effort"
+                      value={@add_project_effort}
+                      list_id="effort-options-add-project"
+                      options={effort_menu_options(@add_project_kind, :default)}
+                      class="settings-field"
+                      placeholder="default"
+                    />
+                  </div>
+                <% end %>
                 <%= if @add_project_kind == "claude" do %>
                   <label class="settings-field-row" for="add-project-provider">
                     <span class="inline-label">provider</span>
@@ -1775,6 +1777,11 @@ defmodule CymphonyElixirWeb.DashboardLive do
     :exit, _reason -> []
   end
 
+  # agy / CLI Proxy: reasoning is in the model slug. The control would only
+  # persist a flag the adapter refuses to send.
+  defp effort_visible?("antigravity"), do: false
+  defp effort_visible?(_kind), do: true
+
   defp kind_menu_options(false), do: Enum.map(Agent.known_kinds(), &%{value: &1, label: &1})
 
   defp kind_menu_options(blank) when blank in [true, :keep, :default] do
@@ -1857,17 +1864,19 @@ defmodule CymphonyElixirWeb.DashboardLive do
         />
       </div>
 
-      <div class="effort-switcher">
-        <label class="inline-label" for={"effort-#{@project_name}-trigger"}>effort</label>
-        <.model_combobox
-          id={"effort-#{@project_name}"}
-          name="effort"
-          value={@settings.effort}
-          list_id={"effort-options-#{@project_name}"}
-          options={effort_menu_options(@settings.kind, :default)}
-          placeholder="default"
-        />
-      </div>
+      <%= if effort_visible?(@settings.kind) do %>
+        <div class="effort-switcher">
+          <label class="inline-label" for={"effort-#{@project_name}-trigger"}>effort</label>
+          <.model_combobox
+            id={"effort-#{@project_name}"}
+            name="effort"
+            value={@settings.effort}
+            list_id={"effort-options-#{@project_name}"}
+            options={effort_menu_options(@settings.kind, :default)}
+            placeholder="default"
+          />
+        </div>
+      <% end %>
 
       <button type="submit" class="subtle-button">Set</button>
     </form>
@@ -1972,17 +1981,19 @@ defmodule CymphonyElixirWeb.DashboardLive do
                 allow_custom={true}
               />
             </div>
-            <div class="menu-field">
-              <label class="menu-field-label" for={"queue-effort-#{@entry.issue_identifier}-trigger"}>Effort</label>
-              <.model_combobox
-                id={"queue-effort-#{@entry.issue_identifier}"}
-                name="effort"
-                value={@spec.effort}
-                list_id={"queue-effort-options-#{@entry.issue_identifier}"}
-                options={effort_menu_options(@spec.suggestion_kind, false)}
-                placeholder="effort"
-              />
-            </div>
+            <%= if effort_visible?(@spec.suggestion_kind) do %>
+              <div class="menu-field">
+                <label class="menu-field-label" for={"queue-effort-#{@entry.issue_identifier}-trigger"}>Effort</label>
+                <.model_combobox
+                  id={"queue-effort-#{@entry.issue_identifier}"}
+                  name="effort"
+                  value={@spec.effort}
+                  list_id={"queue-effort-options-#{@entry.issue_identifier}"}
+                  options={effort_menu_options(@spec.suggestion_kind, false)}
+                  placeholder="effort"
+                />
+              </div>
+            <% end %>
             <button type="submit" class="subtle-button subtle-button--accent queue-edit-pin">Pin</button>
           </form>
         </div>
@@ -2179,20 +2190,22 @@ defmodule CymphonyElixirWeb.DashboardLive do
                     allow_custom={true}
                   />
                 </div>
-                <div class="effort-switcher">
-                  <label class="inline-label" for={"restart-effort-#{@entry.issue_identifier}-trigger"}>
-                    Effort
-                  </label>
-                  <.model_combobox
-                    id={"restart-effort-#{@entry.issue_identifier}"}
-                    name="effort"
-                    value={@spec.effort}
-                    list_id={"restart-effort-options-#{@entry.issue_identifier}"}
-                    options={effort_menu_options(@spec.suggestion_kind, :keep)}
-                    placeholder="keep"
-                    title="Reasoning effort (keep = unchanged)"
-                  />
-                </div>
+                <%= if effort_visible?(@spec.suggestion_kind) do %>
+                  <div class="effort-switcher">
+                    <label class="inline-label" for={"restart-effort-#{@entry.issue_identifier}-trigger"}>
+                      Effort
+                    </label>
+                    <.model_combobox
+                      id={"restart-effort-#{@entry.issue_identifier}"}
+                      name="effort"
+                      value={@spec.effort}
+                      list_id={"restart-effort-options-#{@entry.issue_identifier}"}
+                      options={effort_menu_options(@spec.suggestion_kind, :keep)}
+                      placeholder="keep"
+                      title="Reasoning effort (keep = unchanged)"
+                    />
+                  </div>
+                <% end %>
                 <button type="submit" class="subtle-button" title="Kill this session and restart it immediately with these overrides">Restart</button>
               </form>
               <span class="muted small">Restart kills the session and redispatches with these overrides.</span>

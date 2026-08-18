@@ -5,10 +5,31 @@ defmodule CymphonyElixir.Agent.Antigravity do
 
   Resume uses `--conversation <id>` (never `-c` / `--continue`, which resume the
   last session in cwd and would cross-pollute issues). MCP flags are not
-  invented; operators can pass extras via `settings.extra_args`.
+  invented; operators can pass extras via `settings.extra_args`. `--effort` is
+  never emitted: CLI Proxy model slugs already encode reasoning
+  (`gemini-3.7-flash-high`) and agy rejects the flag on those models.
+
+  Two flags are always built in because the CLI is unusable without them:
+
+  * `--new-project` — without it `agy` ignores the cwd it was launched in and
+    sandboxes itself into `~/.gemini/antigravity-cli/scratch`, so every run
+    wrote its code outside the per-issue workspace and no PR could ever be
+    produced. It is appended to fresh runs *and* to `--conversation` resumes
+    (verified safe on both). `settings.new_project == false` is the escape
+    hatch; any other value (including a missing key) keeps the flag.
+  * `--log-file <workspace>/../.agy-<issue>.log` — stdout only ever carries the
+    generic "Agent execution terminated due to error."; the real cause (HTTP
+    400/429, auth failures) goes to the CLI's own log file, which otherwise
+    lands in `~/.gemini/antigravity-cli/log/` under a timestamp nobody can
+    correlate to an issue. It is written *beside* the workspace rather than
+    inside it: the workspace root is the cloned repo root, so a log file in the
+    tree ends up in the pull request. The path is resolved lexically, so under
+    SSH remoting it names the remote workspace's sibling.
   """
 
   @behaviour CymphonyElixir.Agent
+
+  @session_log_prefix ".agy-"
 
   @impl true
   def default_command, do: "agy"
@@ -36,11 +57,12 @@ defmodule CymphonyElixir.Agent.Antigravity do
     args =
       ["-p", shell_escape(run_spec.prompt), "--output-format", shell_escape(output_format)]
       |> maybe_add_model(run_spec.model)
-      |> maybe_add_effort(run_spec.effort)
       |> maybe_add_conversation(run_spec.session_id)
       |> maybe_add_bool_flag(Map.get(settings, :skip_permissions) == true, "--dangerously-skip-permissions")
       |> maybe_add_bool_flag(Map.get(settings, :sandbox) == true, "--sandbox")
       |> maybe_add_print_timeout(Map.get(settings, :print_timeout))
+      |> maybe_add_new_project(Map.get(settings, :new_project))
+      |> maybe_add_log_file(run_spec.workspace)
       |> maybe_add_extra_args(Map.get(settings, :extra_args))
 
     {:ok, Enum.join([command | args], " ")}
@@ -80,7 +102,7 @@ defmodule CymphonyElixir.Agent.Antigravity do
   defp finalize_stream(%{completed: completed, status: status} = state, lines) do
     cond do
       is_map(completed) and present?(status) and status != "SUCCESS" ->
-        {:error, {:turn_failed, completed["error"] || completed}}
+        {:error, {:turn_failed, CymphonyElixir.Agent.redact_payload(completed["error"] || completed)}}
 
       is_map(completed) ->
         {:ok,
@@ -92,7 +114,7 @@ defmodule CymphonyElixir.Agent.Antigravity do
          }}
 
       true ->
-        {:error, {:no_result_in_stream, Enum.join(lines, "\n")}}
+        {:error, {:no_result_in_stream, transcript_excerpt(lines)}}
     end
   end
 
@@ -143,7 +165,7 @@ defmodule CymphonyElixir.Agent.Antigravity do
   defp parse_json_output(lines) do
     case find_last_json_line(lines) do
       nil ->
-        {:error, {:no_json_output, Enum.join(lines, "\n")}}
+        {:error, {:no_json_output, transcript_excerpt(lines)}}
 
       line ->
         case Jason.decode(line) do
@@ -151,7 +173,7 @@ defmodule CymphonyElixir.Agent.Antigravity do
             finalize_json_payload(payload, line)
 
           {:error, decode_error} ->
-            {:error, {:json_decode_failed, decode_error, line}}
+            {:error, {:json_decode_failed, decode_error, transcript_excerpt([line])}}
         end
     end
   end
@@ -160,7 +182,7 @@ defmodule CymphonyElixir.Agent.Antigravity do
     status = payload["status"]
 
     if present?(status) and status != "SUCCESS" do
-      {:error, {:turn_failed, payload["error"] || payload}}
+      {:error, {:turn_failed, CymphonyElixir.Agent.redact_payload(payload["error"] || payload)}}
     else
       {:ok,
        %{
@@ -215,11 +237,6 @@ defmodule CymphonyElixir.Agent.Antigravity do
 
   defp maybe_add_model(args, _model), do: args
 
-  defp maybe_add_effort(args, effort) when is_binary(effort) and effort != "",
-    do: args ++ ["--effort", shell_escape(effort)]
-
-  defp maybe_add_effort(args, _effort), do: args
-
   defp maybe_add_conversation(args, session_id) when is_binary(session_id) and session_id != "",
     do: args ++ ["--conversation", shell_escape(session_id)]
 
@@ -233,17 +250,35 @@ defmodule CymphonyElixir.Agent.Antigravity do
 
   defp maybe_add_print_timeout(args, _timeout), do: args
 
-  defp maybe_add_extra_args(args, extra) when is_binary(extra) and extra != "", do: args ++ [extra]
+  # Opt-out, not opt-in: only an explicit `false` drops the flag. A missing key
+  # (hand-authored WORKFLOW.md, or the claude-section fallback `Agent.section/2`
+  # returns when no antigravity embed exists) must still get the workspace.
+  defp maybe_add_new_project(args, false), do: args
+  defp maybe_add_new_project(args, _new_project), do: args ++ ["--new-project"]
 
-  defp maybe_add_extra_args(args, extra) when is_list(extra) do
-    args ++
-      Enum.flat_map(extra, fn
-        item when is_binary(item) -> [shell_escape(item)]
-        _ -> []
-      end)
+  defp maybe_add_log_file(args, workspace) when is_binary(workspace) and workspace != "",
+    do: args ++ ["--log-file", shell_escape(session_log_path(workspace))]
+
+  defp maybe_add_log_file(args, _workspace), do: args
+
+  # A *sibling* of the workspace, not a file inside it. The workspace root is
+  # the repo root — `hooks.after_create` runs `git clone … .` into it and the
+  # prompt tells the agent to `git status`, commit and push — so a log file in
+  # the tree lands in the pull request. It grows (15 KB from one bare run) and
+  # appends across retry attempts, so `.gitignore`-ing it would be a second
+  # tracked change in every repo Cymphony touches.
+  #
+  # Path.expand/1 resolves the `..` lexically, without touching the filesystem,
+  # so this still works for a remote workspace under SSH. The result stays a
+  # direct child of `workspace.root` and is swept with the workspaces. agy
+  # continues silently when the directory is missing.
+  defp session_log_path(workspace) do
+    Path.expand(Path.join([workspace, "..", "#{@session_log_prefix}#{Path.basename(workspace)}.log"]))
   end
 
-  defp maybe_add_extra_args(args, _extra), do: args
+  defp maybe_add_extra_args(args, extra), do: CymphonyElixir.Agent.append_extra_args(args, extra)
+
+  defp transcript_excerpt(lines), do: CymphonyElixir.Agent.transcript_excerpt(lines)
 
   defp emit(on_message, details) when is_function(on_message, 1) do
     on_message.(Map.put(details, :timestamp, DateTime.utc_now()))

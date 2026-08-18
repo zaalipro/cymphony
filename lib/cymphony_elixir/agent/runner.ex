@@ -19,8 +19,6 @@ defmodule CymphonyElixir.Agent.Runner do
   @max_stream_log_bytes 1_000
   @harness_stdout_max 2048
   @port_eof_drain_ms 250
-  @agent_exit_tail_bytes 2048
-  @agent_exit_tail_lines 20
   @shell_env_name_pattern "^[A-Za-z_][A-Za-z0-9_]*$"
 
   @type session :: %{
@@ -464,31 +462,28 @@ defmodule CymphonyElixir.Agent.Runner do
   # printed, and the whole point of retaining a tail — past every cut, so a
   # streaming turn showed nothing but its oldest retained noise line.
   #
-  # `Stream` (not `Enum`) so the sanitizing regexes run on the ~20 lines that
-  # are kept rather than on the entire turn's stdout: `acc` holds every line of
-  # a stream-json transcript, which is routinely tens of megabytes.
+  # This is the choke point for the tail: whatever it returns is what the retry
+  # entry stores, `/api/v1/state` serves, the dashboard renders, and the tracker
+  # abandonment comment publishes. `Agent.failure_excerpt/1` owns the bounding,
+  # sanitizing, and redacting so the adapters' own exit-0 error payloads get
+  # exactly the same treatment. `acc` is already newest-first.
   defp failure_tail(acc, remaining) do
-    [remaining | acc]
-    |> Stream.map(&sanitize_output_line/1)
-    |> Stream.reject(&(&1 == ""))
-    |> Enum.take(@agent_exit_tail_lines)
-    |> Enum.join("\n")
-    |> Text.truncate_trailing_bytes(@agent_exit_tail_bytes)
+    Agent.failure_excerpt([remaining | acc])
   end
 
-  defp sanitize_output_line(line) do
-    line
-    |> to_string()
-    |> Text.strip_ansi_and_control()
-    |> String.trim()
-  end
-
+  # The harness ring is served by `GET /api/v1/:issue/harness` and rendered in
+  # the dashboard harness pane, so it carries the same bytes off the box that
+  # the failure tail does and needs the same redaction. Redact after the slice:
+  # the regexes then run on at most 2048 characters rather than a whole port
+  # line.
   defp emit_harness_stdout(on_message, line) do
-    on_message.(%{
-      event: :harness_stdout,
-      raw: String.slice(to_string(line), 0, @harness_stdout_max),
-      timestamp: DateTime.utc_now()
-    })
+    raw =
+      line
+      |> to_string()
+      |> String.slice(0, @harness_stdout_max)
+      |> Text.redact_secrets()
+
+    on_message.(%{event: :harness_stdout, raw: raw, timestamp: DateTime.utc_now()})
   end
 
   defp validate_workspace_cwd(workspace, nil, config) when is_binary(workspace) do

@@ -232,6 +232,115 @@ defmodule CymphonyElixir.Cymphony.ConfigTest do
     end
   end
 
+  describe "to_schema_map/1 extra_args" do
+    test "a map keyed by kind emits only the active kind's list" do
+      config = %{
+        "agent" => "antigravity",
+        "extra_args" => %{"antigravity" => ["--new-project"], "codex" => ["--full-auto"]}
+      }
+
+      schema_map = CymphonyConfig.to_schema_map(config)
+
+      assert schema_map["antigravity"]["extra_args"] == ["--new-project"]
+      refute Map.has_key?(schema_map["codex"], "extra_args")
+      refute Map.has_key?(schema_map["claude"], "extra_args")
+      assert {:ok, %Schema{} = parsed} = Schema.parse(schema_map)
+      assert parsed.antigravity.extra_args == ["--new-project"]
+      assert parsed.codex.extra_args == nil
+    end
+
+    test "switching the active kind switches which list is emitted" do
+      config = %{
+        "agent" => "codex",
+        "extra_args" => %{"antigravity" => ["--new-project"], "codex" => ["--full-auto"]}
+      }
+
+      schema_map = CymphonyConfig.to_schema_map(config)
+
+      # A project pinned to codex must never inherit the antigravity flags.
+      assert schema_map["codex"]["extra_args"] == ["--full-auto"]
+      refute Map.has_key?(schema_map["antigravity"], "extra_args")
+      assert {:ok, %Schema{} = parsed} = Schema.parse(schema_map)
+      assert parsed.codex.extra_args == ["--full-auto"]
+      assert parsed.antigravity.extra_args == nil
+    end
+
+    test "a map with no entry for the active kind emits nothing and stays quiet" do
+      config = %{"agent" => "claude", "extra_args" => %{"codex" => ["--full-auto"]}}
+
+      log =
+        ExUnit.CaptureLog.capture_log(fn ->
+          schema_map = CymphonyConfig.to_schema_map(config)
+          refute Map.has_key?(schema_map["claude"], "extra_args")
+        end)
+
+      refute log =~ "Ignoring invalid extra_args"
+    end
+
+    test "a bare list is the convenience form and applies to the active kind" do
+      claude_map = CymphonyConfig.to_schema_map(%{"extra_args" => ["--add-dir", "/srv/x"]})
+      assert claude_map["claude"]["extra_args"] == ["--add-dir", "/srv/x"]
+      refute Map.has_key?(claude_map["codex"], "extra_args")
+
+      agy_map = CymphonyConfig.to_schema_map(%{"agent" => "antigravity", "extra_args" => ["--yolo"]})
+      assert agy_map["antigravity"]["extra_args"] == ["--yolo"]
+      assert {:ok, %Schema{} = parsed} = Schema.parse(agy_map)
+      assert parsed.antigravity.extra_args == ["--yolo"]
+    end
+
+    test "only lists of strings are honored; anything else is ignored with a warning" do
+      # Mirrors stall_timeout_ms: a typo in a hand-edited key must not produce
+      # front matter that fails Schema.parse/1 and takes the project down.
+      for bad <- ["--new-project", 1, true, ["--ok", 2], [nil], %{"antigravity" => "--x"}] do
+        log =
+          ExUnit.CaptureLog.capture_log(fn ->
+            schema_map = CymphonyConfig.to_schema_map(%{"agent" => "antigravity", "extra_args" => bad})
+            refute Map.has_key?(schema_map["antigravity"], "extra_args")
+          end)
+
+        assert log =~ "Ignoring invalid extra_args"
+      end
+    end
+
+    test "a missing key and an empty list emit nothing without warning" do
+      log =
+        ExUnit.CaptureLog.capture_log(fn ->
+          refute Map.has_key?(CymphonyConfig.to_schema_map(%{})["claude"], "extra_args")
+          refute Map.has_key?(CymphonyConfig.to_schema_map(%{"extra_args" => []})["claude"], "extra_args")
+
+          refute Map.has_key?(
+                   CymphonyConfig.to_schema_map(%{"agent" => "antigravity", "extra_args" => %{"antigravity" => []}})[
+                     "antigravity"
+                   ],
+                   "extra_args"
+                 )
+        end)
+
+      refute log =~ "Ignoring invalid extra_args"
+    end
+  end
+
+  describe "to_schema_map/1 new_project" do
+    test "the default is omitted so the adapter keeps --new-project on" do
+      schema_map = CymphonyConfig.to_schema_map(%{"agent" => "antigravity"})
+      refute Map.has_key?(schema_map["antigravity"], "new_project")
+      assert {:ok, %Schema{} = parsed} = Schema.parse(schema_map)
+      assert parsed.antigravity.new_project == true
+    end
+
+    test "only an explicit false reaches the front matter" do
+      schema_map = CymphonyConfig.to_schema_map(%{"agent" => "antigravity", "new_project" => false})
+      assert schema_map["antigravity"]["new_project"] == false
+      assert {:ok, %Schema{} = parsed} = Schema.parse(schema_map)
+      assert parsed.antigravity.new_project == false
+
+      for truthy <- [true, "false", 0, nil] do
+        map = CymphonyConfig.to_schema_map(%{"agent" => "antigravity", "new_project" => truthy})
+        refute Map.has_key?(map["antigravity"], "new_project")
+      end
+    end
+  end
+
   describe "generated WORKFLOW.md front matter round-trips safely" do
     test "values with YAML metacharacters survive generation and parsing" do
       # The old hand-built-YAML path would corrupt these (`:`, `#`, quotes);

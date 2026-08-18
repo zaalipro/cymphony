@@ -7,6 +7,8 @@ defmodule CymphonyElixir.Workspace do
   alias CymphonyElixir.{Config, PathSafety, SSH}
 
   @remote_workspace_marker "__CYMPHONY_WORKSPACE__"
+  # Must match CymphonyElixir.Agent.Antigravity's @session_log_prefix.
+  @session_log_prefix ".agy-"
 
   @type worker_host :: String.t() | nil
 
@@ -199,7 +201,21 @@ defmodule CymphonyElixir.Workspace do
   end
 
   defp stale_candidate?(path, exclude, cutoff) do
-    File.dir?(path) and not MapSet.member?(exclude, path) and stale?(path, cutoff)
+    sweepable?(path) and not MapSet.member?(exclude, path) and stale?(path, cutoff)
+  end
+
+  # Directories are the workspaces themselves. The one plain file the sweep also
+  # owns is the per-session agent log the Antigravity adapter writes *beside*
+  # its workspace (`.agy-<issue>.log`), kept out of the cloned repo so it cannot
+  # end up in a pull request; without this it would accumulate under the root
+  # forever. Any other stray file is left alone.
+  defp sweepable?(path) do
+    File.dir?(path) or (File.regular?(path) and session_log?(path))
+  end
+
+  defp session_log?(path) do
+    name = Path.basename(path)
+    String.starts_with?(name, @session_log_prefix) and String.ends_with?(name, ".log")
   end
 
   defp remove_stale_path(path, workspace_root) do
@@ -214,7 +230,9 @@ defmodule CymphonyElixir.Workspace do
   end
 
   defp delete_stale_workspace(path) do
-    maybe_run_before_remove_hook(path, nil)
+    # The sibling session log is not a workspace, so it gets no `before_remove`
+    # hook — the hook runs shell in a workspace directory.
+    if not session_log?(path), do: maybe_run_before_remove_hook(path, nil)
 
     case File.rm_rf(path) do
       {:ok, _} ->

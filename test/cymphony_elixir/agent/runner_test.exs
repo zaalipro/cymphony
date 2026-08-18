@@ -213,6 +213,68 @@ defmodule CymphonyElixir.Agent.RunnerTest do
     end
   end
 
+  test "non-zero exit output is redacted before it leaves the runner" do
+    test_root =
+      Path.join(
+        System.tmp_dir!(),
+        "cymphony-elixir-app-server-exit-redact-#{System.unique_integer([:positive])}"
+      )
+
+    try do
+      workspace_root = Path.join(test_root, "workspaces")
+      workspace = Path.join(workspace_root, "MT-2004")
+      claude_binary = Path.join(test_root, "fake-claude")
+
+      File.mkdir_p!(workspace)
+
+      # A CLI that dies mid-request routinely dumps its own environment. The
+      # tail is stored on the retry entry, served by /api/v1/state, rendered by
+      # the dashboard, and posted to the tracker as the abandonment comment, so
+      # it is redacted at the single choke point that feeds all four.
+      File.write!(claude_binary, """
+      #!/bin/sh
+      echo 'LINEAR_API_KEY=lin_api_abcdefghij0123456789'
+      echo 'Authorization: Bearer eyJhbGciOiJIUzI1NiJ9.payload.sig'
+      echo 'ANTHROPIC_API_KEY=sk-ant-api03-AAAABBBBCCCCDDDD'
+      echo '{"type":"error","message":"invalid model selection: sonnet-9"}'
+      exit 1
+      """)
+
+      File.chmod!(claude_binary, 0o755)
+
+      write_workflow_file!(Workflow.workflow_file_path(),
+        workspace_root: workspace_root,
+        claude_command: claude_binary
+      )
+
+      issue = %Issue{
+        id: "issue-exit-redact",
+        identifier: "MT-2004",
+        title: "Exit error redaction",
+        description: "Secrets in the failure tail never reach a status surface",
+        state: "In Progress",
+        url: "https://example.org/issues/MT-2004",
+        labels: ["backend"]
+      }
+
+      assert {:error, {:agent_exit, 1, remaining}} =
+               Runner.run(workspace, "do the thing", issue)
+
+      refute remaining =~ "lin_api_"
+      refute remaining =~ "sk-ant"
+      refute remaining =~ "eyJhbGciOiJIUzI1NiJ9"
+      assert remaining =~ "LINEAR_API_KEY=[REDACTED]"
+      assert remaining =~ "ANTHROPIC_API_KEY=[REDACTED]"
+      assert remaining =~ "Authorization: Bearer [REDACTED]"
+
+      # Redaction is part of the same lazy sanitize pass, so ordering and the
+      # real diagnostic are unchanged.
+      assert String.starts_with?(remaining, ~s({"type":"error","message":"invalid model selection: sonnet-9"}))
+    after
+      File.rm_rf(test_root)
+    end
+  end
+
   test "non-zero exit output is bounded and sanitized" do
     test_root =
       Path.join(
@@ -924,7 +986,20 @@ defmodule CymphonyElixir.Agent.RunnerTest do
       assert session.run_spec.settings.command == "agy"
       assert session.run_spec.settings.output_format == "stream-json"
       assert session.run_spec.settings.skip_permissions == true
+      assert session.run_spec.settings.new_project == true
       refute session.run_spec.settings.command == settings.claude.command
+
+      # The adapter learns the workspace from the run_spec the runner built, so
+      # agy's own log lands beside the session instead of in ~/.gemini.
+      assert {:ok, command} =
+               session.agent_module.build_command(%{session.run_spec | prompt: "go"})
+
+      assert command =~ "--new-project"
+
+      # Beside the workspace, not inside it: the workspace is the cloned repo.
+      log_path = Path.join(Path.dirname(session.workspace), ".agy-#{Path.basename(session.workspace)}.log")
+      assert command =~ "--log-file '#{log_path}'"
+      refute command =~ "'#{session.workspace}/"
     after
       File.rm_rf(test_root)
     end

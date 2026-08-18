@@ -269,7 +269,8 @@ be front-loaded with the failure itself. A crashed agent task exits with `{excep
 record the exception message, not the inspected tuple, and keep the issue context (already present
 in the log line) after the reason. Otherwise the agent CLI's own error text — which the runner
 retains as the `{:agent_exit, status, tail}` tail (§10.8), newest line first for the same reason —
-is pushed past the cut.
+is pushed past the cut. That tail is redacted before it leaves the runner (§10.8), so no status
+surface — this one, `/api/v1/state`, or the tracker abandonment comment — has to redact it again.
 
 #### 4.1.8 Orchestrator Runtime State
 
@@ -495,8 +496,10 @@ Fields:
   - Not validated against a model list; invalid values surface as run failures.
 - `effort` (string or null)
   - Default: null (the agent CLI's own default effort).
-  - Passed through verbatim (`--effort` for Claude Code and Antigravity,
-    `-c model_reasoning_effort=…` for Codex).
+  - Passed through verbatim (`--effort` for Claude Code,
+    `-c model_reasoning_effort=…` for Codex). Antigravity never receives
+    `--effort`: CLI Proxy slugs already encode reasoning (`-high`, `-medium`)
+    and `agy` rejects the flag on those models.
 - `max_concurrent_agents` (integer or string integer)
   - Default: `10`
   - Changes should be re-applied at runtime and affect subsequent dispatch decisions.
@@ -550,6 +553,8 @@ values are defined by the targeted Claude Code CLI version; treat them as pass-t
   - Default: null. Passed as `--max-budget-usd`.
 - `bare_mode` (boolean)
   - Default: true. Passed as `--bare`.
+- `extra_args` (list of strings, string, or null)
+  - Default: null. See Section 5.3.9.
 - `provider` / `providers` (string / list of strings)
   - Auth aliases resolved via shell functions or the config `providers` map; see Section 6.
   - Provider env capture keeps `ANTHROPIC_*`, `CLAUDE_CODE_*`, and `API_TIMEOUT` variables.
@@ -570,6 +575,9 @@ Codex CLI-specific settings. Only consulted when `agent.kind` is `"codex"`.
   - Default: true.
   - When true with the `workspace-write` sandbox, passes
     `-c sandbox_workspace_write.network_access=true`.
+- `extra_args` (list of strings, string, or null)
+  - Default: null. See Section 5.3.9. Emitted **before** the prompt, which stays the final
+    positional argument of `codex exec`.
 - `provider` / `providers` (string / list of strings)
   - Auth aliases, as for Claude, but env capture keeps `OPENAI_*`, `CODEX_*`, and
     `API_TIMEOUT` variables.
@@ -602,10 +610,8 @@ Fields:
 - `output_format` (string, `text` | `json` | `stream-json`)
   - Default: `stream-json`.
   - Passed as `--output-format`.
-- `extra_args` (string or null)
-  - Default: null.
-  - Trusted operator input. A non-empty string is appended unescaped as a trailing
-    fragment. A list of binaries is escaped item-by-item and appended.
+- `extra_args` (list of strings, string, or null)
+  - Default: null. See Section 5.3.9.
 - `skip_permissions` (boolean)
   - Default: `true`.
   - When true, passes `--dangerously-skip-permissions` (same spirit as Claude
@@ -613,6 +619,16 @@ Fields:
 - `sandbox` (boolean)
   - Default: `false`.
   - When true, passes `--sandbox`.
+- `new_project` (boolean)
+  - Default: `true`.
+  - When not exactly `false`, passes `--new-project`.
+  - Without the flag `agy` ignores the cwd it was launched in and runs inside
+    `~/.gemini/antigravity-cli/scratch`, so nothing an agent writes ever reaches the per-issue
+    workspace and no pull request can be produced. The flag is therefore appended to **every**
+    invocation Cymphony builds — fresh runs and `--conversation` resumes alike; it is accepted
+    on both. Setting it to `false` is the escape hatch for an operator who has another way to
+    anchor the cwd; any other value keeps the flag, because a typo here silently reintroduces
+    the scratch-directory failure.
 - `print_timeout` (string or null)
   - Default: null.
   - When a non-empty string, passed as `--print-timeout <value>`. Do not auto-wire
@@ -622,23 +638,38 @@ Fields:
     `GEMINI_*`, and `API_TIMEOUT` variables. Fallback keys: `GOOGLE_API_KEY`,
     `GEMINI_API_KEY`.
 
-Argv (space-joined; prompt, session id, model, and effort are shell-escaped):
+Argv (space-joined; prompt, session id, and model are shell-escaped):
 
 ```text
 <cmd> -p <escaped prompt> --output-format <output_format>
   [--model <escaped model>]          when model is a non-empty binary
-  [--effort <escaped effort>]        when effort is a non-empty binary
   [--conversation <escaped id>]      when session_id is a non-empty binary
   [--dangerously-skip-permissions]   when skip_permissions is true
   [--sandbox]                        when sandbox is true
   [--print-timeout <print_timeout>]  when print_timeout is a non-empty binary
-  <extra_args fragment>
+  [--new-project]                    unless new_project is exactly false
+  [--log-file <escaped path>]        when the run's workspace is a non-empty binary
+  <extra_args>
 ```
 
 Resume uses `--conversation <conversation_id>` only. Never emit `-c` / `--continue`
 (those resume the last session in cwd and would cross-pollute issues). Do not emit
 `--resume`. Do not invent MCP flags (`--mcp-config` is not in the official headless
 table); operators may pass extras via `extra_args`.
+
+`--log-file` points at the workspace's **sibling** `.agy-<issue>.log`
+(`Path.expand(Path.join([workspace, "..", ".agy-" <> Path.basename(workspace) <> ".log"]))`).
+On stdout the CLI reports only a generic "Agent execution terminated due to error."; the actual
+cause (HTTP 400/429, auth failure) goes exclusively to its own log file, which otherwise lands
+in `~/.gemini/antigravity-cli/log/cli-<timestamp>.log` where nothing correlates it to an issue.
+The log must sit *beside* the workspace, never inside it: the workspace root is the cloned repo
+root and the prompt instructs the agent to commit and push, so a log in the tree — which grows
+and appends across retry attempts — lands in the pull request. The `..` is resolved lexically
+(no filesystem access), so under SSH remoting the path names the remote workspace's sibling; an
+absent or empty workspace omits the flag rather than logging to a root-level path. The
+retention sweep removes stale `.agy-*.log` files under the workspace root along with stale
+workspaces, running no `before_remove` hook for them (the hook runs shell in a workspace
+directory).
 
 Output parse contract:
 
@@ -669,7 +700,60 @@ Normalized usage keeps only `input_tokens`, `output_tokens`, and `total_tokens`
 (integer-or-zero). Missing `total_tokens` is `input + output`. `thinking_tokens` and
 cache fields are dropped from the normalized map. Non-JSON lines are ignored and do
 not fail the turn. An unknown `--model` slug exits nonzero with `status ERROR`.
-Invalid `--effort` (not `low|medium|high`) fails the run.
+`--effort` is never emitted, even when `agent.effort` is set: agy rejects it on
+CLI Proxy / custom slugs, and thinking is already in the model name.
+
+#### 5.3.9 `extra_args` (all three agent sections)
+
+Pass-through CLI flags for the agent binary. Present on `claude`, `codex`, and `antigravity`
+with identical semantics, so an operator can reach a flag Cymphony does not model without
+waiting for the flag to be modelled.
+
+Accepted shapes in `WORKFLOW.md`:
+
+- A **list of strings** — each item is shell-escaped individually and appended in order. This
+  is what the config-store generator emits, so an argument containing spaces stays one
+  argument.
+- A **single string** — trusted operator input, appended unescaped as one trailing fragment.
+  It may carry several flags and its own quoting. Retained so a hand-authored `WORKFLOW.md`
+  written against the original string-only form keeps parsing.
+- `null` (default) — nothing is appended.
+
+A non-binary member of the list is dropped rather than failing the run; any other shape fails
+schema validation. Placement is per adapter: Claude and Antigravity append after the modelled
+flags, Codex appends before the prompt because `codex exec` takes the prompt as its final
+positional argument.
+
+Trust boundary: `extra_args` is operator-authored, hand-edited configuration and is treated as
+trusted. The string form is interpolated into the launch script raw — it can carry its own
+quoting, which also means it can carry arbitrary shell — and nothing validates that a flag
+makes sense for its CLI: a codex flag that expects a value will swallow the prompt positional.
+Escaping the list form is a formatting service, not a security boundary. Per-issue overrides
+(an `agent:` label, a queue pin, a dashboard restart) run **without** `extra_args`, exactly as
+they run without provider keys — only the project's configured kind receives them.
+
+Config-store write-through: a per-project `extra_args` key in `~/.cymphony/config.json` is
+generated into the **active kind's** section only — like `provider`/`providers`, these are
+per-backend flags and a project pinned to `codex` must not inherit an `antigravity` list. Two
+shapes are accepted on a `projects[]` entry:
+
+```json
+"extra_args": {"antigravity": ["--new-project"], "codex": ["--full-auto"]}
+"extra_args": ["--add-dir", "/srv/shared"]
+```
+
+The map form is keyed by agent kind and only the active kind's entry is emitted. The bare-list
+form is the convenience spelling for the active kind. Only a list of strings is honored; a bare
+string, a number, a list with a non-string member, or a map whose active-kind entry is not a
+string list is ignored **and logged as a warning**, because unlike a numeric typo a mistyped
+escape hatch produces no visible symptom. A map with no entry for the active kind is the normal
+case and is not a warning. Nothing invalid is written into front matter, so a typo can never
+produce a `WORKFLOW.md` that fails schema validation and takes the project down.
+
+There is no CLI flag, API route, or dashboard control for `extra_args`; like `stall_timeout_ms`
+it is a hand-edited config key. The same is true of the antigravity-only `new_project` key,
+whose default (`true`) is omitted from the generated front matter entirely — only an explicit
+`false` is written through.
 
 ### 5.4 Prompt Template Contract
 
@@ -811,11 +895,19 @@ This section is intentionally redundant so a coding agent can implement the conf
 - `claude.allowed_tools`: list of strings, default implementation-defined
 - `claude.turn_timeout_ms`: integer, default `3600000`
 - `claude.read_timeout_ms`: integer, default `5000`
+- `claude.extra_args` / `codex.extra_args`: list of strings, string, or null (Section 5.3.9);
+  generated from the project's optional `extra_args` config-store key for the active kind only
 - `antigravity.command`: shell command string, default `agy`
 - `antigravity.output_format`: `text` | `json` | `stream-json`, default `stream-json`
-- `antigravity.extra_args`: string or null
+- `antigravity.extra_args`: list of strings, string, or null (Section 5.3.9)
 - `antigravity.skip_permissions`: boolean, default `true`
 - `antigravity.sandbox`: boolean, default `false`
+- `antigravity.new_project`: boolean, default `true`; generated from the project's optional
+  `new_project` config-store key, and only when that key is exactly `false`. In a hand-authored
+  front matter the field casts leniently: `true`/`false` and Ecto's string spellings parse
+  normally, while any other value (`0`, `"no"`, `"off"`) is logged and treated as unset —
+  falling back to the default `true` — rather than failing `Schema.parse/1` and taking the
+  project down over a typo'd boolean
 - `antigravity.print_timeout`: string or null
 - `antigravity.provider` / `antigravity.providers`: string / list of strings
 - `server.port` (extension): integer, optional; enables the optional HTTP server, `0` may be used
@@ -1585,6 +1677,57 @@ Pipeline:
    retained lines only, not to the whole accumulated transcript. The harness
    contract is unchanged: a leftover buffer on a nonzero exit is still not
    emitted as `:harness_stdout`.
+   The tail is also **redacted**. Bounding, sanitizing, and redacting live in
+   one shared helper — `Agent.failure_excerpt/1` (newest 20 lines, 2048 bytes,
+   each line capped at 8 KB *before* the regexes run: redaction cost is
+   superlinear in line length and a port line can be a megabyte) — which the
+   runner's failure tail delegates to, so the retry entry, `/api/v1/state`, the
+   dashboard, and the tracker abandonment comment are covered by construction.
+   An agent CLI that dies mid-request routinely prints its own environment,
+   which published live credentials — including the Linear API key the runner
+   injects — to every one of those surfaces at once. The exit-0 failure paths
+   get the same treatment: adapters must never join a raw transcript into an
+   error payload. `no_result_in_stream`, `no_json_output`, and
+   `json_decode_failed` carry `Agent.transcript_excerpt/1` (the same excerpt
+   built from a chronological transcript), and a decoded `turn_failed` payload
+   passes through `Agent.redact_payload/1`, which redacts every binary in the
+   structure while leaving map keys alone. The live harness ring is redacted
+   too — `:harness_stdout` lines after their 2048-byte slice, because
+   `GET /api/v1/:issue/harness` and the dashboard pane carry the same bytes off
+   the box. The on-disk debug transcript (`~/.cymphony/log/cymphony.log.N`) is
+   deliberately **not** redacted: it never leaves the host, and an operator
+   debugging an auth failure needs the real bytes. Shapes replaced with
+   `[REDACTED]`:
+   - assignments — `NAME=value`, `NAME => value`, `NAME: value`,
+     `"NAME": "value"`, `"NAME" => "value"` — whose name has a whole
+     `_`/`-`/`.` separated segment matching `KEY`, `TOKEN`, `SECRET`,
+     `PASSWORD`, `PASSWD`, `PAT`, `CREDENTIAL`, `AUTHORIZATION`, or `COOKIE`
+     (case-insensitively, plurals included), a camelCase spelling of one
+     (`apiKey`, `authToken`, `accessToken`, `refreshToken`, `clientSecret`,
+     `privateKey`, …), or a compound `PWD` (`DB_PWD`; a bare `PWD` is the
+     shell's working directory). The name is kept: the diagnostic still says
+     which variable was involved. Quoted forms are consumed first because their
+     values may contain spaces, and each pass refuses to re-consume an earlier
+     pass's `[REDACTED]`. Two carve-outs keep diagnostics readable: the bare
+     `NAME: value` form requires a **compound** name, so
+     `token: rate limit exceeded`, `Unexpected token: '<'`, and
+     `KeyError: key: :model` survive intact (`NAME=value` and the quoted forms
+     still accept a single segment, so `MONKEY=banana` relies on the
+     whole-segment rule as before); and a name suffixed `_PATH`, `_FILE`,
+     `_DIR`, `_ID`, or `_NAME` keeps its value — `SSH_KEY_PATH=/home/…` names a
+     location, not a secret.
+   - `Authorization` and `Cookie` headers, consumed to end of line, with or
+     without a scheme — `Bearer`, `Basic`, or none — because the scheme word is
+     not the secret.
+   - bare vendor-prefixed credentials anywhere in the line, case-insensitively:
+     `sk-…`, `lin_api_…`, `gh[pousr]_…`, `github_pat_…`, `xox<a>-…`, `AIza…`,
+     `ya29.…`, `1//…` (Google OAuth refresh), JWTs (three dot-joined base64url
+     segments starting `eyJ`), `AKIA…`, `npm_…`, `hf_…`.
+
+   This is a redactor, not a secret scanner: an opaque high-entropy string with
+   no name and no known prefix still passes through, and ordinary output — URLs,
+   code, hex identifiers, words that merely contain "key" — is left alone.
+   Redaction runs inside the lazy pipeline, on the retained lines only.
 2. `AgentRunner` does **not** forward `:harness_stdout` to the orchestrator. It
    calls `HarnessStream.append(issue_id, raw)` and may send
    `%{event: :harness_heartbeat, timestamp}` to the orchestrator at most once
@@ -2108,7 +2251,9 @@ Enablement (extension):
 - The per-project header agent control is a Combobox whose hidden input carries the stable id
   `agent-<project>` (its label points at `agent-<project>-trigger`); the id never embeds the
   current kind or effort. Changing to a known kind persists immediately (kind only;
-  model/effort wait for header **Set**). Header **Set** and `POST /api/v1/agent` persist
+  model/effort wait for header **Set**). The effort pill is hidden when the selected
+  kind is `antigravity` (CLI Proxy slugs encode reasoning; `agy` rejects `--effort`).
+  Header **Set** and `POST /api/v1/agent` persist
   kind+model+effort, rewrite the project's generated `WORKFLOW.md`, and overlay
   `config.json` so `snapshot.agent_kind` survives the next refresh. Dashboard payload
   reloads are generation-tokened so an in-flight stale snapshot cannot revert the selection
@@ -2119,9 +2264,10 @@ Enablement (extension):
   `phx-submit="set_project_agent"`) so **Set** still sends kind+model+effort. Inner pills:
   `.agent-switcher` (Combobox whose hidden input carries `#agent-<project>`),
   `.model-switcher` (Combobox), `.effort-switcher` (Combobox whose hidden input carries
-  `#effort-<project>`), and **Set**. Session restart is `form.restart-form` (`phx-change="preview_issue_run_spec"`,
+  `#effort-<project>`; hidden when the selected kind is `antigravity`), and **Set**.
+  Session restart is `form.restart-form` (`phx-change="preview_issue_run_spec"`,
   `phx-submit="set_issue_run_spec"`) with labeled Harness / Provider / Model Combobox /
-  Effort pills — not one cramped pill. Harness stdout `section#harness-tail-<id>` is
+  Effort pills — not one cramped pill. Effort is omitted for `antigravity`. Harness stdout `section#harness-tail-<id>` is
   unchanged.
 - Provider pills/fields (`form[phx-submit=set_project_providers]`, `#add-project-provider`,
   restart `name=provider`) are visible only when the selected agent kind is `claude`.
@@ -3109,6 +3255,11 @@ Unless otherwise noted, Sections 17.1 through 17.7 are `Core Conformance`. Bulle
   staged temp file beside the target
 - A per-project `stall_timeout_ms` in the config store reaches `agent.stall_timeout_ms` in the
   generated workflow; only a positive integer overrides the default
+- A per-project `extra_args` in the config store reaches the **active kind's** section in the
+  generated workflow and no other kind's; both the map-keyed-by-kind and the bare-list shapes
+  are accepted; only a list of strings is honored and any other shape is ignored with a warning
+- A per-project `new_project: false` in the config store reaches `antigravity.new_project`;
+  every other value (including absence) leaves the key out and keeps `--new-project` on
 
 ### 17.2 Workspace Manager and Safety
 
@@ -3201,6 +3352,20 @@ Unless otherwise noted, Sections 17.1 through 17.7 are `Core Conformance`. Bulle
   newline-terminated line and exits, so the buffer alone is empty
 - That tail is bounded (by lines and by bytes), stripped of ANSI/control sequences, and ordered
   newest line first, because every surface that renders it truncates from the front
+- That tail is redacted before it leaves the runner: secret-named assignments (quoted, `=>`,
+  and camelCase forms included), `Authorization`/`Cookie` headers regardless of scheme, and
+  bare vendor-prefixed credentials are replaced with `[REDACTED]` while ordinary output —
+  including bare-word `token:`/`key:` diagnostics and `*_PATH`/`*_FILE` values — is untouched,
+  so no downstream surface can publish a credential the CLI printed
+- The exit-0 failure paths are equally bounded and redacted: an adapter error payload built
+  from transcript lines (`no_result_in_stream`, `no_json_output`, `json_decode_failed`) is an
+  excerpt, never the raw joined transcript, and a decoded `turn_failed` payload is recursively
+  redacted; `:harness_stdout` lines are redacted after their 2048-byte slice before entering
+  the harness ring
+- Every agy invocation the Antigravity adapter builds carries `--new-project` (fresh runs and
+  `--conversation` resumes alike) unless `antigravity.new_project` is exactly `false`, and
+  `--log-file <workspace>/../.agy-<issue>.log` — a sibling of the workspace, outside the cloned
+  tree — whenever the run has a workspace
 - Usage and rate-limit payloads are extracted from nested payload shapes
 - Compatible payload variants for approvals, user-input-required signals, and usage/rate-limit
   telemetry are accepted when they preserve the same logical meaning
