@@ -549,6 +549,11 @@ defmodule CymphonyElixirWeb.Layouts do
                   },
                   beforeUpdate() {
                     this._restore = null;
+                    if (this._closeAfterPatch) {
+                      this._closeAfterPatch = false;
+                      this._openAfterPatch = null;
+                      return;
+                    }
                     if (!this.open) return;
                     var focused = !!(this.search && document.activeElement === this.search);
                     this._restore = {
@@ -700,6 +705,10 @@ defmodule CymphonyElixirWeb.Layouts do
                   commitKind(value) {
                     if (!this.kind) return;
                     this.kind.value = value;
+                    if (value === 'antigravity') {
+                      this._openAfterPatch = null;
+                      this.setSubmenu(null);
+                    }
                     this.notify(this.kind);
                   },
                   hasEffortMenu() {
@@ -708,9 +717,16 @@ defmodule CymphonyElixirWeb.Layouts do
                   commitModel(value) {
                     if (!this.model) return;
                     this.model.value = value;
-                    if (this.hasEffortMenu()) this._openAfterPatch = 'effort';
+                    if (this.hasEffortMenu()) {
+                      this._openAfterPatch = 'effort';
+                      this.notify(this.model);
+                      this.setSubmenu('effort');
+                      return;
+                    }
+                    this._closeAfterPatch = true;
+                    this._openAfterPatch = null;
                     this.notify(this.model);
-                    if (this.hasEffortMenu()) this.setSubmenu('effort');
+                    this.setOpen(false);
                   },
                   commitEffort(value) {
                     if (!this.effort) return;
