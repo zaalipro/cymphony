@@ -623,7 +623,7 @@ defmodule CymphonyElixir.DashboardLiveTest do
     assert has_element?(view, "#model-suggestions-session-MT-HTTP")
     assert has_element?(view, "#restart-effort-MT-HTTP")
     assert has_element?(view, ~s|#harness-tail-MT-HTTP[phx-hook="HarnessTail"]|)
-    assert render(view) =~ ">Provider<"
+    refute render(view) =~ ">Provider<"
 
     render_change(view, "preview_issue_run_spec", %{"issue" => "MT-HTTP", "agent_kind" => "claude"})
 
@@ -645,10 +645,10 @@ defmodule CymphonyElixir.DashboardLiveTest do
     render_change(view, "preview_issue_run_spec", %{"issue" => "MT-HTTP", "agent_kind" => ""})
 
     refute has_element?(view, "#restart-provider-MT-HTTP")
-    assert render(view) =~ ">Provider<"
+    refute render(view) =~ ">Provider<"
   end
 
-  test "session provider chip stays visible when the session kind is not claude" do
+  test "session provider chip and Provider stat stay hidden" do
     start_dashboard()
     {:ok, view, _html} = live(build_conn(), "/")
 
@@ -664,9 +664,14 @@ defmodule CymphonyElixir.DashboardLiveTest do
 
     send(view.pid, {:payload_loaded, view_assigns(view).payload_seq, patched})
 
+    view
+    |> element(~s|button[phx-click="toggle_logs"][phx-value-issue="MT-HTTP"]|)
+    |> render_click()
+
     html = render(view)
-    assert html =~ ~s(class="chip chip--accent advanced-only")
-    assert html =~ "cz2"
+    refute html =~ ~s(class="chip chip--accent advanced-only")
+    refute html =~ ">Provider<"
+    refute html =~ ~s(<span class="session-stat-value">cz2</span>)
     assert html =~ ~s(class="chip chip--agent chip--icon advanced-only")
     assert html =~ "codex"
     assert has_element?(view, ~s|form[phx-submit="set_project_providers"] #providers-default|)

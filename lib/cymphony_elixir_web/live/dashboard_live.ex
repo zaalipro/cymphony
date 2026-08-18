@@ -2034,9 +2034,6 @@ defmodule CymphonyElixirWeb.DashboardLive do
           <%= if priority_label = priority_label(@entry.priority) do %>
             <span class={chip_priority_class(@entry.priority)}><%= priority_label %></span>
           <% end %>
-          <%= if @entry.provider do %>
-            <span class="chip chip--accent advanced-only"><%= @entry.provider %></span>
-          <% end %>
           <%= if Map.get(@entry, :agent_kind) do %>
             <span class="chip chip--agent chip--icon advanced-only" title={@entry.agent_kind}>
               <.agent_icon kind={@entry.agent_kind} />
@@ -2089,10 +2086,6 @@ defmodule CymphonyElixirWeb.DashboardLive do
             <div class="session-stat advanced-only">
               <span class="session-stat-label">Effort</span>
               <span class="session-stat-value"><%= Map.get(@entry, :effort) || "default" %></span>
-            </div>
-            <div class="session-stat advanced-only">
-              <span class="session-stat-label">Provider</span>
-              <span class="session-stat-value"><%= @entry.provider || "default" %></span>
             </div>
             <div class="session-stat advanced-only">
               <span class="session-stat-label">Tokens</span>
