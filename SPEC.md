@@ -2257,7 +2257,9 @@ Enablement (extension):
   control) plus Model and Effort flyouts — no Reset-to-default. Changing to a known
   kind persists immediately (kind only; model/effort wait for header **Set**). The
   Effort row is hidden when the selected kind is `antigravity` (CLI Proxy slugs encode
-  reasoning; `agy` rejects `--effort`). Header **Set** and `POST /api/v1/agent` persist
+  reasoning; `agy` rejects `--effort`). Picking a model opens the Effort flyout when it
+  exists; with no Effort (antigravity) the switcher closes so the model list does not stay
+  open, and choosing the antigravity icon dismisses an open model flyout. Header **Set** and `POST /api/v1/agent` persist
   kind+model+effort, rewrite the project's generated `WORKFLOW.md`, and overlay
   `config.json` so `snapshot.agent_kind` survives the next refresh. Dashboard payload
   reloads are generation-tokened so an in-flight stale snapshot cannot revert the selection

@@ -1274,8 +1274,13 @@ defmodule CymphonyElixir.ExtensionsTest do
       assert spec_switcher =~ "this.setOpen(true);"
       assert spec_switcher =~ "this.setSubmenu(r.submenu);"
       assert spec_switcher =~ "this.filter(r.query);"
-      assert spec_switcher =~ "if (this.hasEffortMenu()) this.setSubmenu('effort');"
+      assert spec_switcher =~ "if (this.hasEffortMenu()) {"
+      assert spec_switcher =~ "this._openAfterPatch = 'effort';"
+      assert spec_switcher =~ "this.setSubmenu('effort');"
       assert spec_switcher =~ "submenu: this._openAfterPatch || this.submenu,"
+      assert spec_switcher =~ "if (this._closeAfterPatch) {"
+      assert spec_switcher =~ "this._closeAfterPatch = true;"
+      assert spec_switcher =~ "if (value === 'antigravity') {"
       refute spec_switcher =~ "Reset to default"
 
       dashboard_css = response(get(build_conn(), "/dashboard.css"), 200)
