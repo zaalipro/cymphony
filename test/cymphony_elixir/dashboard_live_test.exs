@@ -1202,6 +1202,16 @@ defmodule CymphonyElixir.DashboardLiveTest do
     refute has_element?(view, ~s|.retry-row--held span[data-clock="due"]|)
   end
 
+  test "retrying rows carry project_name so Retry now can find the orchestrator" do
+    start_dashboard()
+    {:ok, view, _html} = live(build_conn(), "/")
+
+    [retry | _] = view_assigns(view).retrying
+    assert retry.project_name == "default"
+    assert retry.issue_id == "issue-retry"
+    assert retry.issue_identifier == "MT-RETRY"
+  end
+
   test "an armed retry row carries neither the held tag nor the held modifier" do
     start_dashboard()
 
