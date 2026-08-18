@@ -1863,9 +1863,9 @@ defmodule CymphonyElixir.Orchestrator do
             claimed: MapSet.delete(state.claimed, issue_id)
         }
 
-        result = handle_retry_issue(state, issue_id, attempt, metadata)
+        {:noreply, new_state} = handle_retry_issue(state, issue_id, attempt, metadata)
         notify_dashboard()
-        result
+        {:reply, :ok, new_state}
     end
   end
 

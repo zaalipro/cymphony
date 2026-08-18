@@ -340,6 +340,7 @@ defmodule CymphonyElixirWeb.Presenter do
     %{
       issue_id: entry.issue_id,
       issue_identifier: entry.identifier,
+      project_name: Map.get(entry, :project_name),
       issue_title: issue_field(entry, :title),
       issue_url: issue_field(entry, :url),
       priority: issue_field(entry, :priority),
